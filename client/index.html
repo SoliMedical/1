@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <meta name="theme-color" content="#0f2d4a">
-    <meta name="description" content="Medicenter — نظام إدارة عيادة الطبيب الواحد، يعمل كتطبيق قابل للتثبيت وعلى الأجهزة المحمولة والكمبيوتر.">
+    <meta name="description" content="Soli Medical — نظام إدارة عيادة الطبيب الواحد، يعمل كتطبيق قابل للتثبيت وعلى الأجهزة المحمولة والكمبيوتر.">
     <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Medicenter">
+    <meta name="apple-mobile-web-app-title" content="Soli Medical">
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" type="image/png" href="/manus-storage/medicenter-icon_c9adbcea.png">
     <link rel="apple-touch-icon" href="/manus-storage/medicenter-icon_c9adbcea.png">
@@ -3081,12 +3081,12 @@
         </div>
 
     </div>
-    <!-- Medicenter PWA install affordance and offline shell -->
+    <!-- Soli Medical PWA install affordance and offline shell -->
     <div id="pwa-install-shell" dir="rtl" hidden>
-        <div class="pwa-install-card" role="dialog" aria-live="polite" aria-label="تثبيت Medicenter">
+        <div class="pwa-install-card" role="dialog" aria-live="polite" aria-label="تثبيت Soli Medical">
             <img src="/manus-storage/medicenter-icon_c9adbcea.png" alt="" width="44" height="44">
             <div class="pwa-install-copy">
-                <strong>ثبّت Medicenter</strong>
+                <strong>ثبّت Soli Medical</strong>
                 <span>وصول أسرع للنظام من شاشة جهازك.</span>
             </div>
             <button id="pwa-install-button" type="button">تثبيت</button>
@@ -3116,7 +3116,7 @@
             var startup = document.getElementById('medicenter-startup');
             window.setTimeout(function () { if (startup) startup.classList.add('is-ready'); }, 420);
             if ('serviceWorker' in navigator) {
-                window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function (error) { console.warn('تعذر تسجيل وضع العمل دون اتصال:', error); }); });
+                window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js', { scope: './' }).catch(function (error) { console.warn('تعذر تسجيل وضع العمل دون اتصال:', error); }); });
             }
             var deferredPrompt;
             var shell = document.getElementById('pwa-install-shell');
@@ -3137,10 +3137,10 @@
         })();
     </script>
 <body>
-    <div id="medicenter-startup" aria-label="جاري تشغيل Medicenter">
+    <div id="medicenter-startup" aria-label="جاري تشغيل Soli Medical">
         <div class="medicenter-startup-card">
             <img src="/manus-storage/medicenter-icon_c9adbcea.png" alt="" width="72" height="72">
-            <strong>Medicenter</strong>
+            <strong>Soli Medical</strong>
             <span>جاري تجهيز النظام...</span>
         </div>
     </div>
