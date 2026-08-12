@@ -1,0 +1,21 @@
+{
+  "name": "Medicenter — نظام إدارة العيادة",
+  "short_name": "Medicenter",
+  "description": "نظام إدارة عيادة الطبيب الواحد يعمل كتطبيق قابل للتثبيت.",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f2d4a",
+  "theme_color": "#0f2d4a",
+  "icons": [
+    {
+      "src": "/manus-storage/medicenter-icon_c9adbcea.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

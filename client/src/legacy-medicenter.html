@@ -2,16 +2,7 @@
 <html lang="ar" dir="rtl" class="h-full" x-data="{ darkMode: false }" :class="{ 'dark': darkMode }">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <meta name="theme-color" content="#0f2d4a">
-    <meta name="description" content="Medicenter — نظام إدارة عيادة الطبيب الواحد، يعمل كتطبيق قابل للتثبيت وعلى الأجهزة المحمولة والكمبيوتر.">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Medicenter">
-    <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="icon" type="image/png" href="/manus-storage/medicenter-icon_c9adbcea.png">
-    <link rel="apple-touch-icon" href="/manus-storage/medicenter-icon_c9adbcea.png">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Soli Medical - نظام إدارة عيادة الطبيب الواحد</title>
     <!-- Tailwind CSS with Dark Mode Support -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -3081,67 +3072,5 @@
         </div>
 
     </div>
-    <!-- Medicenter PWA install affordance and offline shell -->
-    <div id="pwa-install-shell" dir="rtl" hidden>
-        <div class="pwa-install-card" role="dialog" aria-live="polite" aria-label="تثبيت Medicenter">
-            <img src="/manus-storage/medicenter-icon_c9adbcea.png" alt="" width="44" height="44">
-            <div class="pwa-install-copy">
-                <strong>ثبّت Medicenter</strong>
-                <span>وصول أسرع للنظام من شاشة جهازك.</span>
-            </div>
-            <button id="pwa-install-button" type="button">تثبيت</button>
-            <button id="pwa-install-dismiss" type="button" aria-label="إغلاق">×</button>
-        </div>
-    </div>
-    <style>
-        #medicenter-startup { position: fixed; inset: 0; z-index: 10000; display: grid; place-items: center; background: #0f2d4a url('/manus-storage/medicenter-splash_8d70005f.png') center / cover; color: #f4fbff; transition: opacity .24s ease, visibility .24s ease; }
-        #medicenter-startup.is-ready { opacity: 0; visibility: hidden; pointer-events: none; }
-        .medicenter-startup-card { display: grid; justify-items: center; gap: .55rem; font-family: Cairo, sans-serif; }
-        .medicenter-startup-card img { border-radius: 1.25rem; box-shadow: 0 12px 30px rgba(0,0,0,.2); }
-        .medicenter-startup-card strong { font-size: 1.5rem; letter-spacing: .02em; }
-        .medicenter-startup-card span { color: #b8d7e8; font-size: .8rem; }
-        #pwa-install-shell { position: fixed; inset-inline: 1rem; bottom: max(1rem, env(safe-area-inset-bottom)); z-index: 9999; }
-        .pwa-install-card { max-width: 34rem; margin-inline: auto; display: flex; align-items: center; gap: .75rem; padding: .8rem 1rem; color: #e8f4ff; background: rgba(15,45,74,.96); border: 1px solid rgba(137,207,235,.34); border-radius: 1rem; box-shadow: 0 20px 45px rgba(15,45,74,.28); font-family: Cairo, sans-serif; }
-        .pwa-install-card img { border-radius: .7rem; flex: 0 0 auto; }
-        .pwa-install-copy { display: grid; gap: .05rem; min-width: 0; flex: 1; }
-        .pwa-install-copy strong { font-size: .9rem; }
-        .pwa-install-copy span { font-size: .72rem; color: #b8d7e8; }
-        #pwa-install-button { border: 0; padding: .55rem .9rem; border-radius: .65rem; color: #0f2d4a; background: #9ee7df; font: 700 .78rem Cairo, sans-serif; cursor: pointer; }
-        #pwa-install-dismiss { border: 0; background: transparent; color: #b8d7e8; font-size: 1.35rem; line-height: 1; cursor: pointer; }
-        @media (max-width: 480px) { .pwa-install-card { align-items: flex-start; } .pwa-install-copy span { max-width: 11rem; } }
-        @media (prefers-reduced-motion: no-preference) { .pwa-install-card { animation: pwa-slide-in .24s cubic-bezier(.23,1,.32,1); } @keyframes pwa-slide-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } } }
-    </style>
-    <script>
-        (function () {
-            var startup = document.getElementById('medicenter-startup');
-            window.setTimeout(function () { if (startup) startup.classList.add('is-ready'); }, 420);
-            if ('serviceWorker' in navigator) {
-                window.addEventListener('load', function () { navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(function (error) { console.warn('تعذر تسجيل وضع العمل دون اتصال:', error); }); });
-            }
-            var deferredPrompt;
-            var shell = document.getElementById('pwa-install-shell');
-            var installButton = document.getElementById('pwa-install-button');
-            var dismissButton = document.getElementById('pwa-install-dismiss');
-            window.addEventListener('beforeinstallprompt', function (event) {
-                event.preventDefault(); deferredPrompt = event;
-                if (!sessionStorage.getItem('medicenter-pwa-dismissed')) shell.hidden = false;
-            });
-            installButton.addEventListener('click', async function () {
-                if (!deferredPrompt) return;
-                deferredPrompt.prompt();
-                await deferredPrompt.userChoice;
-                deferredPrompt = null; shell.hidden = true;
-            });
-            dismissButton.addEventListener('click', function () { shell.hidden = true; sessionStorage.setItem('medicenter-pwa-dismissed', '1'); });
-            window.addEventListener('appinstalled', function () { shell.hidden = true; deferredPrompt = null; });
-        })();
-    </script>
-<body>
-    <div id="medicenter-startup" aria-label="جاري تشغيل Medicenter">
-        <div class="medicenter-startup-card">
-            <img src="/manus-storage/medicenter-icon_c9adbcea.png" alt="" width="72" height="72">
-            <strong>Medicenter</strong>
-            <span>جاري تجهيز النظام...</span>
-        </div>
-    </div>
+</body>
 </html>
