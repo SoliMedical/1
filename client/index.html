@@ -61,12 +61,13 @@
         //      }
         // =====================================================================
         const firebaseConfig = {
-            apiKey: "YOUR_API_KEY",
-            authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
-            projectId: "YOUR_PROJECT_ID",
-            storageBucket: "YOUR_PROJECT_ID.appspot.com",
-            messagingSenderId: "YOUR_SENDER_ID",
-            appId: "YOUR_APP_ID"
+            apiKey: "AIzaSyA17A_77NeF-_D5SJg9jbvD8y_a5uZo0do",
+            authDomain: "clinic1-ba255.firebaseapp.com",
+            projectId: "clinic1-ba255",
+            storageBucket: "clinic1-ba255.firebasestorage.app",
+            messagingSenderId: "247606627712",
+            appId: "1:247606627712:web:036d99bdd70ed1bc550565",
+            measurementId: "G-04YECK5TVN"
         };
 
         // Cloud sync only activates once real config values are pasted above.
@@ -93,6 +94,7 @@
                 isLoading: false,
                 cloudSyncEnabled: isFirebaseConfigured,
                 cloudStatus: isFirebaseConfigured ? 'connecting' : 'offline', // 'connecting' | 'online' | 'offline'
+                cloudAuthReady: false,
                 authError: '',
                 showPassword: false,
                 loginError: '',
@@ -474,7 +476,9 @@
                     });
 
                     if (this.cloudSyncEnabled) {
-                        this.startCloudSync();
+                        this.authenticateCloudSession().then(ready => {
+                            if (ready) this.startCloudSync();
+                        });
                     }
 
                     window.addEventListener('online', () => { if (this.cloudSyncEnabled) this.cloudStatus = 'online'; });
@@ -490,10 +494,33 @@
                 cloudDocPath: 'soliMedicalApp/sharedClinicData',
                 applyingRemoteUpdate: false,
                 cloudSyncTimer: null,
+                cloudUnsubscribe: null,
+
+                async authenticateCloudSession() {
+                    if (!firebaseAuth) return false;
+                    try {
+                        if (!firebaseAuth.currentUser) {
+                            await firebaseAuth.signInAnonymously();
+                        }
+                        this.cloudAuthReady = true;
+                        this.authError = '';
+                        this.cloudStatus = navigator.onLine ? 'online' : 'offline';
+                        return true;
+                    } catch (err) {
+                        console.error('تعذر تسجيل جلسة Firestore:', err);
+                        this.cloudAuthReady = false;
+                        this.authError = ['auth/admin-restricted-operation', 'auth/operation-not-allowed'].includes(err?.code)
+                            ? 'المزامنة السحابية متوقفة: فعّل Anonymous في Firebase Authentication، أو أنشئ حساب Email/Password للمستخدمين.'
+                            : 'تعذر الاتصال بمصادقة Firebase حالياً؛ سيستمر النظام في وضع التشغيل المحلي الآمن.';
+                        this.cloudStatus = 'offline';
+                        return false;
+                    }
+                },
 
                 startCloudSync() {
+                    if (this.cloudUnsubscribe || !this.cloudAuthReady) return;
                     const docRef = firestoreDB.doc(this.cloudDocPath);
-                    docRef.onSnapshot(
+                    this.cloudUnsubscribe = docRef.onSnapshot(
                         { includeMetadataChanges: true },
                         (snap) => {
                             this.cloudStatus = snap.metadata.fromCache ? 'offline' : 'online';
@@ -518,13 +545,13 @@
 
                 // Debounced push so rapid local edits (typing, checkbox toggles) don't spam Firestore.
                 queueCloudSync() {
-                    if (!this.cloudSyncEnabled || this.applyingRemoteUpdate) return;
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate) return;
                     clearTimeout(this.cloudSyncTimer);
                     this.cloudSyncTimer = setTimeout(() => this.pushStateToCloud(), 600);
                 },
 
                 pushStateToCloud() {
-                    if (!this.cloudSyncEnabled) return;
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady) return;
                     const dataToSave = {};
                     this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
                     firestoreDB.doc(this.cloudDocPath).set(dataToSave, { merge: true }).catch(err => {
@@ -1072,6 +1099,10 @@
 
                 getPatientById(patientId) {
                     return (this.patients || []).find(p => String(p.id) === String(patientId)) || null;
+                },
+
+                getPatientVisitCount(patient) {
+                    return Array.isArray(patient?.records) ? patient.records.length : 0;
                 },
 
                 getWaitingPatientPhone(item) {
@@ -1627,6 +1658,10 @@
 
                 addMedicalRecord() {
                     try {
+                        if (!this.selectedPatientForRecord) {
+                            alert('يرجى اختيار ملف مريض قبل حفظ الزيارة');
+                            return;
+                        }
                         const combinedDiagnoses = [...this.newRecordForm.selectedDiagnosesList];
                         if (this.newRecordForm.customDiagnosis.trim()) {
                             combinedDiagnoses.push(this.newRecordForm.customDiagnosis.trim());
@@ -1659,10 +1694,17 @@
                         }
 
                         const diagnosisTextSummary = combinedDiagnoses.join(' ، ');
+                        const symptomList = [...(this.selectedPatientForRecord.selectedSymptoms || [])];
+                        const symptomTextSummary = symptomList.join(' ، ');
 
                         const recordEntry = {
                             id: 'REC-' + Date.now(),
+                            patientId: this.selectedPatientForRecord.id,
+                            patientName: this.selectedPatientForRecord.fullName,
                             date: new Date().toISOString().split('T')[0],
+                            visitType: this.selectedPatientForRecord.visitType || 'كشف',
+                            symptom: symptomTextSummary,
+                            symptoms: symptomList,
                             diagnosis: diagnosisTextSummary,
                             diagnosisList: combinedDiagnoses,
                             vitals: finalVitals,
@@ -1683,6 +1725,8 @@
                             patientId: this.selectedPatientForRecord.id,
                             patientName: this.selectedPatientForRecord.fullName,
                             patientPhone: this.selectedPatientForRecord.phone,
+                            symptom: symptomTextSummary,
+                            symptoms: symptomList,
                             diagnosisText: diagnosisTextSummary,
                             vitals: finalVitals,
                             labTests: finalLabTests,
@@ -2338,7 +2382,7 @@
                                                 <td data-label="نوع الزيارة" class="p-4">
                                                     <div class="flex items-center gap-1.5">
                                                         <span class="bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 px-2.5 py-1 rounded text-xs font-bold" x-text="p.visitType || 'كشف'"></span>
-                                                        <span class="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-1 rounded text-[10px] font-bold whitespace-nowrap" :title="'عدد الزيارات المسجلة'" x-text="'🔁 ' + ((p.records ? p.records.length : 0) + 1) + ' زيارة'"></span>
+                                                        <span class="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-1 rounded text-[10px] font-bold whitespace-nowrap" :title="'عدد الزيارات المسجلة'" x-text="'🔁 ' + getPatientVisitCount(p) + ' زيارة'"></span>
                                                     </div>
                                                 </td>
                                                 <td class="p-4">
@@ -2473,7 +2517,14 @@
                                         <p><span class="font-bold">رقم الهاتف:</span> <span class="font-mono text-blue-600 dark:text-blue-400 font-bold" x-text="selectedPatientForRecord?.phone ? selectedPatientForRecord.phone : 'غير مسجل'"></span></p>
                                         <p><span class="font-bold">السن:</span> <span x-text="selectedPatientForRecord?.age ? (selectedPatientForRecord.age + ' سنة') : 'غير مسجل'"></span></p>
                                         <p><span class="font-bold">نوع الزيارة:</span> <span class="font-bold text-amber-600" x-text="selectedPatientForRecord?.visitType || 'كشف'"></span></p>
-                                        <p><span class="font-bold">عدد الزيارات:</span> <span class="font-bold text-indigo-600" x-text="((selectedPatientForRecord?.records?.length || 0) + 1) + ' زيارة'"></span></p>
+                                        <p><span class="font-bold">عدد الزيارات:</span> <span class="font-bold text-indigo-600" x-text="getPatientVisitCount(selectedPatientForRecord) + ' زيارة'"></span></p>
+                                        <span :class="cloudStatus === 'online' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : cloudStatus === 'syncing' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200'" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold" title="حالة المزامنة السحابية">
+                                            <span :class="cloudStatus === 'online' ? 'bg-emerald-500' : cloudStatus === 'syncing' ? 'bg-amber-500' : 'bg-slate-400'" class="w-2 h-2 rounded-full"></span>
+                                            <span x-text="cloudStatus === 'online' ? 'متصل بـ Firebase' : cloudStatus === 'syncing' ? 'جاري الحفظ سحابياً' : 'محلي / غير متصل'"></span>
+                                        </span>
+                                        <template x-if="authError">
+                                            <span class="basis-full text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2" x-text="authError"></span>
+                                        </template>
                                         
                                         <button @click="openInlineEditBasicInfoModal" class="bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 px-3 py-1 rounded-lg text-[11px] font-bold hover:bg-blue-100 flex items-center space-x-1 space-x-reverse border border-blue-200 dark:border-blue-800">
                                             <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
@@ -2492,14 +2543,14 @@
                                         <span>تفاصيل الزيارة السابقة</span>
                                     </h4>
                                     <div class="flex items-center gap-2">
-                                        <span class="text-[11px] font-bold bg-indigo-600 text-white px-2.5 py-1 rounded-full" x-text="'إجمالي الزيارات: ' + (selectedPatientForRecord.records.length + 1)"></span>
+                                        <span class="text-[11px] font-bold bg-indigo-600 text-white px-2.5 py-1 rounded-full" x-text="'إجمالي الزيارات: ' + getPatientVisitCount(selectedPatientForRecord)"></span>
                                         <span class="text-[11px] font-mono text-indigo-500" x-text="selectedPatientForRecord.records[0]?.date"></span>
                                     </div>
                                 </div>
                                 <div class="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
                                     <div class="bg-white dark:bg-slate-900 p-3 rounded-xl border dark:border-slate-700">
                                         <p class="font-bold text-slate-500 mb-1">🩺 الأعراض:</p>
-                                        <p class="text-slate-800 dark:text-slate-200 font-semibold" x-text="selectedPatientForRecord.records[0]?.symptom || '-'"></p>
+                                        <p class="text-slate-800 dark:text-slate-200 font-semibold" x-text="selectedPatientForRecord.records[0]?.symptom || (selectedPatientForRecord.records[0]?.symptoms || []).join(' ، ') || (selectedPatientForRecord.selectedSymptoms || []).join(' ، ') || '-'"> </p>
                                     </div>
                                     <div class="bg-white dark:bg-slate-900 p-3 rounded-xl border dark:border-slate-700">
                                         <p class="font-bold text-slate-500 mb-1">📋 التشخيص:</p>
@@ -2750,15 +2801,39 @@
                                 </button>
                             </div>
 
-                            <!-- Visit Archive with Print & WhatsApp & PDF Export Actions -->
+                            <!-- Detailed visit history with print, WhatsApp, and PDF actions -->
                             <div class="space-y-3 pt-2">
-                                <h4 class="font-bold text-base">أرشيف زيارات المريض</h4>
+                                <div class="flex items-center justify-between gap-3 flex-wrap">
+                                    <h4 class="font-bold text-base flex items-center gap-2"><i data-lucide="clipboard-list" class="w-5 h-5 text-blue-600"></i><span>جدول الزيارات السابقة الكامل</span></h4>
+                                    <span class="text-xs text-slate-500 dark:text-slate-400" x-text="getPatientVisitCount(selectedPatientForRecord) + ' زيارة محفوظة في الملف'"></span>
+                                </div>
                                 <div class="space-y-3">
                                     <template x-for="rec in (selectedPatientForRecord?.records || [])" :key="rec.id || rec.date">
                                         <div class="p-5 bg-white dark:bg-slate-800 border dark:border-slate-700 rounded-2xl text-xs space-y-3 shadow-sm">
                                             <div class="flex justify-between items-center font-bold">
-                                                <span class="text-blue-600 dark:text-blue-400 text-base" x-text="rec.diagnosis"></span>
-                                                <span class="text-slate-400 font-mono text-xs" x-text="rec.date"></span>
+                                                <div class="flex items-center gap-2 flex-wrap">
+                                                    <span class="text-blue-600 dark:text-blue-400 text-base" x-text="rec.diagnosis || 'زيارة طبية' "></span>
+                                                    <span class="bg-amber-50 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800 px-2 py-1 rounded-lg" x-text="rec.visitType || selectedPatientForRecord.visitType || 'كشف'"></span>
+                                                </div>
+                                                <span class="text-slate-400 font-mono text-xs" x-text="rec.date || '-' "></span>
+                                            </div>
+                                            <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2 text-xs">
+                                                <div class="bg-amber-50/70 dark:bg-amber-900/20 p-3 rounded-xl border border-amber-100 dark:border-amber-800">
+                                                    <p class="font-bold text-amber-700 dark:text-amber-300 mb-1">🩺 الأعراض</p>
+                                                    <p class="text-slate-700 dark:text-slate-200" x-text="rec.symptom || (rec.symptoms || []).join(' ، ') || (selectedPatientForRecord.selectedSymptoms || []).join(' ، ') || '-' "></p>
+                                                </div>
+                                                <div class="bg-blue-50/70 dark:bg-blue-900/20 p-3 rounded-xl border border-blue-100 dark:border-blue-800">
+                                                    <p class="font-bold text-blue-700 dark:text-blue-300 mb-1">📋 التشخيص</p>
+                                                    <p class="text-slate-700 dark:text-slate-200" x-text="rec.diagnosis || (rec.diagnosisList || []).join(' ، ') || '-' "></p>
+                                                </div>
+                                                <div class="bg-slate-50 dark:bg-slate-900 p-3 rounded-xl border dark:border-slate-700">
+                                                    <p class="font-bold text-slate-600 dark:text-slate-300 mb-1">🩺 العلامات الحيوية</p>
+                                                    <p class="text-slate-700 dark:text-slate-200" x-text="(rec.vitals || []).map(v => v.name + (v.result ? ': ' + v.result : '')).join(' ، ') || '-' "></p>
+                                                </div>
+                                                <div class="bg-emerald-50/70 dark:bg-emerald-900/20 p-3 rounded-xl border border-emerald-100 dark:border-emerald-800">
+                                                    <p class="font-bold text-emerald-700 dark:text-emerald-300 mb-1">🧪 الفحوصات</p>
+                                                    <p class="text-slate-700 dark:text-slate-200" x-text="[...(rec.labTests || []), ...(rec.radiology || [])].join(' ، ') || '-' "></p>
+                                                </div>
                                             </div>
                                             <div class="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl space-y-3 border dark:border-slate-800">
                                                 <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
@@ -2788,9 +2863,10 @@
                                                     <p class="text-amber-700 dark:text-amber-300 font-semibold pt-1" x-text="'📅 موعد المتابعة القادمة: ' + rec.nextFollowUpDate"></p>
                                                 </template>
                                             </div>
-                                            <p class="text-slate-600 dark:text-slate-300 text-sm" x-text="rec.notes"></p>
+                                            <p x-show="rec.notes" class="text-slate-600 dark:text-slate-300 text-sm" x-text="'ملاحظات وتوصيات: ' + rec.notes"></p>
                                         </div>
                                     </template>
+                                    <div x-show="!getPatientVisitCount(selectedPatientForRecord)" class="text-center py-8 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-dashed dark:border-slate-700 text-sm text-slate-500">لا توجد زيارات سابقة محفوظة لهذا الملف حتى الآن.</div>
                                 </div>
                             </div>
                         </div>
