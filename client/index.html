@@ -121,6 +121,12 @@
                 showInlineEditSymptomsModal: false,
                 showInlineEditBasicInfoModal: false,
                 showPrescriptionPrintModal: false,
+                showSyncConflictsModal: false,
+                syncConflicts: [],
+                syncDeviceId: '',
+                syncRevision: 0,
+                localChangesPending: false,
+                localEditBaseRevision: 0,
 
                 // Smart Search Inputs inside Forms
                 symptomSearchQuery: '',
@@ -441,6 +447,8 @@
                 init() {
                     this.loadPersistedState();
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
+                    if (!Array.isArray(this.syncConflicts)) this.syncConflicts = [];
+                    this.syncDeviceId = this.getOrCreateSyncDeviceId();
                     this.doctorInfo = {
                         fullName: 'د. أحمد السالم',
                         specialty: 'استشاري الطب العام والباطنية والأمراض المزمنة',
@@ -475,6 +483,10 @@
                     // line of defense (works fully offline), and also feeds Firestore when online.
                     this.persistentKeys.forEach(key => {
                         this.$watch(key, () => {
+                            if (!this.applyingRemoteUpdate && key !== 'syncConflicts') {
+                                if (!this.localChangesPending) this.localEditBaseRevision = Number(this.syncRevision || 0);
+                                this.localChangesPending = true;
+                            }
                             this.persistState();
                             this.queueCloudSync();
                         });
@@ -483,7 +495,10 @@
                     if (this.cloudSyncEnabled && this.isAuthenticated) this.connectFirebaseForLocalUser();
 
                     window.addEventListener('online', () => {
-                        if (this.cloudSyncEnabled && this.isAuthenticated) this.connectFirebaseForLocalUser();
+                        if (this.cloudSyncEnabled && this.isAuthenticated) {
+                            this.connectFirebaseForLocalUser();
+                            if (this.cloudAuthReady && this.localChangesPending) this.queueCloudSync();
+                        }
                     });
                     window.addEventListener('offline', () => { if (this.cloudSyncEnabled) this.cloudStatus = 'offline'; });
                 },
@@ -499,6 +514,67 @@
                 cloudSyncTimer: null,
                 cloudUnsubscribe: null,
                 cloudAuthListenerStarted: false,
+
+                getOrCreateSyncDeviceId() {
+                    const key = 'soliMedicalSyncDeviceId_v1';
+                    try {
+                        let deviceId = localStorage.getItem(key);
+                        if (!deviceId) {
+                            deviceId = window.crypto?.randomUUID ? window.crypto.randomUUID() : `device-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                            localStorage.setItem(key, deviceId);
+                        }
+                        return deviceId;
+                    } catch (err) {
+                        return `device-${Date.now()}`;
+                    }
+                },
+                getSyncDataSummary(data) {
+                    const patients = Array.isArray(data?.patients) ? data.patients : [];
+                    return {
+                        patients: patients.length,
+                        visits: patients.reduce((sum, patient) => sum + (Array.isArray(patient.records) ? patient.records.length : 0), 0),
+                        invoices: Array.isArray(data?.invoices) ? data.invoices.length : 0,
+                        prescriptions: Array.isArray(data?.prescriptions) ? data.prescriptions.length : 0,
+                        users: Array.isArray(data?.users) ? data.users.length : 0
+                    };
+                },
+                getSyncDataSnapshot() {
+                    const snapshot = {};
+                    this.persistentKeys.forEach(key => { snapshot[key] = this[key]; });
+                    return snapshot;
+                },
+                recordSyncConflict(remoteData, remoteMeta, reason = 'تم اكتشاف تعديل متزامن من جهاز آخر.', localSnapshot = this) {
+                    const remoteDeviceId = remoteMeta?.writerId || 'unknown-device';
+                    const remoteRevision = Number(remoteMeta?.revision || 0);
+                    const conflictKey = `${remoteDeviceId}:${remoteRevision}`;
+                    if ((this.syncConflicts || []).some(item => item.key === conflictKey)) return;
+                    this.syncConflicts = [{
+                        id: `SYNC-${Date.now()}`,
+                        key: conflictKey,
+                        detectedAt: new Date().toISOString(),
+                        localUser: this.currentUser?.fullName || 'المستخدم المحلي',
+                        remoteWriter: remoteMeta?.writerName || 'مستخدم من جهاز آخر',
+                        remoteRevision,
+                        reason,
+                        localSummary: this.getSyncDataSummary(localSnapshot),
+                        remoteSummary: this.getSyncDataSummary(remoteData)
+                    }, ...(this.syncConflicts || [])].slice(0, 40);
+                    this.persistState();
+                    this.renderIcons();
+                },
+                formatSyncConflictDate(value) {
+                    try {
+                        return new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+                    } catch (err) {
+                        return value || '';
+                    }
+                },
+                clearSyncConflictLog() {
+                    this.syncConflicts = [];
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.showSyncConflictsModal = false;
+                },
 
                 observeFirebaseAuth() {
                     if (!firebaseAuth) return;
@@ -524,18 +600,32 @@
                     this.cloudUnsubscribe = docRef.onSnapshot(
                         { includeMetadataChanges: true },
                         (snap) => {
-                            this.cloudStatus = snap.metadata.fromCache ? 'offline' : 'online';
+                            this.cloudStatus = snap.metadata.hasPendingWrites ? 'syncing' : (snap.metadata.fromCache ? 'offline' : 'online');
                             if (!snap.exists) return;
                             // Ignore the echo of our own write coming back from the server.
                             if (snap.metadata.hasPendingWrites) return;
                             const data = snap.data();
+                            const remoteMeta = data._syncMeta || {};
+                            const remoteRevision = Number(remoteMeta.revision || 0);
+                            const hasForeignPendingConflict = this.localChangesPending &&
+                                remoteMeta.writerId && remoteMeta.writerId !== this.syncDeviceId &&
+                                remoteRevision > Number(this.localEditBaseRevision || 0);
+                            const localSnapshot = hasForeignPendingConflict ? this.getSyncDataSnapshot() : null;
                             this.applyingRemoteUpdate = true;
+                            this.syncRevision = remoteRevision;
                             this.persistentKeys.forEach(key => {
                                 if (data[key] !== undefined) this[key] = data[key];
                             });
                             this.persistState();
                             this.renderIcons();
-                            this.$nextTick(() => { this.applyingRemoteUpdate = false; });
+                            this.localChangesPending = false;
+                            this.localEditBaseRevision = remoteRevision;
+                            this.$nextTick(() => {
+                                this.applyingRemoteUpdate = false;
+                                if (hasForeignPendingConflict) {
+                                    this.recordSyncConflict(data, remoteMeta, 'وصل تعديل من جهاز آخر أثناء وجود تغييرات محلية لم تُرفع بعد؛ تم تسجيل تفاصيل التعارض.', localSnapshot);
+                                }
+                            });
                         },
                         (err) => {
                             console.error('خطأ في مزامنة Firestore:', err);
@@ -555,8 +645,38 @@
                     if (!this.cloudSyncEnabled || !this.cloudAuthReady) return;
                     const dataToSave = {};
                     this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
-                    firestoreDB.doc(this.cloudDocPath).set(dataToSave, { merge: true }).catch(err => {
+                    const docRef = firestoreDB.doc(this.cloudDocPath);
+                    const baseRevision = Number(this.localEditBaseRevision || this.syncRevision || 0);
+                    const writeMeta = {
+                        revision: baseRevision + 1,
+                        writerId: this.syncDeviceId,
+                        writerName: this.currentUser?.fullName || 'المستخدم المحلي',
+                        updatedAt: new Date().toISOString()
+                    };
+                    this.cloudStatus = 'syncing';
+                    firestoreDB.runTransaction(async transaction => {
+                        const snap = await transaction.get(docRef);
+                        const remoteData = snap.exists ? snap.data() : {};
+                        const remoteMeta = remoteData._syncMeta || {};
+                        const remoteRevision = Number(remoteMeta.revision || 0);
+                        const conflict = !!(snap.exists && remoteMeta.writerId && remoteMeta.writerId !== this.syncDeviceId && remoteRevision > baseRevision);
+                        const revision = Math.max(remoteRevision, baseRevision) + 1;
+                        transaction.set(docRef, {
+                            ...dataToSave,
+                            _syncMeta: { ...writeMeta, revision }
+                        }, { merge: true });
+                        return { revision, conflict: conflict ? { data: remoteData, meta: remoteMeta } : null };
+                    }).then(result => {
+                        this.syncRevision = result.revision;
+                        this.localChangesPending = false;
+                        this.localEditBaseRevision = result.revision;
+                        this.cloudStatus = 'online';
+                        if (result.conflict) {
+                            this.recordSyncConflict(result.conflict.data, result.conflict.meta, 'تم اكتشاف تعديل محفوظ من جهاز آخر قبل رفع التعديل المحلي؛ تم تسجيل تفاصيل التعارض.');
+                        }
+                    }).catch(err => {
                         console.error('تعذر رفع البيانات إلى Firestore (سيُعاد المحاولة تلقائياً عند عودة الاتصال):', err);
+                        this.cloudStatus = 'offline';
                     });
                 },
 
@@ -831,7 +951,7 @@
                 // is lost on refresh. When the app is later connected to Supabase (or another
                 // backend), these same read/write points are where the cloud sync calls should go.
                 storageKey: 'soliMedicalData_v1',
-                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections'],
+                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts'],
 
                 loadPersistedState() {
                     try {
@@ -1839,6 +1959,10 @@
                     };
                     this.showPrescriptionPrintModal = true;
                 },
+                printPrescriptionA5(rx, patientObj) {
+                    this.printPrescription(rx, patientObj);
+                    this.$nextTick(() => window.setTimeout(() => this.triggerPrintWindow(), 180));
+                },
 
                 // Normalizes any locally-entered phone number (e.g. 01021434947 or 1021434947)
                 // into full international format required by wa.me (e.g. 201021434947).
@@ -1894,10 +2018,7 @@
 
                 // PDF Export Simulation via standard Print/PDF saver
                 exportPrescriptionPDF(rx, patientObj) {
-                    this.printPrescription(rx, patientObj);
-                                        setTimeout(() => {
-                        this.triggerPrintWindow();
-                    }, 400);
+                    this.printPrescriptionA5(rx, patientObj);
                 },
                 triggerPrintWindow() {
                     const previousTitle = document.title;
@@ -2053,9 +2174,9 @@
                 left: 0;
                 top: 0;
                 width: 148mm !important;
-                height: 210mm !important;
+                height: auto !important;
                 min-height: 210mm !important;
-                max-height: 210mm !important;
+                max-height: none !important;
                 box-sizing: border-box;
                 background: white !important;
                 color: black !important;
@@ -2067,7 +2188,13 @@
                 border: none !important;
                 page-break-after: avoid;
                 page-break-inside: avoid;
-                overflow: hidden;
+                overflow: visible !important;
+            }
+            .print-clinic-footer {
+                display: block !important;
+                visibility: visible !important;
+                break-inside: avoid;
+                page-break-inside: avoid;
             }
             .no-print {
                 display: none !important;
@@ -2221,11 +2348,11 @@
                             <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap"
                                   :class="{
                                       'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300': cloudStatus === 'online' && cloudAuthReady,
-                                      'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300': cloudStatus === 'connecting',
+                                      'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300': cloudStatus === 'connecting' || cloudStatus === 'syncing',
                                       'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300': cloudStatus === 'offline' || !cloudSyncEnabled
                                   }"
                                   :title="cloudStatus === 'online' && cloudAuthReady ? 'المزامنة السحابية تعمل في الخلفية' : 'سيستمر النظام محلياً حتى يعود الاتصال'">
-                                <span x-text="cloudStatus === 'online' && cloudAuthReady ? '🟢 متصل' : (cloudStatus === 'connecting' ? '🔵 جارٍ الاتصال' : '🟡 وضع محلي - بانتظار الاتصال')"></span>
+                                <span x-text="cloudStatus === 'online' && cloudAuthReady ? '🟢 متصل' : (cloudStatus === 'syncing' ? '🔵 جارٍ المزامنة' : (cloudStatus === 'connecting' ? '🔵 جارٍ الاتصال' : '🟡 وضع محلي - بانتظار الاتصال'))"></span>
                             </span>
                             <button @click="darkMode = !darkMode" class="p-2 text-slate-500 dark:text-amber-400"><i :data-lucide="darkMode ? 'sun' : 'moon'" class="w-5 h-5"></i></button>
                         </div>
@@ -2945,9 +3072,9 @@
                                                             <i data-lucide="message-circle" class="w-3.5 h-3.5"></i>
                                                             <span>واتساب</span>
                                                         </button>
-                                                        <button @click="printPrescription(rec, selectedPatientForRecord)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
+                                                        <button @click="printPrescriptionA5(rec, selectedPatientForRecord)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
                                                             <i data-lucide="printer" class="w-3.5 h-3.5"></i>
-                                                            <span>طباعة</span>
+                                                            <span>طباعة A5</span>
                                                         </button>
                                                     </div>
                                                 </div>
@@ -3198,7 +3325,7 @@
                                                     <p class="text-xs text-slate-600 dark:text-slate-300 truncate" x-text="(rx.medicinesWithDosage || []).map(m => m.name).join('، ') || 'لا توجد أدوية مسجلة'" ></p>
                                                     <div class="flex flex-wrap gap-1.5 lg:justify-end">
                                                         <button @click.stop="sendWhatsAppPrescription(rx, null)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="message-circle" class="w-3.5 h-3.5"></i><span>واتساب</span></button>
-                                                        <button @click.stop="printPrescription(rx, null)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="printer" class="w-3.5 h-3.5"></i><span>طباعة</span></button>
+                                                        <button @click.stop="printPrescriptionA5(rx, null)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="printer" class="w-3.5 h-3.5"></i><span>طباعة A5</span></button>
                                                     </div>
                                                 </div>
                                             </template>
@@ -3332,13 +3459,18 @@
                                     <span class="text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5"
                                           :class="{
                                               'bg-emerald-100 text-emerald-700': cloudSyncEnabled && cloudStatus === 'online',
-                                              'bg-amber-100 text-amber-700': cloudSyncEnabled && cloudStatus !== 'online',
+                                              'bg-blue-100 text-blue-700': cloudSyncEnabled && (cloudStatus === 'syncing' || cloudStatus === 'connecting'),
+                                              'bg-amber-100 text-amber-700': cloudSyncEnabled && cloudStatus !== 'online' && cloudStatus !== 'syncing' && cloudStatus !== 'connecting',
                                               'bg-slate-100 text-slate-500': !cloudSyncEnabled
                                           }">
-                                        <span x-text="cloudSyncEnabled ? (cloudStatus === 'online' ? '🟢 متصل بالسحابة (Firebase)' : '🟡 وضع محلي - بانتظار الاتصال') : '⚪ المزامنة السحابية غير مفعّلة'"></span>
+                                        <span x-text="cloudSyncEnabled ? (cloudStatus === 'online' ? '🟢 متصل بالسحابة (Firebase)' : (cloudStatus === 'syncing' ? '🔵 جارٍ المزامنة' : '🟡 وضع محلي - بانتظار الاتصال')) : '⚪ المزامنة السحابية غير مفعّلة'"></span>
                                     </span>
                                 </div>
-                                <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني يُستخدم فقط لإرسال رابط استعادة كلمة المرور.</p>
+                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني يُستخدم فقط لإرسال رابط استعادة كلمة المرور.</p>
+                        <div class="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20 px-4 py-3">
+                            <p class="text-xs font-bold text-amber-800 dark:text-amber-300"><i data-lucide="triangle-alert" class="w-4 h-4 inline-block align-middle ml-1"></i><span x-show="syncConflicts.length > 0">تم تسجيل <span x-text="syncConflicts.length"></span> تعارضات مزامنة للمراجعة.</span><span x-show="syncConflicts.length === 0">لا توجد تعارضات مزامنة مسجلة حالياً.</span></p>
+                            <button type="button" @click="showSyncConflictsModal = true" class="text-xs font-bold text-amber-800 dark:text-amber-300 underline underline-offset-4">فتح السجل</button>
+                        </div>
 
                                 <!-- Existing Users List -->
                                 <div class="space-y-3">
@@ -3798,7 +3930,7 @@
                     <div class="flex space-x-2 space-x-reverse">
                         <button @click="triggerPrintWindow" class="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1 space-x-reverse">
                             <i data-lucide="printer" class="w-4 h-4"></i>
-                            <span>طباعة الروشتة</span>
+                            <span>طباعة A5 مباشرة</span>
                         </button>
                         <button @click="showPrescriptionPrintModal = false" class="bg-slate-200 text-slate-700 px-4 py-2 rounded-xl text-xs">إغلاق</button>
                     </div>
@@ -3883,9 +4015,56 @@
                                 <span x-text="selectedPrescriptionForPrint.nextFollowUpDate"></span>
                             </div>
                         </template>
+                        <div x-show="clinics.length > 0" class="print-clinic-footer border-t border-slate-200 pt-3 space-y-2">
+                            <p class="text-center font-bold text-slate-700 text-[11px]">فروع العيادة ومواعيد العمل</p>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] leading-5">
+                                <template x-for="clinic in clinics" :key="clinic.id">
+                                    <div class="text-center border border-slate-200 rounded-lg px-2 py-1.5">
+                                        <p class="font-bold text-slate-700" x-text="clinic.name || 'فرع العيادة'"></p>
+                                        <p x-text="'العمل: ' + (clinic.hours || 'يُرجى مراجعة العيادة')"></p>
+                                        <p x-show="clinic.phone" x-text="'هاتف: ' + clinic.phone"></p>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
                         <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
 
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- SYNC CONFLICT LOG -->
+        <div x-show="showSyncConflictsModal" x-cloak class="fixed inset-0 z-[60] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 w-full max-w-2xl max-h-[85vh] overflow-hidden rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700">
+                <div class="flex items-center justify-between gap-3 p-5 border-b border-slate-200 dark:border-slate-700">
+                    <div>
+                        <h3 class="font-bold text-slate-900 dark:text-white">سجل تعارضات المزامنة</h3>
+                        <p class="text-xs text-slate-500 mt-1">يظهر هنا أي تعديل وصل من جهاز آخر أثناء وجود تعديل محلي لم يُرفع بعد.</p>
+                    </div>
+                    <button type="button" @click="showSyncConflictsModal = false" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800" aria-label="إغلاق"><i data-lucide="x" class="w-5 h-5"></i></button>
+                </div>
+                <div class="p-5 overflow-y-auto max-h-[60vh] space-y-3">
+                    <template x-if="syncConflicts.length === 0">
+                        <p class="text-sm text-slate-500 text-center py-8">لا توجد تعارضات مسجلة.</p>
+                    </template>
+                    <template x-for="conflict in syncConflicts" :key="conflict.id">
+                        <article class="rounded-xl border border-amber-200 dark:border-amber-900/60 bg-amber-50/70 dark:bg-amber-950/20 p-4 space-y-2">
+                            <div class="flex items-start justify-between gap-3">
+                                <div>
+                                    <p class="font-bold text-sm text-amber-900 dark:text-amber-200" x-text="conflict.reason"></p>
+                                    <p class="text-xs text-amber-800/80 dark:text-amber-300/80 mt-1" x-text="formatSyncConflictDate(conflict.detectedAt)"></p>
+                                </div>
+                                <span class="text-[10px] font-bold bg-amber-200/70 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200 rounded-full px-2 py-1" x-text="'إصدار ' + conflict.remoteRevision"></span>
+                            </div>
+                            <p class="text-xs text-slate-700 dark:text-slate-300">المستخدم المحلي: <b x-text="conflict.localUser"></b> · مصدر التعديل الآخر: <b x-text="conflict.remoteWriter"></b></p>
+                            <p class="text-xs text-slate-600 dark:text-slate-400">ملخص النسخة الأخرى: مرضى <b x-text="conflict.remoteSummary?.patients || 0"></b>، زيارات <b x-text="conflict.remoteSummary?.visits || 0"></b>، فواتير <b x-text="conflict.remoteSummary?.invoices || 0"></b>، روشتات <b x-text="conflict.remoteSummary?.prescriptions || 0"></b>.</p>
+                        </article>
+                    </template>
+                </div>
+                <div class="flex items-center justify-between gap-3 p-5 border-t border-slate-200 dark:border-slate-700">
+                    <button type="button" @click="clearSyncConflictLog" class="text-xs font-bold text-red-600 hover:text-red-700">مسح السجل المحلي</button>
+                    <button type="button" @click="showSyncConflictsModal = false" class="bg-blue-600 text-white px-5 py-2 rounded-xl text-sm font-bold">إغلاق</button>
                 </div>
             </div>
         </div>
