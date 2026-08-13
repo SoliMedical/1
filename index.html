@@ -37,6 +37,7 @@
     </script>
     <!-- Google Fonts Cairo -->
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet">
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Firebase (Authentication + Firestore realtime database with built-in offline support) -->
@@ -167,6 +168,8 @@
                 matchedExistingPatient: null,
                 selectedPatientForRecord: null,
                 selectedPrescriptionForPrint: null,
+                printDensity: 'normal',
+                printPrescriptionSplitPage: false,
 
                 // Visit Types & Configurable Prices (Managed from Settings)
                 visitTypePrices: {
@@ -2086,6 +2089,22 @@
                     }
                 },
 
+                getPrescriptionPrintLayout(rx) {
+                    const medicines = Array.isArray(rx?.medicinesWithDosage) ? rx.medicinesWithDosage : [];
+                    const textLength = [
+                        rx?.symptomText || rx?.symptom || '',
+                        rx?.diagnosisText || rx?.diagnosis || '',
+                        this.formatResultItems(rx?.vitals),
+                        this.formatResultItems(rx?.labTests),
+                        this.formatResultItems(rx?.radiology)
+                    ].join(' ').trim().length;
+                    const medicineLength = medicines.reduce((sum, item) => sum + String(item?.name || '').length + String(item?.timing || '').length + String(item?.extraDosageNotes || '').length, 0);
+                    const score = textLength + medicineLength + (medicines.length * 42);
+                    return {
+                        density: score > 720 || medicines.length > 8 ? 'ultra' : (score > 360 || medicines.length > 4 ? 'compact' : 'normal'),
+                        split: score > 760 || medicines.length > 7
+                    };
+                },
                 printPrescription(rx, patientObj) {
                     this.selectedPrescriptionForPrint = {
                         ...rx,
@@ -2094,6 +2113,9 @@
                         patientAge: patientObj ? patientObj.age : '',
                         patientGender: patientObj ? patientObj.gender : ''
                     };
+                    const printLayout = this.getPrescriptionPrintLayout(this.selectedPrescriptionForPrint);
+                    this.printDensity = printLayout.density;
+                    this.printPrescriptionSplitPage = printLayout.split;
                     this.showPrescriptionPrintModal = true;
                 },
                 printPrescriptionA5(rx, patientObj) {
@@ -2299,6 +2321,29 @@
             .patients-table-scroll td:last-child button { width: 100%; justify-content: center; }
         }
 
+        /* Soli Medical print system: readable A5 output, compact density classes, and a distinct cool-blue sidebar. */
+        .print-rx-header { position: relative; min-height: 24mm; }
+        .print-doctor-line { line-height: 1.05; }
+        .print-doctor-name { font-family: 'Amiri', 'Traditional Arabic', serif; }
+        .print-text-wrap { overflow-wrap: anywhere; word-break: break-word; }
+        .print-page { width: 100%; box-sizing: border-box; }
+        .print-medicines-page { padding-top: 4mm; }
+        .print-density-compact .print-rx-header { min-height: 19mm; }
+        .print-density-compact .print-doctor-name { font-size: 24px !important; }
+        .print-density-compact .print-doctor-specialty { font-size: 10px !important; }
+        .print-density-compact .print-section { padding: 2.2mm !important; margin-top: 2mm !important; font-size: 10px !important; }
+        .print-density-compact .print-section p { font-size: 11px !important; line-height: 1.35 !important; }
+        .print-density-compact .print-medicines-block { gap: 2mm !important; }
+        .print-density-compact .print-medicines-block ol { font-size: 11px !important; line-height: 1.35 !important; }
+        .print-density-compact .print-medicines-block li { padding-bottom: 1mm !important; }
+        .print-density-ultra .print-rx-header { min-height: 17mm; }
+        .print-density-ultra .print-doctor-name { font-size: 21px !important; }
+        .print-density-ultra .print-doctor-specialty { font-size: 9px !important; }
+        .print-density-ultra .print-section { padding: 1.6mm !important; margin-top: 1.5mm !important; font-size: 9px !important; }
+        .print-density-ultra .print-section p { font-size: 9.5px !important; line-height: 1.25 !important; }
+        .print-density-ultra .print-medicines-block ol { font-size: 10px !important; line-height: 1.25 !important; }
+        .print-density-ultra .print-medicines-block li { padding-bottom: .7mm !important; }
+
         /* Dedicated Print Styles for Rx Prescription */
         @media print {
             @page {
@@ -2322,21 +2367,39 @@
                 top: 0;
                 width: 148mm !important;
                 height: auto !important;
-                min-height: 210mm !important;
+                min-height: 0 !important;
                 max-height: none !important;
                 box-sizing: border-box;
                 background: white !important;
                 color: black !important;
-                padding: 8mm !important;
+                padding: 7mm !important;
                 margin: 0 !important;
                 border: 0 !important;
                 border-radius: 0 !important;
                 box-shadow: none !important;
                 border: none !important;
-                page-break-after: avoid;
-                page-break-inside: avoid;
+                page-break-after: auto;
+                page-break-inside: auto;
                 overflow: visible !important;
             }
+            #printablePrescriptionArea .print-page {
+                min-height: 0 !important;
+                height: auto !important;
+                page-break-inside: auto;
+                break-inside: auto;
+            }
+            #printablePrescriptionArea.print-split-page .print-primary-page,
+            #printablePrescriptionArea.print-split-page .print-medicines-page {
+                min-height: 196mm !important;
+                page-break-after: always;
+                break-after: page;
+            }
+            #printablePrescriptionArea.print-split-page .print-medicines-page:last-child {
+                page-break-after: auto;
+                break-after: auto;
+            }
+            #printablePrescriptionArea .print-rx-header img { max-width: 22mm !important; max-height: 22mm !important; }
+            #printablePrescriptionArea .print-text-wrap { overflow-wrap: anywhere !important; word-break: break-word !important; }
             .print-clinic-footer {
                 display: block !important;
                 visibility: visible !important;
@@ -2396,8 +2459,8 @@
                 <div x-show="mobileMenuOpen" @click="mobileMenuOpen = false" x-cloak class="md:hidden fixed inset-0 z-20 bg-slate-900/60 backdrop-blur-sm"></div>
 
                 <!-- SIDEBAR DRAWER -->
-                <aside :class="mobileMenuOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'" class="fixed md:static inset-y-0 right-0 w-64 bg-slate-900 dark:bg-slate-950 text-slate-300 flex flex-col flex-shrink-0 z-30 shadow-2xl md:shadow-xl transition-transform duration-300 border-l border-slate-800">
-                    <div class="p-5 flex items-center justify-between border-b border-slate-800">
+                <aside :class="mobileMenuOpen ? 'translate-x-0' : 'translate-x-full md:translate-x-0'" class="fixed md:static inset-y-0 right-0 w-64 bg-[#172b42] dark:bg-[#1b3047] text-slate-200 flex flex-col flex-shrink-0 z-30 shadow-2xl md:shadow-xl transition-transform duration-300 border-l border-[#294765]">
+                    <div class="p-5 flex items-center justify-between border-b border-[#294765]">
                         <div class="flex items-center space-x-3 space-x-reverse">
                             <div class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center text-white shadow-lg shadow-blue-500/30">
                                 <i data-lucide="activity" class="w-6 h-6"></i>
@@ -2413,58 +2476,58 @@
                     </div>
 
                     <!-- Dark Mode Toggle -->
-                    <div class="px-4 py-3 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
+                    <div class="px-4 py-3 border-b border-[#294765] flex items-center justify-between bg-[#102238]/70">
                         <span class="text-xs font-semibold text-slate-400">الوضع الليلي</span>
-                        <button @click="darkMode = !darkMode" class="p-1.5 rounded-lg bg-slate-800 text-amber-400 hover:bg-slate-700">
+                        <button @click="darkMode = !darkMode" class="p-1.5 rounded-lg bg-[#294765] text-amber-300 hover:bg-[#355a7d]">
                             <i :data-lucide="darkMode ? 'sun' : 'moon'" class="w-4 h-4"></i>
                         </button>
                     </div>
 
                     <!-- Navigation -->
                     <nav class="flex-1 p-4 space-y-1.5 overflow-y-auto">
-                        <a x-show="currentUser?.permissions?.dashboard" @click="navigateTo('dashboard')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'dashboard'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.dashboard" @click="navigateTo('dashboard')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'dashboard'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="layout-dashboard" class="w-5 h-5"></i>
                             <span>لوحة التحكم الرئيسية</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'patientForm' && !editingPatient}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'patientForm' && !editingPatient}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="user-plus" class="w-5 h-5"></i>
                             <span>إضافة زيارة / كشف</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" :class="{'bg-amber-500 text-white font-semibold': currentView === 'waitingQueue'}" class="flex items-center justify-between px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" :class="{'bg-amber-500 text-white font-semibold': currentView === 'waitingQueue'}" class="flex items-center justify-between px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <span class="flex items-center space-x-3 space-x-reverse">
                                 <i data-lucide="clock-3" class="w-5 h-5"></i>
                                 <span>مرضى في الانتظار</span>
                             </span>
                             <span x-show="waitingQueue.length > 0" x-text="waitingQueue.length" class="bg-amber-100 text-amber-700 text-[10px] font-bold min-w-5 h-5 px-1 rounded-full flex items-center justify-center"></span>
                         </a>
-                        <a x-show="currentUser?.permissions?.followUps" @click="navigateTo('followUps')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'followUps'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer justify-between space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.followUps" @click="navigateTo('followUps')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'followUps'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer justify-between space-x-3 space-x-reverse hover:bg-[#294765]">
                             <span class="flex items-center space-x-3 space-x-reverse">
                                 <i data-lucide="bell" class="w-5 h-5"></i>
                                 <span>المتابعة القادمة</span>
                             </span>
                             <span x-show="urgentFollowUps.length > 0" x-text="urgentFollowUps.length" class="bg-amber-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center"></span>
                         </a>
-                        <a x-show="currentUser?.permissions?.patients" @click="navigateTo('patientsList')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'patientsList' || currentView === 'medicalRecord'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.patients" @click="navigateTo('patientsList')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'patientsList' || currentView === 'medicalRecord'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="users" class="w-5 h-5"></i>
                             <span>إدارة المرضى والملفات</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.invoices" @click="navigateTo('invoices')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'invoices'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.invoices" @click="navigateTo('invoices')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'invoices'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="receipt" class="w-5 h-5"></i>
                             <span>الفواتير والمالية</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.expenses" @click="navigateTo('expenses')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'expenses'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.expenses" @click="navigateTo('expenses')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'expenses'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="trending-down" class="w-5 h-5"></i>
                             <span>المنصرف</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.reports" @click="navigateTo('reports')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'reports'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.reports" @click="navigateTo('reports')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'reports'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="bar-chart-3" class="w-5 h-5"></i>
                             <span>التقارير الشاملة</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.pharmacy" @click="navigateTo('pharmacy')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'pharmacy'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.pharmacy" @click="navigateTo('pharmacy')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'pharmacy'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="file-text" class="w-5 h-5"></i>
                             <span>الوصفات والروشتات الطبية</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.settings" @click="navigateTo('settings')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'settings'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.settings" @click="navigateTo('settings')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'settings'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="settings" class="w-5 h-5"></i>
                             <span>إعدادات القوائم والأدلة</span>
                         </a>
@@ -4129,99 +4192,96 @@
                     </div>
                 </div>
 
-                <div id="printablePrescriptionArea" class="bg-white flex flex-col" style="min-height: 210mm;">
-                    <!-- Branded prescription header with optional clinic logo -->
-                    <div class="flex items-center justify-center gap-4 border-b-2 border-blue-600 pb-4">
-                        <img x-show="clinicLogoDataUrl" :src="clinicLogoDataUrl" alt="شعار العيادة" class="w-20 h-20 object-contain rounded-xl border border-slate-200 p-1 bg-white flex-shrink-0">
-                        <div class="text-center space-y-1">
-                            <h2 class="text-3xl font-bold text-blue-700 tracking-wide" style="font-family: 'Traditional Arabic', 'Segoe UI', serif;" x-text="doctorInfo.fullName"></h2>
-                            <p class="text-sm font-semibold text-slate-600" x-text="doctorInfo.specialty"></p>
-                            <p class="text-[11px] text-slate-500" x-text="doctorInfo.phone || ''"></p>
+                <div id="printablePrescriptionArea" class="bg-white flex flex-col" :class="{ 'print-split-page': printPrescriptionSplitPage, 'print-density-compact': printDensity === 'compact', 'print-density-ultra': printDensity === 'ultra' }">
+                    <div class="print-page print-primary-page">
+                        <!-- Branded prescription header: logo at far left, doctor identity in one Arabic row. -->
+                        <div class="print-rx-header flex items-center justify-between gap-3 border-b-2 border-blue-600 pb-3" style="direction: ltr;">
+                            <img x-show="clinicLogoDataUrl" :src="clinicLogoDataUrl" alt="شعار العيادة" class="w-20 h-20 object-contain rounded-xl border border-slate-200 p-1 bg-white flex-shrink-0">
+                            <div class="min-w-0 flex-1 text-right" style="direction: rtl;">
+                                <div class="print-doctor-line flex items-baseline justify-end flex-wrap gap-x-2 gap-y-0.5">
+                                    <h2 class="print-doctor-name text-3xl font-bold text-blue-700 tracking-wide" x-text="doctorInfo.fullName"></h2>
+                                    <p class="print-doctor-specialty text-sm font-semibold text-slate-600 print-text-wrap" x-text="doctorInfo.specialty"></p>
+                                </div>
+                                <p class="text-[11px] text-slate-500 mt-1" x-text="doctorInfo.phone || ''"></p>
+                            </div>
                         </div>
+
+                        <div class="print-section grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl text-xs border font-medium mt-3">
+                            <p class="print-text-wrap"><span class="font-bold text-slate-500">اسم المريض:</span> <span x-text="selectedPrescriptionForPrint?.patientName"></span></p>
+                            <p class="print-text-wrap"><span class="font-bold text-slate-500">التاريخ:</span> <span x-text="selectedPrescriptionForPrint?.date"></span></p>
+                            <p class="print-text-wrap"><span class="font-bold text-slate-500">السن:</span> <span x-text="selectedPrescriptionForPrint?.patientAge || '-'" ></span></p>
+                        </div>
+
+                        <template x-if="selectedPrescriptionForPrint?.symptomText || selectedPrescriptionForPrint?.symptom">
+                            <div class="print-section bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 space-y-1 mt-3">
+                                <span class="font-bold block text-slate-600">الأعراض:</span>
+                                <p class="print-text-wrap text-sm font-bold" x-text="selectedPrescriptionForPrint.symptomText || selectedPrescriptionForPrint.symptom"></p>
+                            </div>
+                        </template>
+
+                        <template x-if="selectedPrescriptionForPrint?.vitals && selectedPrescriptionForPrint.vitals.length > 0">
+                            <div class="print-section bg-blue-50 p-3 rounded-xl border border-blue-100 text-xs font-semibold text-blue-900 space-y-1 mt-3">
+                                <span class="font-bold block text-blue-800">العلامات الحيوية:</span>
+                                <p class="print-text-wrap text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.vitals)"></p>
+                            </div>
+                        </template>
+
+                        <div class="print-section bg-blue-50 p-3 rounded-xl border border-blue-100 text-xs font-semibold text-blue-900 space-y-1 mt-3">
+                            <span class="font-bold block text-blue-800">التشخيص الطبي:</span>
+                            <p class="print-text-wrap text-sm font-bold" x-text="selectedPrescriptionForPrint?.diagnosisText || selectedPrescriptionForPrint?.diagnosis || 'فحص واستشارة طبية'"></p>
+                        </div>
+
+                        <template x-if="selectedPrescriptionForPrint?.labTests && selectedPrescriptionForPrint.labTests.length > 0">
+                            <div class="print-section bg-teal-50 p-3 rounded-xl border border-teal-100 text-xs font-semibold text-teal-900 space-y-1 mt-3">
+                                <span class="font-bold block text-teal-800">نتيجة المعامل المطلوبة:</span>
+                                <p class="print-text-wrap text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.labTests)"></p>
+                            </div>
+                        </template>
+
+                        <template x-if="selectedPrescriptionForPrint?.radiology && selectedPrescriptionForPrint.radiology.length > 0">
+                            <div class="print-section bg-purple-50 p-3 rounded-xl border border-purple-100 text-xs font-semibold text-purple-900 space-y-1 mt-3">
+                                <span class="font-bold block text-purple-800">الأشعة المطلوبة:</span>
+                                <p class="print-text-wrap text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.radiology)"></p>
+                            </div>
+                        </template>
                     </div>
 
-                    <div class="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl text-xs border font-medium mt-4">
-                        <p><span class="font-bold text-slate-500">اسم المريض:</span> <span x-text="selectedPrescriptionForPrint?.patientName"></span></p>
-                        <p><span class="font-bold text-slate-500">التاريخ:</span> <span x-text="selectedPrescriptionForPrint?.date"></span></p>
-                        <p><span class="font-bold text-slate-500">السن:</span> <span x-text="selectedPrescriptionForPrint?.patientAge || '-'"></span></p>
-                    </div>
-
-                    <!-- Symptoms — only shown if present -->
-                    <template x-if="selectedPrescriptionForPrint?.symptomText || selectedPrescriptionForPrint?.symptom">
-                        <div class="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 space-y-1 mt-3">
-                            <span class="font-bold block text-slate-600">الأعراض:</span>
-                            <p class="text-sm font-bold" x-text="selectedPrescriptionForPrint.symptomText || selectedPrescriptionForPrint.symptom"></p>
-                        </div>
-                    </template>
-
-                    <!-- Vital Signs — only shown if present -->
-                    <template x-if="selectedPrescriptionForPrint?.vitals && selectedPrescriptionForPrint.vitals.length > 0">
-                        <div class="bg-blue-50 p-3 rounded-xl border border-blue-100 text-xs font-semibold text-blue-900 space-y-1 mt-3">
-                            <span class="font-bold block text-blue-800">العلامات الحيوية:</span>
-                            <p class="text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.vitals)"></p>
-                        </div>
-                    </template>
-
-                    <!-- Diagnosis Rendered BEFORE Medicines in Prescription -->
-                    <div class="bg-blue-50 p-3 rounded-xl border border-blue-100 text-xs font-semibold text-blue-900 space-y-1 mt-3">
-                        <span class="font-bold block text-blue-800">التشخيص الطبي:</span>
-                        <p class="text-sm font-bold" x-text="selectedPrescriptionForPrint?.diagnosisText || selectedPrescriptionForPrint?.diagnosis || 'فحص واستشارة طبية'"></p>
-                    </div>
-
-                    <!-- Lab Test Results — only shown if present -->
-                    <template x-if="selectedPrescriptionForPrint?.labTests && selectedPrescriptionForPrint.labTests.length > 0">
-                        <div class="bg-teal-50 p-3 rounded-xl border border-teal-100 text-xs font-semibold text-teal-900 space-y-1 mt-3">
-                            <span class="font-bold block text-teal-800">نتيجة المعامل المطلوبة:</span>
-                            <p class="text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.labTests)"></p>
-                        </div>
-                    </template>
-
-                    <!-- Radiology — only shown if present -->
-                    <template x-if="selectedPrescriptionForPrint?.radiology && selectedPrescriptionForPrint.radiology.length > 0">
-                        <div class="bg-purple-50 p-3 rounded-xl border border-purple-100 text-xs font-semibold text-purple-900 space-y-1 mt-3">
-                            <span class="font-bold block text-purple-800">الأشعة المطلوبة:</span>
-                            <p class="text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.radiology)"></p>
-                        </div>
-                    </template>
-
-                    <div class="space-y-4 py-2 flex-1">
+                    <div class="print-page print-medicines-page print-medicines-block space-y-4 py-2">
                         <template x-if="(selectedPrescriptionForPrint?.medicinesWithDosage || []).length > 0">
                             <div class="space-y-4">
                                 <span class="text-3xl font-bold text-blue-600 font-serif block">Rx</span>
                                 <ol class="list-decimal list-inside space-y-2 pr-4 font-mono text-sm">
-                                    <template x-for="m in (selectedPrescriptionForPrint?.medicinesWithDosage || [])">
-                                        <li class="font-bold text-slate-800 border-b border-dashed pb-1 flex justify-between">
-                                            <span x-text="m.name"></span>
-                                            <span class="text-blue-700 font-normal text-xs" x-text="'(' + m.timing + ' ' + (m.extraDosageNotes || '') + ')'"></span>
+                                    <template x-for="m in (selectedPrescriptionForPrint?.medicinesWithDosage || [])" :key="m.name + m.timing">
+                                        <li class="print-text-wrap font-bold text-slate-800 border-b border-dashed pb-1 flex justify-between gap-2">
+                                            <span class="print-text-wrap" x-text="m.name"></span>
+                                            <span class="print-text-wrap text-blue-700 font-normal text-xs text-left" x-text="'(' + m.timing + ' ' + (m.extraDosageNotes || '') + ')'" ></span>
                                         </li>
                                     </template>
                                 </ol>
                             </div>
                         </template>
-                    </div>
 
-                    <!-- Footer always anchored to the bottom, even with little content above -->
-                    <div class="border-t-2 border-slate-300 pt-4 text-xs space-y-3 text-slate-600 mt-auto">
-                        <template x-if="selectedPrescriptionForPrint?.nextFollowUpDate">
-                            <div class="bg-amber-50 p-2.5 rounded-lg border border-amber-200 text-amber-900 font-bold text-xs flex items-center space-x-1 space-x-reverse">
-                                <span>📅 موعد المتابعة القادمة:</span>
-                                <span x-text="selectedPrescriptionForPrint.nextFollowUpDate"></span>
+                        <div class="border-t-2 border-slate-300 pt-4 text-xs space-y-3 text-slate-600 mt-auto">
+                            <template x-if="selectedPrescriptionForPrint?.nextFollowUpDate">
+                                <div class="bg-amber-50 p-2.5 rounded-lg border border-amber-200 text-amber-900 font-bold text-xs flex items-center space-x-1 space-x-reverse">
+                                    <span>موعد المتابعة القادمة:</span>
+                                    <span x-text="selectedPrescriptionForPrint.nextFollowUpDate"></span>
+                                </div>
+                            </template>
+                            <div x-show="clinics.length > 0" class="print-clinic-footer border-t border-slate-200 pt-3 space-y-2">
+                                <p class="text-center font-bold text-slate-700 text-[11px]">فروع العيادة ومواعيد العمل</p>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] leading-5">
+                                    <template x-for="clinic in clinics" :key="clinic.id">
+                                        <div class="text-center border border-slate-200 rounded-lg px-2 py-1.5">
+                                            <p class="font-bold text-slate-700" x-text="clinic.name || 'فرع العيادة'"></p>
+                                            <p x-text="'العمل: ' + (clinic.hours || 'يُرجى مراجعة العيادة')"></p>
+                                            <p x-show="clinic.phone" x-text="'هاتف: ' + clinic.phone"></p>
+                                        </div>
+                                    </template>
+                                </div>
                             </div>
-                        </template>
-                        <div x-show="clinics.length > 0" class="print-clinic-footer border-t border-slate-200 pt-3 space-y-2">
-                            <p class="text-center font-bold text-slate-700 text-[11px]">فروع العيادة ومواعيد العمل</p>
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] leading-5">
-                                <template x-for="clinic in clinics" :key="clinic.id">
-                                    <div class="text-center border border-slate-200 rounded-lg px-2 py-1.5">
-                                        <p class="font-bold text-slate-700" x-text="clinic.name || 'فرع العيادة'"></p>
-                                        <p x-text="'العمل: ' + (clinic.hours || 'يُرجى مراجعة العيادة')"></p>
-                                        <p x-show="clinic.phone" x-text="'هاتف: ' + clinic.phone"></p>
-                                    </div>
-                                </template>
-                            </div>
+                            <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
                         </div>
-                        <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
-
                     </div>
                 </div>
             </div>
