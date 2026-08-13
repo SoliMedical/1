@@ -101,6 +101,8 @@
                 
                 // Full Page View Navigation Control
                 currentView: 'dashboard',
+                openPrescriptionPatientId: null,
+                openPrescriptionPatientId: null,
 
                 // Modals Controls
                 showInvoiceModal: false,
@@ -167,7 +169,6 @@
 
                 // Multi-user Accounts with Admin-defined Permissions
                 currentUser: null,
-                waitingQueueEnabled: true,
                 permissionModules: [
                     { key: 'dashboard', label: 'لوحة التحكم' },
                     { key: 'newVisit', label: 'إضافة زيارة / كشف' },
@@ -394,7 +395,7 @@
                 ],
 
                 invoices: [
-                    { id: 'INV-1001', patientName: 'دينا رمضان', serviceName: 'كشف طبي (كشف)', amount: 300, tax: 45, total: 345, date: '2026-08-10', status: 'مدفوعة' }
+                    { id: 'INV-1001', patientName: 'دينا رمضان', serviceName: 'كشف طبي (كشف)', amount: 300, discount: 0, tax: 0, total: 300, date: '2026-08-10', status: 'مدفوعة' }
                 ],
 
                 // Clinic Expenses ("المنصرف")
@@ -426,6 +427,11 @@
                 init() {
                     this.loadPersistedState();
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
+                    this.invoices = (this.invoices || []).map(inv => {
+                        const amount = Number(inv.amount || 0);
+                        const discount = Number(inv.discount || 0);
+                        return { ...inv, tax: 0, total: Math.max(0, amount - discount) };
+                    });
                     this.users.forEach(u => {
                         if (!u.permissions) u.permissions = {};
                         if (u.permissions.waitingQueue === undefined) {
@@ -562,11 +568,36 @@
                     return true;
                 },
 
+                invoiceNetTotal(invoice) {
+                    const amount = Number(invoice?.amount ?? invoice?.total ?? 0);
+                    const discount = Number(invoice?.discount ?? 0);
+                    return Math.max(0, amount - discount);
+                },
+
+                get prescriptionGroups() {
+                    const groups = {};
+                    (this.prescriptions || []).forEach(rx => {
+                        const key = String(rx.patientId || rx.patientName || rx.id);
+                        if (!groups[key]) {
+                            groups[key] = {
+                                key,
+                                patientId: rx.patientId || null,
+                                patientName: rx.patientName || 'مريض غير محدد',
+                                patientPhone: rx.patientPhone || '',
+                                records: []
+                            };
+                        }
+                        groups[key].records.push(rx);
+                        if (!groups[key].patientPhone && rx.patientPhone) groups[key].patientPhone = rx.patientPhone;
+                    });
+                    return Object.values(groups);
+                },
+
                 get filteredInvoicesByPeriod() {
                     return this.invoices.filter(inv => this.isDateInPeriod(inv.date, this.incomePeriodFilter));
                 },
                 get totalIncomeForPeriod() {
-                    return this.filteredInvoicesByPeriod.reduce((sum, inv) => sum + Number(inv.total || 0), 0);
+                    return this.filteredInvoicesByPeriod.reduce((sum, inv) => sum + this.invoiceNetTotal(inv), 0);
                 },
                 get filteredExpensesByPeriod() {
                     return this.expenses.filter(e => this.isDateInPeriod(e.date, this.expensePeriodFilter));
@@ -608,7 +639,7 @@
                     return this.invoices.filter(inv => this.isDateInReportPeriod(inv.date));
                 },
                 get reportIncome() {
-                    return this.reportInvoices.reduce((sum, inv) => sum + Number(inv.total || 0), 0);
+                    return this.reportInvoices.reduce((sum, inv) => sum + this.invoiceNetTotal(inv), 0);
                 },
                 get reportExpenses() {
                     return this.expenses.filter(e => this.isDateInReportPeriod(e.date));
@@ -687,7 +718,7 @@
                 // is lost on refresh. When the app is later connected to Supabase (or another
                 // backend), these same read/write points are where the cloud sync calls should go.
                 storageKey: 'soliMedicalData_v1',
-                persistentKeys: ['patients', 'waitingQueue', 'waitingQueueEnabled', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections'],
+                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections'],
 
                 loadPersistedState() {
                     try {
@@ -943,11 +974,6 @@
 
                 navigateTo(view) {
                     const requiredPermission = this.viewPermissionMap[view];
-                    if (view === 'waitingQueue' && !this.waitingQueueEnabled) {
-                        this.landOnAllowedPage(this.currentUser);
-                        this.mobileMenuOpen = false;
-                        return;
-                    }
                     if (this.currentUser && requiredPermission && !this.currentUser.permissions[requiredPermission]) {
                         // Not allowed here — send them to the first section they DO have access to.
                         this.landOnAllowedPage(this.currentUser);
@@ -957,13 +983,6 @@
                     this.currentView = view;
                     this.mobileMenuOpen = false;
                     window.scrollTo({ top: 0, behavior: 'smooth' });
-                },
-
-                setWaitingQueueEnabled(value) {
-                    this.waitingQueueEnabled = !!value;
-                    if (!this.waitingQueueEnabled && this.currentView === 'waitingQueue') {
-                        this.landOnAllowedPage(this.currentUser);
-                    }
                 },
 
                 getTabTitle() {
@@ -1076,7 +1095,7 @@
                 get totalRevenue() {
                     return this.invoices
                         .filter(i => i.status === 'مدفوعة')
-                        .reduce((sum, i) => sum + i.total, 0);
+                        .reduce((sum, i) => sum + this.invoiceNetTotal(i), 0);
                 },
 
                 // Settings Management
@@ -1328,9 +1347,7 @@
                 savePatient() {
                     if (!this.patientForm.fullName.trim()) return;
 
-                    const visitPrice = this.visitTypePrices[this.patientForm.visitType] || 300;
-                    const taxVal = visitPrice * 0.15;
-                    const totalVal = visitPrice + taxVal;
+                    const visitPrice = Number(this.visitTypePrices[this.patientForm.visitType] || 300);
 
                     if (this.editingPatient) {
                         // Pure info correction from the patients list "edit" action — no new visit/invoice.
@@ -1357,8 +1374,9 @@
                             patientName: p.fullName,
                             serviceName: `رسوم ${p.visitType} طبي`,
                             amount: visitPrice,
-                            tax: parseFloat(taxVal.toFixed(2)),
-                            total: parseFloat(totalVal.toFixed(2)),
+                            discount: 0,
+                            tax: 0,
+                            total: visitPrice,
                             date: new Date().toISOString().split('T')[0],
                             status: 'مدفوعة'
                         });
@@ -1386,24 +1404,16 @@
                             patientName: newP.fullName,
                             serviceName: `رسوم ${newP.visitType} طبي`,
                             amount: visitPrice,
-                            tax: parseFloat(taxVal.toFixed(2)),
-                            total: parseFloat(totalVal.toFixed(2)),
+                            discount: 0,
+                            tax: 0,
+                            total: visitPrice,
                             date: new Date().toISOString().split('T')[0],
                             status: 'مدفوعة'
                         });
                     }
                     this.matchedExistingPatient = null;
 
-                    if (this.currentUser?.permissions?.waitingQueue && this.waitingQueueEnabled) {
-                        this.navigateTo('waitingQueue');
-                    } else if (this.currentUser?.permissions?.patients) {
-                        this.navigateTo('patientsList');
-                    } else {
-                        // Employee only has "newVisit" access — keep them inside their own section
-                        // instead of sending them to a patients list page they can't open.
-                        alert('تم تسجيل الزيارة بنجاح ✅');
-                        this.openPatientFormPage();
-                    }
+                    alert('تم تسجيل الزيارة وإضافتها إلى قائمة مرضى في الانتظار ✅');
                     this.renderIcons();
                 },
 
@@ -1535,6 +1545,7 @@
                         // printed, or sent to the patient from the Prescriptions archive.
                         const rx = {
                             id: 'RX-' + Math.floor(100 + Math.random() * 900),
+                            patientId: this.selectedPatientForRecord.id,
                             patientName: this.selectedPatientForRecord.fullName,
                             patientPhone: this.selectedPatientForRecord.phone,
                             diagnosisText: diagnosisTextSummary,
@@ -1557,12 +1568,7 @@
                             selectedMedicinesWithDosage: [], nextFollowUpDate: '', generalNotes: ''
                         };
                         this.renderIcons();
-                        alert('تم حفظ الزيارة وتوليد الروشتة بنجاح، وتم نقل المريض إلى إدارة المرضى والملفات الطبية ✅');
-                        if (this.currentUser?.permissions?.patients) {
-                            this.navigateTo('patientsList');
-                        } else if (this.currentUser?.permissions?.waitingQueue) {
-                            this.navigateTo('waitingQueue');
-                        }
+                        alert('تم حفظ الزيارة وتوليد الروشتة بنجاح. ستظل داخل ملف المريض ويمكنك طباعة الروشتة الآن ✅');
                     } catch (err) {
                         console.error('addMedicalRecord failed:', err);
                         alert('حدث خطأ غير متوقع أثناء الحفظ: ' + err.message + '\n\nجرّب الضغط على Ctrl+Shift+R لتحديث الصفحة بالكامل، أو استخدم زر "إعادة ضبط البيانات المحلية" في الإعدادات إذا استمرت المشكلة.');
@@ -1656,17 +1662,18 @@
                 },
 
                 saveInvoice() {
-                    const subtotal = Math.max(0, this.invoiceForm.amount - this.invoiceForm.discount);
-                    const tax = subtotal * 0.15;
-                    const total = subtotal + tax;
+                    const amount = Number(this.invoiceForm.amount || 0);
+                    const discount = Number(this.invoiceForm.discount || 0);
+                    const total = Math.max(0, amount - discount);
 
                     this.invoices.unshift({
                         id: 'INV-' + Math.floor(1000 + Math.random() * 9000),
                         patientName: this.invoiceForm.patientName,
                         serviceName: this.invoiceForm.serviceName,
-                        amount: this.invoiceForm.amount,
-                        tax: parseFloat(tax.toFixed(2)),
-                        total: parseFloat(total.toFixed(2)),
+                        amount,
+                        discount,
+                        tax: 0,
+                        total,
                         date: new Date().toISOString().split('T')[0],
                         status: this.invoiceForm.status
                     });
@@ -1755,8 +1762,15 @@
         /* Soli Medical responsive patient workflow: keep dense clinical tables usable on narrow screens. */
         .patients-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         @media (max-width: 640px) {
-            .patients-table-scroll table { min-width: 720px; }
-            .patients-table-scroll th, .patients-table-scroll td { white-space: normal; }
+            .patients-table-scroll { overflow: visible; background: transparent !important; border: 0 !important; box-shadow: none !important; }
+            .patients-table-scroll table, .patients-table-scroll tbody { display: block; width: 100%; min-width: 0; }
+            .patients-table-scroll thead { display: none; }
+            .patients-table-scroll tr { display: block; margin-bottom: .75rem; padding: .5rem .75rem; background: #fff; border: 1px solid #e2e8f0; border-radius: 1rem; box-shadow: 0 4px 14px rgba(15, 23, 42, .06); }
+            .dark .patients-table-scroll tr { background: #0f172a; border-color: #1e293b; }
+            .patients-table-scroll td { display: grid; grid-template-columns: 7.2rem minmax(0, 1fr); gap: .75rem; align-items: center; padding: .65rem .25rem; white-space: normal; border: 0; }
+            .patients-table-scroll td::before { content: attr(data-label); color: #64748b; font-size: .68rem; font-weight: 700; }
+            .patients-table-scroll td:first-child { font-size: .95rem; }
+            .patients-table-scroll td:last-child button { width: 100%; justify-content: center; }
         }
 
         /* Dedicated Print Styles for Rx Prescription */
@@ -1874,7 +1888,7 @@
                             <i data-lucide="user-plus" class="w-5 h-5"></i>
                             <span>إضافة زيارة / كشف</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.waitingQueue && waitingQueueEnabled" @click="navigateTo('waitingQueue')" :class="{'bg-amber-500 text-white font-semibold': currentView === 'waitingQueue'}" class="flex items-center justify-between px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" :class="{'bg-amber-500 text-white font-semibold': currentView === 'waitingQueue'}" class="flex items-center justify-between px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
                             <span class="flex items-center space-x-3 space-x-reverse">
                                 <i data-lucide="clock-3" class="w-5 h-5"></i>
                                 <span>مرضى في الانتظار</span>
@@ -1888,7 +1902,7 @@
                             </span>
                             <span x-show="urgentFollowUps.length > 0" x-text="urgentFollowUps.length" class="bg-amber-500 text-white text-[10px] font-bold w-5 h-5 rounded-full flex items-center justify-center"></span>
                         </a>
-                        <a x-show="currentUser?.permissions?.patients" @click="navigateTo('patientsList')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'patientsList' || currentView === 'patientForm' || currentView === 'medicalRecord'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
+                        <a x-show="currentUser?.permissions?.patients" @click="navigateTo('patientsList')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'patientsList' || currentView === 'medicalRecord'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
                             <i data-lucide="users" class="w-5 h-5"></i>
                             <span>إدارة المرضى والملفات</span>
                         </a>
@@ -1956,28 +1970,57 @@
                                 </button>
                             </div>
 
-                            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                                <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border dark:border-slate-800 shadow-sm">
-                                    <p class="text-xs text-slate-400 uppercase font-semibold">إجمالي المرضى</p>
-                                    <h3 class="text-3xl font-bold mt-2" x-text="patients.length"></h3>
-                                </div>
-                                <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border dark:border-slate-800 shadow-sm">
-                                    <p class="text-xs text-slate-400 uppercase font-semibold">الإيرادات اليومية</p>
-                                    <h3 class="text-3xl font-bold text-emerald-600 mt-2" x-text="totalRevenue + ' ج.م'"></h3>
-                                </div>
-                                <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border dark:border-slate-800 shadow-sm">
-                                    <p class="text-xs text-slate-400 uppercase font-semibold">المرضى في الانتظار</p>
-                                    <h3 class="text-3xl font-bold text-amber-600 mt-2" x-text="waitingQueue.length"></h3>
-                                </div>
-                                <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border dark:border-slate-800 shadow-sm">
-                                    <p class="text-xs text-slate-400 uppercase font-semibold">فروع العيادة</p>
-                                    <h3 class="text-3xl font-bold text-blue-600 mt-2" x-text="clinics.length"></h3>
-                                </div>
+                            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                                <button x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" class="dashboard-action-card text-right bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center mb-3"><i data-lucide="user-plus" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-blue-700 dark:text-blue-300 font-bold">إضافة زيارة / كشف</p>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تسجيل مريض أو زيارة جديدة</p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" class="dashboard-action-card text-right bg-amber-50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center mb-3"><i data-lucide="clock-3" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-amber-700 dark:text-amber-300 font-bold">مرضى في الانتظار</p>
+                                    <p class="text-2xl font-bold text-amber-700 dark:text-amber-300 mt-1" x-text="waitingQueue.length"></p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.patients" @click="navigateTo('patientsList')" class="dashboard-action-card text-right bg-white dark:bg-slate-900 border dark:border-slate-800 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center mb-3"><i data-lucide="users" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-slate-600 dark:text-slate-300 font-bold">المرضى والملفات الطبية</p>
+                                    <p class="text-2xl font-bold text-indigo-600 mt-1" x-text="patients.length"></p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.invoices" @click="navigateTo('invoices')" class="dashboard-action-card text-right bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center mb-3"><i data-lucide="receipt" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-emerald-700 dark:text-emerald-300 font-bold">الفواتير والتحصيل</p>
+                                    <p class="text-2xl font-bold text-emerald-600 mt-1" x-text="totalRevenue + ' ج.م'"></p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.followUps" @click="navigateTo('followUps')" class="dashboard-action-card text-right bg-violet-50 dark:bg-violet-950/30 border border-violet-100 dark:border-violet-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center mb-3"><i data-lucide="bell" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-violet-700 dark:text-violet-300 font-bold">المتابعة القادمة</p>
+                                    <p class="text-sm font-bold text-violet-600 mt-2" x-text="upcomingFollowUps.length + ' موعد'" ></p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.pharmacy" @click="navigateTo('pharmacy')" class="dashboard-action-card text-right bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-100 dark:border-cyan-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-cyan-600 text-white flex items-center justify-center mb-3"><i data-lucide="file-text" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-cyan-700 dark:text-cyan-300 font-bold">الوصفات والروشتات الطبية</p>
+                                    <p class="text-sm font-bold text-cyan-600 mt-2" x-text="prescriptions.length + ' وصفة'" ></p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.clinics" @click="navigateTo('clinics')" class="dashboard-action-card text-right bg-slate-50 dark:bg-slate-900 border dark:border-slate-800 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-slate-700 text-white flex items-center justify-center mb-3"><i data-lucide="building-2" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-slate-600 dark:text-slate-300 font-bold">فروع العيادة</p>
+                                    <p class="text-2xl font-bold text-slate-700 dark:text-slate-200 mt-1" x-text="clinics.length"></p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.reports" @click="navigateTo('reports')" class="dashboard-action-card text-right bg-orange-50 dark:bg-orange-950/30 border border-orange-100 dark:border-orange-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-orange-600 text-white flex items-center justify-center mb-3"><i data-lucide="bar-chart-3" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-orange-700 dark:text-orange-300 font-bold">التقارير الشاملة</p>
+                                    <p class="text-sm font-bold text-orange-600 mt-2">عرض التقارير المالية والطبية</p>
+                                </button>
+                                <button x-show="currentUser?.permissions?.settings" @click="navigateTo('settings')" class="dashboard-action-card text-right bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-slate-600 text-white flex items-center justify-center mb-3"><i data-lucide="settings" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-slate-700 dark:text-slate-200 font-bold">إعدادات القوائم والأدلة</p>
+                                    <p class="text-sm font-bold text-slate-500 mt-2">إدارة بيانات النظام والصلاحيات</p>
+                                </button>
                             </div>
                         </div>
 
                         <!-- WAITING QUEUE PAGE -->
-                        <div x-show="currentView === 'waitingQueue' && waitingQueueEnabled" class="max-w-5xl mx-auto space-y-6">
+                        <div x-show="currentView === 'waitingQueue'" class="max-w-5xl mx-auto space-y-6">
                             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                 <div>
                                     <h3 class="font-bold text-slate-800 dark:text-white text-xl">مرضى في الانتظار</h3>
@@ -2098,9 +2141,9 @@
                                     <tbody class="divide-y dark:divide-slate-800 text-sm">
                                         <template x-for="p in filteredPatients" :key="p.id">
                                             <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-all">
-                                                <td class="p-4 font-bold text-blue-600 dark:text-blue-400 cursor-pointer hover:underline" @click="openMedicalRecordPage(p)" x-text="p.fullName"></td>
-                                                <td class="p-4 font-mono text-xs" x-text="p.phone || '-'"></td>
-                                                <td class="p-4">
+                                                <td data-label="اسم المريض" class="p-4 font-bold text-blue-600 dark:text-blue-400 cursor-pointer hover:underline" @click="openMedicalRecordPage(p)" x-text="p.fullName"></td>
+                                                <td data-label="الهاتف" class="p-4 font-mono text-xs" x-text="p.phone || '-'" ></td>
+                                                <td data-label="نوع الزيارة" class="p-4">
                                                     <div class="flex items-center gap-1.5">
                                                         <span class="bg-blue-100 dark:bg-blue-900/40 text-blue-800 dark:text-blue-300 px-2.5 py-1 rounded text-xs font-bold" x-text="p.visitType || 'كشف'"></span>
                                                         <span class="bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 px-2 py-1 rounded text-[10px] font-bold whitespace-nowrap" :title="'عدد الزيارات المسجلة'" x-text="'🔁 ' + ((p.records ? p.records.length : 0) + 1) + ' زيارة'"></span>
@@ -2113,7 +2156,7 @@
                                                         </template>
                                                     </div>
                                                 </td>
-                                                <td class="p-4">
+                                                <td data-label="الأعراض" class="p-4">
                                                     <button @click="openMedicalRecordPage(p)" class="bg-blue-600 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
                                                         <i data-lucide="file-text" class="w-3.5 h-3.5"></i>
                                                         <span>فتح السجل الطبي الموسع</span>
@@ -2525,35 +2568,34 @@
                                                 <span class="text-blue-600 dark:text-blue-400 text-base" x-text="rec.diagnosis"></span>
                                                 <span class="text-slate-400 font-mono text-xs" x-text="rec.date"></span>
                                             </div>
-                                            <template x-if="rec.medicinesWithDosage && rec.medicinesWithDosage.length">
-                                                <div class="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl space-y-3 border dark:border-slate-800">
-                                                    <div class="flex justify-between items-center">
-                                                        <span class="font-bold text-slate-600 dark:text-slate-300">أدوية الروشتة والجرعات:</span>
-                                                        <div class="flex flex-wrap gap-1.5">
-                                                            <button @click="exportPrescriptionPDF(rec, selectedPatientForRecord)" class="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
-                                                                <i data-lucide="file-down" class="w-3.5 h-3.5"></i>
-                                                                <span>تصدير PDF</span>
-                                                            </button>
-                                                            <button @click="sendWhatsAppPrescription(rec, selectedPatientForRecord)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
-                                                                <i data-lucide="message-circle" class="w-3.5 h-3.5"></i>
-                                                                <span>واتساب</span>
-                                                            </button>
-                                                            <button @click="printPrescription(rec, selectedPatientForRecord)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
-                                                                <i data-lucide="printer" class="w-3.5 h-3.5"></i>
-                                                                <span>طباعة</span>
-                                                            </button>
-                                                        </div>
+                                            <div class="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl space-y-3 border dark:border-slate-800">
+                                                <div class="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
+                                                    <span class="font-bold text-slate-600 dark:text-slate-300">أدوية الروشتة والجرعات:</span>
+                                                    <div class="flex flex-wrap gap-1.5">
+                                                        <button @click="exportPrescriptionPDF(rec, selectedPatientForRecord)" class="bg-indigo-600 hover:bg-indigo-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
+                                                            <i data-lucide="file-down" class="w-3.5 h-3.5"></i>
+                                                            <span>تصدير PDF</span>
+                                                        </button>
+                                                        <button @click="sendWhatsAppPrescription(rec, selectedPatientForRecord)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
+                                                            <i data-lucide="message-circle" class="w-3.5 h-3.5"></i>
+                                                            <span>واتساب</span>
+                                                        </button>
+                                                        <button @click="printPrescription(rec, selectedPatientForRecord)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
+                                                            <i data-lucide="printer" class="w-3.5 h-3.5"></i>
+                                                            <span>طباعة</span>
+                                                        </button>
                                                     </div>
-                                                    <div class="space-y-1">
-                                                        <template x-for="m in rec.medicinesWithDosage" :key="m.name">
-                                                            <p class="font-mono text-xs" x-text="'• ' + m.name + ' (' + m.timing + ' ' + (m.extraDosageNotes || '') + ')'"></p>
-                                                        </template>
-                                                    </div>
-                                                    <template x-if="rec.nextFollowUpDate">
-                                                        <p class="text-amber-700 dark:text-amber-300 font-semibold pt-1" x-text="'📅 موعد المتابعة القادمة: ' + rec.nextFollowUpDate"></p>
+                                                </div>
+                                                <div x-show="rec.medicinesWithDosage && rec.medicinesWithDosage.length" class="space-y-1">
+                                                    <template x-for="m in (rec.medicinesWithDosage || [])" :key="m.name">
+                                                        <p class="font-mono text-xs" x-text="'• ' + m.name + ' (' + m.timing + ' ' + (m.extraDosageNotes || '') + ')'" ></p>
                                                     </template>
                                                 </div>
-                                            </template>
+                                                <p x-show="!rec.medicinesWithDosage || !rec.medicinesWithDosage.length" class="text-xs text-slate-400">لا توجد أدوية مسجلة في هذه الزيارة، ويمكنك طباعة الروشتة أو إضافة بياناتها.</p>
+                                                <template x-if="rec.nextFollowUpDate">
+                                                    <p class="text-amber-700 dark:text-amber-300 font-semibold pt-1" x-text="'📅 موعد المتابعة القادمة: ' + rec.nextFollowUpDate"></p>
+                                                </template>
+                                            </div>
                                             <p class="text-slate-600 dark:text-slate-300 text-sm" x-text="rec.notes"></p>
                                         </div>
                                     </template>
@@ -2605,9 +2647,9 @@
                                                     <td class="p-4 font-mono text-xs font-bold text-blue-600 dark:text-blue-400" x-text="inv.id"></td>
                                                     <td class="p-4 font-semibold text-slate-800 dark:text-slate-200" x-text="inv.patientName"></td>
                                                     <td class="p-4 text-slate-600 dark:text-slate-400" x-text="inv.serviceName"></td>
-                                                    <td class="p-4 font-bold text-slate-900 dark:text-white font-mono" x-text="inv.total + ' ج.م'"></td>
+                                                    <td class="p-4 font-bold text-slate-900 dark:text-white font-mono" x-text="invoiceNetTotal(inv) + ' ج.م'"></td>
                                                     <td class="p-4 text-slate-400 dark:text-slate-500 text-xs" x-text="inv.date"></td>
-                                                    <td class="p-4">
+                                                <td data-label="السجل الطبي" class="p-4">
                                                         <span :class="inv.status === 'مدفوعة' ? 'bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-300' : 'bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300'" class="px-2.5 py-0.5 rounded-full text-xs font-semibold" x-text="inv.status"></span>
                                                     </td>
                                                 </tr>
@@ -2723,7 +2765,7 @@
                                     <h4 class="font-bold text-sm text-slate-700 dark:text-slate-200">فواتير الوارد في هذه الفترة</h4>
                                     <div class="max-h-56 overflow-y-auto divide-y dark:divide-slate-800 text-xs">
                                         <template x-for="inv in reportInvoices" :key="inv.id">
-                                            <div class="py-2 flex justify-between"><span x-text="inv.patientName"></span><span class="font-mono font-bold text-emerald-600" x-text="inv.total + ' ج.م'"></span></div>
+                                            <div class="py-2 flex justify-between"><span x-text="inv.patientName"></span><span class="font-mono font-bold text-emerald-600" x-text="invoiceNetTotal(inv) + ' ج.م'"></span></div>
                                         </template>
                                         <p x-show="reportInvoices.length === 0" class="text-slate-400 text-center py-4">لا يوجد</p>
                                     </div>
@@ -2759,60 +2801,50 @@
                         </div>
 
                         <!-- 7. PHARMACY / PRESCRIPTIONS ARCHIVE VIEW -->
-                        <div x-show="currentView === 'pharmacy'" class="space-y-6">
-                            <h3 class="font-bold text-slate-800 dark:text-white text-lg">أرشيف الوصفات والروشتات الطبية</h3>
+                        <div x-show="currentView === 'pharmacy'" class="space-y-5 w-full">
+                            <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                                <div>
+                                    <h3 class="font-bold text-slate-800 dark:text-white text-lg">أرشيف الوصفات والروشتات الطبية</h3>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">كل مريض يظهر في ملف واحد، ويمكن فتحه لرؤية جميع زياراته ووصفاته.</p>
+                                </div>
+                                <span class="text-xs font-bold text-blue-700 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-300 px-3 py-2 rounded-xl" x-text="prescriptionGroups.length + ' ملف'" ></span>
+                            </div>
 
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <template x-for="rx in prescriptions" :key="rx.id">
-                                    <div class="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
-                                        <div class="flex items-center justify-between border-b dark:border-slate-800 pb-3">
-                                            <span class="font-mono text-xs font-bold text-blue-600 dark:text-blue-400" x-text="rx.id"></span>
-                                            <span class="text-xs text-slate-400 font-mono" x-text="rx.date"></span>
-                                        </div>
-
-                                        <div class="space-y-1">
-                                            <h4 class="font-bold text-slate-800 dark:text-white" x-text="'المريض: ' + rx.patientName"></h4>
-                                            <p class="text-xs text-slate-500 dark:text-slate-400" x-text="'الطبيب المعالج: ' + doctorInfo.fullName"></p>
-                                        </div>
-
-                                        <div class="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-xs text-slate-700 dark:text-slate-300 space-y-1">
-                                            <span class="font-bold text-slate-500 dark:text-slate-400 block mb-1">الأدوية الموصوفة والجرعات:</span>
-                                            <template x-for="m in rx.medicinesWithDosage" :key="m.name">
-                                                <p class="font-mono text-blue-600 dark:text-blue-400" x-text="'• ' + m.name + ' (' + m.timing + ' ' + (m.extraDosageNotes || '') + ')'"></p>
+                            <div class="w-full overflow-hidden bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-sm">
+                                <div class="hidden md:grid grid-cols-[1.5fr_1fr_1fr_auto] gap-4 px-5 py-3 bg-slate-50 dark:bg-slate-800/70 text-xs font-bold text-slate-500 dark:text-slate-300">
+                                    <span>اسم المريض</span><span>آخر زيارة</span><span>عدد الزيارات</span><span>الإجراء</span>
+                                </div>
+                                <template x-for="group in prescriptionGroups" :key="group.key">
+                                    <div class="border-b last:border-b-0 border-slate-100 dark:border-slate-800">
+                                        <button @click="openPrescriptionPatientId = openPrescriptionPatientId === group.key ? null : group.key" class="w-full text-right grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-2 md:gap-4 items-center px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
+                                            <span class="font-bold text-slate-800 dark:text-white flex items-center gap-2"><i data-lucide="chevron-down" class="w-4 h-4 transition-transform" :class="{'rotate-180': openPrescriptionPatientId === group.key}"></i><span x-text="group.patientName"></span></span>
+                                            <span class="text-xs text-slate-500 dark:text-slate-400" x-text="group.records[0]?.date || '-'" ></span>
+                                            <span class="text-xs font-bold text-blue-600 dark:text-blue-400" x-text="group.records.length + ' زيارة'" ></span>
+                                            <span class="text-xs font-bold text-blue-700 dark:text-blue-300" x-text="openPrescriptionPatientId === group.key ? 'إخفاء الملف' : 'فتح الملف'" ></span>
+                                        </button>
+                                        <div x-show="openPrescriptionPatientId === group.key" x-transition class="px-4 pb-4 space-y-2">
+                                            <template x-for="rx in group.records" :key="rx.id">
+                                                <div class="grid grid-cols-1 lg:grid-cols-[1fr_1.4fr_auto] gap-3 items-center p-3 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-100 dark:border-slate-800">
+                                                    <div>
+                                                        <p class="font-bold text-sm text-slate-700 dark:text-slate-200" x-text="rx.diagnosisText || 'زيارة طبية'" ></p>
+                                                        <p class="text-[11px] text-slate-400 mt-1" x-text="rx.date + ' — ' + rx.id" ></p>
+                                                    </div>
+                                                    <p class="text-xs text-slate-600 dark:text-slate-300 truncate" x-text="(rx.medicinesWithDosage || []).map(m => m.name).join('، ') || 'لا توجد أدوية مسجلة'" ></p>
+                                                    <div class="flex flex-wrap gap-1.5 lg:justify-end">
+                                                        <button @click.stop="sendWhatsAppPrescription(rx, null)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="message-circle" class="w-3.5 h-3.5"></i><span>واتساب</span></button>
+                                                        <button @click.stop="printPrescription(rx, null)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="printer" class="w-3.5 h-3.5"></i><span>طباعة</span></button>
+                                                    </div>
+                                                </div>
                                             </template>
-                                        </div>
-
-                                        <div class="pt-2 flex justify-end space-x-2 space-x-reverse">
-                                            <!-- Direct WhatsApp Share Button -->
-                                            <button @click="sendWhatsAppPrescription(rx, null)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse shadow">
-                                                <i data-lucide="message-circle" class="w-4 h-4"></i>
-                                                <span>إرسال واتساب</span>
-                                            </button>
-                                            <!-- Print Button -->
-                                            <button @click="printPrescription(rx, null)" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
-                                                <i data-lucide="printer" class="w-4 h-4"></i>
-                                                <span>طباعة الروشتة</span>
-                                            </button>
                                         </div>
                                     </div>
                                 </template>
+                                <div x-show="prescriptionGroups.length === 0" class="p-10 text-center text-sm text-slate-400">لا توجد وصفات مسجلة حتى الآن.</div>
                             </div>
                         </div>
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings'" class="max-w-4xl space-y-6">
-                            <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border dark:border-slate-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                <div>
-                                    <h3 class="font-bold text-slate-800 dark:text-white">قسم مرضى في الانتظار</h3>
-                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تحكم في ظهور الصفحة لجميع المستخدمين، مع بقاء صلاحية كل مستخدم قابلة للتخصيص أدناه.</p>
-                                </div>
-                                <label class="inline-flex items-center gap-3 cursor-pointer self-start sm:self-auto">
-                                    <span class="text-sm font-semibold text-slate-600 dark:text-slate-300" x-text="waitingQueueEnabled ? 'ظاهر' : 'مخفي'"></span>
-                                    <input type="checkbox" class="sr-only peer" :checked="waitingQueueEnabled" @change="setWaitingQueueEnabled($event.target.checked)">
-                                    <span class="relative w-11 h-6 rounded-full bg-slate-300 peer-checked:bg-amber-500 transition-colors after:content-[''] after:absolute after:top-0.5 after:right-0.5 after:w-5 after:h-5 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:after:-translate-x-5"></span>
-                                </label>
-                            </div>
-                            
                             <!-- Doctor Info Settings -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
@@ -3235,7 +3267,7 @@
                         <input type="text" x-model="clinicForm.location" placeholder="المبنى - الدور - المنطقة" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
                     </div>
                     <div>
-                        <label class="block text-xs font-semibold mb-1">أوقات الدوام</label>
+                        <label class="block text-xs font-semibold mb-1">أوقات العمل</label>
                         <input type="text" x-model="clinicForm.hours" placeholder="مثال: 08:00 ص - 04:00 م" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
                     </div>
                     <div>
@@ -3349,6 +3381,7 @@
                     <div class="text-center border-b-2 border-blue-600 pb-4 space-y-1">
                         <h2 class="text-3xl font-bold text-blue-700 tracking-wide" style="font-family: 'Traditional Arabic', 'Segoe UI', serif;" x-text="doctorInfo.fullName"></h2>
                         <p class="text-sm font-semibold text-slate-600" x-text="doctorInfo.specialty"></p>
+                        <p class="text-[11px] text-slate-500" x-text="doctorInfo.phone || ''"></p>
                     </div>
 
                     <div class="grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl text-xs border font-medium mt-4">
@@ -3423,12 +3456,13 @@
 
                         <!-- Clinic Branches Footer -->
                         <div class="border-t pt-3 mt-1 space-y-1.5">
-                            <p class="text-center font-bold text-slate-500 text-[10px] tracking-wide">فروع العيادة</p>
+                            <p class="text-center font-bold text-slate-500 text-[10px] tracking-wide">فروع العيادة ومواعيد العمل</p>
                             <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
                                 <template x-for="c in clinics" :key="c.id">
-                                    <p class="text-[10px] text-slate-500 flex items-center justify-between border-b border-dashed pb-1">
-                                        <span x-text="c.name"></span>
-                                        <span class="font-mono font-semibold text-slate-600" x-text="c.phone"></span>
+                                    <p class="text-[10px] text-slate-500 border-b border-dashed pb-1 leading-relaxed">
+                                        <span class="font-bold text-slate-700" x-text="c.name"></span><br>
+                                        <span x-text="'الموقع: ' + (c.location || '-')"></span><br>
+                                        <span x-text="'العمل: ' + (c.hours || '-') + ' — ' + (c.phone || doctorInfo.phone || '-')"></span>
                                     </p>
                                 </template>
                             </div>
