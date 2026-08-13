@@ -133,6 +133,23 @@
                 chronicSearchQuery: '',
                 diagnosisSearchQuery: '',
                 medicineSearchQuery: '',
+                egyptianMedicineArchive: [],
+                egyptianMedicineArchiveLoaded: false,
+                isLoadingMedicineArchive: false,
+                medicineArchiveMessage: '',
+
+                patientsPage: 1,
+                patientsPerPage: 40,
+                patientsYearFilter: 'all',
+                patientsMonthFilter: 'all',
+                patientsDayFilter: 'all',
+                archiveMonthOptions: Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, '0')),
+                archiveDayOptions: Array.from({ length: 31 }, (_, index) => String(index + 1).padStart(2, '0')),
+                pharmacyPage: 1,
+                pharmacyPerPage: 40,
+                pharmacyYearFilter: 'all',
+                pharmacyMonthFilter: 'all',
+                pharmacyDayFilter: 'all',
 
                 // New items inputs for Settings
                 newSymptomSetting: '',
@@ -448,6 +465,19 @@
                     this.loadPersistedState();
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
                     if (!Array.isArray(this.syncConflicts)) this.syncConflicts = [];
+                    if (!Array.isArray(this.egyptianMedicineArchive)) this.egyptianMedicineArchive = [];
+                    this.$watch('patientSearch', () => { this.patientsPage = 1; });
+                    this.$watch('patientsYearFilter', () => { this.patientsPage = 1; });
+                    this.$watch('patientsMonthFilter', () => { this.patientsPage = 1; });
+                    this.$watch('patientsDayFilter', () => { this.patientsPage = 1; });
+                    this.$watch('pharmacyYearFilter', () => { this.pharmacyPage = 1; });
+                    this.$watch('pharmacyMonthFilter', () => { this.pharmacyPage = 1; });
+                    this.$watch('pharmacyDayFilter', () => { this.pharmacyPage = 1; });
+                    this.$watch('medicineSearchQuery', (value) => {
+                        if ((value || '').trim().length >= 2 && !this.egyptianMedicineArchiveLoaded) {
+                            this.loadEgyptianMedicineArchive();
+                        }
+                    });
                     this.syncDeviceId = this.getOrCreateSyncDeviceId();
                     this.doctorInfo = {
                         fullName: 'د. أحمد السالم',
@@ -574,6 +604,43 @@
                     this.persistState();
                     this.queueCloudSync();
                     this.showSyncConflictsModal = false;
+                },
+
+                async loadEgyptianMedicineArchive() {
+                    if (this.egyptianMedicineArchiveLoaded || this.isLoadingMedicineArchive) return;
+                    this.isLoadingMedicineArchive = true;
+                    this.medicineArchiveMessage = 'جارٍ تحميل أرشيف الأدوية المصري للبحث العربي والإنجليزي...';
+                    const sourceUrl = 'https://raw.githubusercontent.com/karem505/egyptian-drug-database/main/data/egyptian-drugs.json';
+                    try {
+                        const cached = sessionStorage.getItem('soliMedicalEgyptianMedicineArchive');
+                        const raw = cached ? JSON.parse(cached) : await fetch(sourceUrl, { cache: 'force-cache' }).then(response => {
+                            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                            return response.json();
+                        });
+                        const records = Array.isArray(raw) ? raw : (Array.isArray(raw?.data) ? raw.data : []);
+                        this.egyptianMedicineArchive = records.map((item, index) => ({
+                            id: item.id || `eg-med-${index}`,
+                            arabicName: String(item.commercial_name_ar || '').trim(),
+                            englishName: String(item.commercial_name_en || '').trim(),
+                            scientificName: String(item.scientific_name || '').trim(),
+                            manufacturer: String(item.manufacturer || '').trim(),
+                            drugClass: String(item.drug_class || '').trim(),
+                            route: String(item.route || '').trim(),
+                            price: item.price_egp ?? ''
+                        })).filter(item => item.arabicName || item.englishName || item.scientificName);
+                        try {
+                            sessionStorage.setItem('soliMedicalEgyptianMedicineArchive', JSON.stringify(this.egyptianMedicineArchive));
+                        } catch (storageError) {
+                            console.warn('تعذر حفظ أرشيف الأدوية في ذاكرة الجلسة:', storageError);
+                        }
+                        this.egyptianMedicineArchiveLoaded = true;
+                        this.medicineArchiveMessage = `تم تحميل ${this.egyptianMedicineArchive.length.toLocaleString('ar-EG')} صنفاً للبحث.`;
+                    } catch (error) {
+                        console.warn('تعذر تحميل أرشيف الأدوية المصري:', error);
+                        this.medicineArchiveMessage = 'تعذر تحميل الأرشيف حالياً؛ يمكنك استخدام القائمة المحلية أو كتابة دواء مخصص.';
+                    } finally {
+                        this.isLoadingMedicineArchive = false;
+                    }
                 },
 
                 observeFirebaseAuth() {
@@ -753,7 +820,13 @@
                         groups[key].records.push(rx);
                         if (!groups[key].patientPhone && rx.patientPhone) groups[key].patientPhone = rx.patientPhone;
                     });
-                    return Object.values(groups);
+                    return Object.values(groups)
+                        .filter(group => group.records.some(rx => this.matchesArchiveDate(rx.date, this.pharmacyYearFilter, this.pharmacyMonthFilter, this.pharmacyDayFilter)))
+                        .map(group => ({
+                            ...group,
+                            records: [...group.records].sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')))
+                        }))
+                        .sort((a, b) => String(b.records[0]?.date || '').localeCompare(String(a.records[0]?.date || '')));
                 },
 
                 get filteredInvoicesByPeriod() {
@@ -1340,6 +1413,7 @@
                     const query = (this.patientSearch || '').trim().toLowerCase();
                     const filtered = (this.patients || []).filter(p => {
                         const records = Array.isArray(p.records) ? p.records : [];
+                        const latestDate = records.reduce((latest, record) => record.date > latest ? record.date : latest, '');
                         const diagnosisText = records.map(record => [record.diagnosis, ...(record.diagnosisList || [])].filter(Boolean).join(' ')).join(' ');
                         const searchable = [p.fullName, p.phone, p.visitType, ...(p.selectedSymptoms || []), ...(p.selectedChronicDiseases || []), diagnosisText].filter(Boolean).join(' ').toLowerCase();
                         const matchesQuery = !query || searchable.includes(query);
@@ -1348,7 +1422,8 @@
                         const matchesRecords = this.patientRecordsFilter === 'all'
                             || (this.patientRecordsFilter === 'has' && records.length > 0)
                             || (this.patientRecordsFilter === 'none' && records.length === 0);
-                        return matchesQuery && matchesVisitType && matchesGender && matchesRecords;
+                        const matchesDate = this.matchesArchiveDate(latestDate || p.createdAt || p.date, this.patientsYearFilter, this.patientsMonthFilter, this.patientsDayFilter);
+                        return matchesQuery && matchesVisitType && matchesGender && matchesRecords && matchesDate;
                     });
                     return filtered.sort((a, b) => {
                         if (this.patientSort === 'name') return (a.fullName || '').localeCompare(b.fullName || '', 'ar');
@@ -1357,6 +1432,62 @@
                         const bDate = latestDate(b);
                         return this.patientSort === 'oldest' ? aDate.localeCompare(bDate) : bDate.localeCompare(aDate);
                     });
+                },
+
+                get paginatedPatients() {
+                    const total = this.filteredPatients.length;
+                    const maxPage = Math.max(1, Math.ceil(total / this.patientsPerPage));
+                    const page = Math.min(Math.max(1, Number(this.patientsPage) || 1), maxPage);
+                    const start = (page - 1) * this.patientsPerPage;
+                    return this.filteredPatients.slice(start, start + this.patientsPerPage);
+                },
+                get patientPageCount() {
+                    return Math.max(1, Math.ceil(this.filteredPatients.length / this.patientsPerPage));
+                },
+                get archiveYears() {
+                    const years = new Set([String(new Date().getFullYear())]);
+                    const addDate = date => {
+                        const match = String(date || '').match(/^(\d{4})-/);
+                        if (match) years.add(match[1]);
+                    };
+                    (this.patients || []).forEach(p => {
+                        addDate(p.createdAt || p.date);
+                        (p.records || []).forEach(record => addDate(record.date));
+                    });
+                    (this.prescriptions || []).forEach(record => addDate(record.date));
+                    return [...years].sort((a, b) => Number(b) - Number(a));
+                },
+                matchesArchiveDate(date, year, month, day) {
+                    if (year === 'all' && month === 'all' && day === 'all') return true;
+                    const value = String(date || '');
+                    if (!/^\d{4}-\d{2}-\d{2}/.test(value)) return false;
+                    const [dateYear, dateMonth, dateDay] = value.slice(0, 10).split('-');
+                    return (year === 'all' || dateYear === String(year))
+                        && (month === 'all' || dateMonth === String(month).padStart(2, '0'))
+                        && (day === 'all' || dateDay === String(day).padStart(2, '0'));
+                },
+                resetArchiveDateFilters(kind) {
+                    if (kind === 'patients') {
+                        this.patientsYearFilter = 'all';
+                        this.patientsMonthFilter = 'all';
+                        this.patientsDayFilter = 'all';
+                        this.patientsPage = 1;
+                    } else {
+                        this.pharmacyYearFilter = 'all';
+                        this.pharmacyMonthFilter = 'all';
+                        this.pharmacyDayFilter = 'all';
+                        this.pharmacyPage = 1;
+                    }
+                },
+                get paginatedPrescriptionGroups() {
+                    const total = this.prescriptionGroups.length;
+                    const maxPage = Math.max(1, Math.ceil(total / this.pharmacyPerPage));
+                    const page = Math.min(Math.max(1, Number(this.pharmacyPage) || 1), maxPage);
+                    const start = (page - 1) * this.pharmacyPerPage;
+                    return this.prescriptionGroups.slice(start, start + this.pharmacyPerPage);
+                },
+                get pharmacyPageCount() {
+                    return Math.max(1, Math.ceil(this.prescriptionGroups.length / this.pharmacyPerPage));
                 },
 
                 resetWaitingFilters() {
@@ -1371,6 +1502,7 @@
                     this.patientGenderFilter = 'all';
                     this.patientRecordsFilter = 'all';
                     this.patientSort = 'recent';
+                    this.resetArchiveDateFilters('patients');
                 },
 
                 get patientFormSuggestions() {
@@ -1449,8 +1581,13 @@
                 },
 
                 get filteredMedicinesMaster() {
-                    if (!this.medicineSearchQuery) return this.medicinesMasterList;
-                    return this.medicinesMasterList.filter(m => m.toLowerCase().includes(this.medicineSearchQuery.toLowerCase()));
+                    const query = (this.medicineSearchQuery || '').trim().toLowerCase();
+                    if (!query) return this.medicinesMasterList;
+                    const localMatches = this.medicinesMasterList.filter(m => String(m).toLowerCase().includes(query));
+                    if (!this.egyptianMedicineArchiveLoaded || localMatches.length >= 12) return localMatches;
+                    const archiveMatches = this.egyptianMedicineArchive.filter(item => [item.arabicName, item.englishName, item.scientificName, item.manufacturer, item.drugClass].filter(Boolean).join(' ').toLowerCase().includes(query));
+                    const archiveNames = archiveMatches.map(item => item.arabicName || item.englishName || item.scientificName).filter(Boolean);
+                    return [...new Set([...localMatches, ...archiveNames])].slice(0, 40);
                 },
 
                 get totalRevenue() {
@@ -2106,9 +2243,19 @@
                 },
 
                 deletePatient(id) {
-                    if (confirm('هل أنت تأكد من حذف بيانات هذا المريض؟')) {
-                        this.patients = this.patients.filter(p => p.id !== id);
-                    }
+                    const patient = this.patients.find(p => p.id === id);
+                    if (!patient) return;
+                    const patientName = String(patient.fullName || '').trim();
+                    if (!confirm(`سيتم حذف ملف ${patientName || 'المريض'} وكل الزيارات والوصفات والفواتير وقائمة الانتظار المرتبطة به. لا يمكن التراجع عن هذا الإجراء. هل تريد المتابعة؟`)) return;
+                    this.patients = this.patients.filter(p => p.id !== id);
+                    this.prescriptions = (this.prescriptions || []).filter(rx => rx.patientId !== id && String(rx.patientName || '').trim() !== patientName);
+                    this.waitingQueue = (this.waitingQueue || []).filter(item => item.patientId !== id && String(item.patientName || '').trim() !== patientName);
+                    this.invoices = (this.invoices || []).filter(invoice => invoice.patientId !== id && String(invoice.patientName || '').trim() !== patientName);
+                    if (this.selectedPatientForRecord?.id === id) this.selectedPatientForRecord = null;
+                    if (this.openPrescriptionPatientId === String(id)) this.openPrescriptionPatientId = null;
+                    this.patientsPage = Math.min(this.patientsPage, this.patientPageCount);
+                    this.persistState();
+                    this.queueCloudSync();
                 },
 
                 openWaitingPatient(item) {
@@ -2363,18 +2510,14 @@
 
                         <!-- DASHBOARD -->
                         <div x-show="currentView === 'dashboard'" class="space-y-6">
-                            <div class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl p-6 shadow-lg flex flex-col sm:flex-row justify-between sm:items-center gap-4">
+                            <div class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl p-6 shadow-lg">
                                 <div>
                                     <h2 class="text-2xl font-bold" x-text="'مرحباً بك، ' + doctorInfo.fullName"></h2>
                                     <p class="text-blue-100 text-sm mt-1" x-text="doctorInfo.specialty"></p>
                                 </div>
-                                <button @click="openPatientFormPage()" class="bg-white text-blue-600 font-bold px-5 py-3 rounded-xl shadow hover:bg-blue-50 transition-all flex items-center justify-center space-x-2 space-x-reverse">
-                                    <i data-lucide="user-plus" class="w-5 h-5"></i>
-                                    <span>إضافة زيارة / كشف جديد</span>
-                                </button>
                             </div>
 
-                            <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                            <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
                                 <button x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" class="dashboard-action-card text-right bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center mb-3"><i data-lucide="user-plus" class="w-5 h-5"></i></span>
                                     <p class="text-xs text-blue-700 dark:text-blue-300 font-bold">إضافة زيارة / كشف</p>
@@ -2582,6 +2725,20 @@
                                         <option value="name">ترتيب بالاسم</option>
                                     </select>
                                 </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <select x-model="patientsYearFilter" class="px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
+                                        <option value="all">كل السنوات</option>
+                                        <template x-for="year in archiveYears" :key="'patients-year-' + year"><option :value="year" x-text="year"></option></template>
+                                    </select>
+                                    <select x-model="patientsMonthFilter" class="px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
+                                        <option value="all">كل الشهور</option>
+                                        <template x-for="month in archiveMonthOptions" :key="'patients-month-' + month"><option :value="month" x-text="month"></option></template>
+                                    </select>
+                                    <select x-model="patientsDayFilter" class="px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
+                                        <option value="all">كل الأيام</option>
+                                        <template x-for="day in archiveDayOptions" :key="'patients-day-' + day"><option :value="day" x-text="day"></option></template>
+                                    </select>
+                                </div>
                                 <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
                                     <span x-text="'نتائج البحث: ' + filteredPatients.length + ' من ' + patients.length"></span>
                                     <button type="button" @click="resetPatientFilters()" class="text-blue-600 hover:text-blue-700 font-bold">مسح البحث والتصفية</button>
@@ -2597,10 +2754,11 @@
                                             <th class="p-4">نوع الزيارة</th>
                                             <th class="p-4">الأعراض</th>
                                             <th class="p-4">السجل الطبي</th>
+                                            <th class="p-4">حذف</th>
                                         </tr>
                                     </thead>
                                     <tbody class="divide-y dark:divide-slate-800 text-sm">
-                                        <template x-for="p in filteredPatients" :key="p.id">
+                                        <template x-for="p in paginatedPatients" :key="p.id">
                                             <tr class="hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-all">
                                                 <td data-label="اسم المريض" class="p-4 font-bold text-blue-600 dark:text-blue-400 cursor-pointer hover:underline" @click="openMedicalRecordPage(p)" x-text="p.fullName"></td>
                                                 <td data-label="الهاتف" class="p-4 font-mono text-xs" x-text="p.phone || '-'" ></td>
@@ -2623,10 +2781,22 @@
                                                         <span>فتح السجل الطبي الموسع</span>
                                                     </button>
                                                 </td>
+                                                <td data-label="حذف" class="p-4">
+                                                    <button type="button" @click.stop="deletePatient(p.id)" class="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-red-700 bg-red-50 hover:bg-red-100 dark:text-red-300 dark:bg-red-950/30 dark:hover:bg-red-950/50" :aria-label="'حذف ملف ' + p.fullName">
+                                                        <i data-lucide="trash-2" class="w-3.5 h-3.5"></i><span>حذف</span>
+                                                    </button>
+                                                </td>
                                             </tr>
                                         </template>
                                     </tbody>
                                 </table>
+                                <div class="flex flex-col sm:flex-row items-center justify-between gap-3 border-t dark:border-slate-800 px-4 py-3 text-xs">
+                                    <span class="text-slate-500 dark:text-slate-400" x-text="'صفحة ' + patientsPage + ' من ' + patientPageCount + ' — عرض ' + paginatedPatients.length + ' من ' + filteredPatients.length"></span>
+                                    <div class="flex items-center gap-2">
+                                        <button type="button" @click="patientsPage = Math.max(1, patientsPage - 1)" :disabled="patientsPage <= 1" class="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 font-bold disabled:opacity-40">السابق</button>
+                                        <button type="button" @click="patientsPage = Math.min(patientPageCount, patientsPage + 1)" :disabled="patientsPage >= patientPageCount" class="px-3 py-1.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-40">التالي</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
@@ -2972,7 +3142,12 @@
                                 <!-- Egyptian Medicines Market Database Search & Selection -->
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">أصناف الأدوية المصرية (بحث ذكي بالاسم وجرعة مخصصة لكل دواء):</label>
-                                    <input type="text" x-model="medicineSearchQuery" placeholder="ابحث في أرشيف الأدوية المصري..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:text-white">
+                                    <input type="text" x-model="medicineSearchQuery" placeholder="ابحث بالعربية أو الإنجليزية في أرشيف الأدوية المصري..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:text-white">
+                                    <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                                        <span x-show="isLoadingMedicineArchive" class="text-blue-600 dark:text-blue-300">جارٍ تحميل الأرشيف...</span>
+                                        <span x-show="!isLoadingMedicineArchive && medicineArchiveMessage" x-text="medicineArchiveMessage"></span>
+                                        <span class="text-amber-700 dark:text-amber-300">تحقق من الاسم والتركيز والجرعة من هيئة الدواء المصرية قبل الوصف.</span>
+                                    </div>
                                     
                                     <div class="max-h-40 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-2 text-xs">
                                         <template x-for="med in filteredMedicinesMaster" :key="med">
@@ -3303,11 +3478,32 @@
                                 <span class="text-xs font-bold text-blue-700 bg-blue-50 dark:bg-blue-950/30 dark:text-blue-300 px-3 py-2 rounded-xl" x-text="prescriptionGroups.length + ' ملف'" ></span>
                             </div>
 
+                            <div class="bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-4 shadow-sm space-y-3">
+                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <select x-model="pharmacyYearFilter" class="px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
+                                        <option value="all">كل السنوات</option>
+                                        <template x-for="year in archiveYears" :key="'pharmacy-year-' + year"><option :value="year" x-text="year"></option></template>
+                                    </select>
+                                    <select x-model="pharmacyMonthFilter" class="px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
+                                        <option value="all">كل الشهور</option>
+                                        <template x-for="month in archiveMonthOptions" :key="'pharmacy-month-' + month"><option :value="month" x-text="month"></option></template>
+                                    </select>
+                                    <select x-model="pharmacyDayFilter" class="px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
+                                        <option value="all">كل الأيام</option>
+                                        <template x-for="day in archiveDayOptions" :key="'pharmacy-day-' + day"><option :value="day" x-text="day"></option></template>
+                                    </select>
+                                </div>
+                                <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+                                    <span x-text="'الملفات المطابقة: ' + prescriptionGroups.length"></span>
+                                    <button type="button" @click="resetArchiveDateFilters('pharmacy')" class="text-blue-600 hover:text-blue-700 font-bold">مسح فلاتر التاريخ</button>
+                                </div>
+                            </div>
+
                             <div class="w-full overflow-hidden bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-sm">
                                 <div class="hidden md:grid grid-cols-[1.5fr_1fr_1fr_auto] gap-4 px-5 py-3 bg-slate-50 dark:bg-slate-800/70 text-xs font-bold text-slate-500 dark:text-slate-300">
                                     <span>اسم المريض</span><span>آخر زيارة</span><span>عدد الزيارات</span><span>الإجراء</span>
                                 </div>
-                                <template x-for="group in prescriptionGroups" :key="group.key">
+                                <template x-for="group in paginatedPrescriptionGroups" :key="group.key">
                                     <div class="border-b last:border-b-0 border-slate-100 dark:border-slate-800">
                                         <button @click="openPrescriptionPatientId = openPrescriptionPatientId === group.key ? null : group.key" class="w-full text-right grid grid-cols-1 md:grid-cols-[1.5fr_1fr_1fr_auto] gap-2 md:gap-4 items-center px-5 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/60 transition-colors">
                                             <span class="font-bold text-slate-800 dark:text-white flex items-center gap-2"><i data-lucide="chevron-down" class="w-4 h-4 transition-transform" :class="{'rotate-180': openPrescriptionPatientId === group.key}"></i><span x-text="group.patientName"></span></span>
@@ -3332,27 +3528,34 @@
                                         </div>
                                     </div>
                                 </template>
-                                <div x-show="prescriptionGroups.length === 0" class="p-10 text-center text-sm text-slate-400">لا توجد وصفات مسجلة حتى الآن.</div>
+                                <div x-show="prescriptionGroups.length === 0" class="p-10 text-center text-sm text-slate-400">لا توجد وصفات مطابقة للفلاتر الحالية.</div>
+                                <div x-show="prescriptionGroups.length > 0" class="flex flex-col sm:flex-row items-center justify-between gap-3 border-t dark:border-slate-800 px-4 py-3 text-xs">
+                                    <span class="text-slate-500 dark:text-slate-400" x-text="'صفحة ' + pharmacyPage + ' من ' + pharmacyPageCount + ' — عرض ' + paginatedPrescriptionGroups.length + ' من ' + prescriptionGroups.length"></span>
+                                    <div class="flex items-center gap-2">
+                                        <button type="button" @click="pharmacyPage = Math.max(1, pharmacyPage - 1)" :disabled="pharmacyPage <= 1" class="px-3 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 font-bold disabled:opacity-40">السابق</button>
+                                        <button type="button" @click="pharmacyPage = Math.min(pharmacyPageCount, pharmacyPage + 1)" :disabled="pharmacyPage >= pharmacyPageCount" class="px-3 py-1.5 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-40">التالي</button>
+                                    </div>
+                                </div>
                             </div>
                         </div>
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings'" class="max-w-4xl space-y-6">
                             <!-- Manual Clinic Backup & Restore -->
-                            <div x-show="currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-5">
+                            <div x-show="currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
                                 <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
                                     <div>
-                                        <h3 class="text-lg font-bold text-slate-800 dark:text-white">النسخ الاحتياطي والاستعادة اليدوية</h3>
+                                        <h3 class="text-base font-bold text-slate-800 dark:text-white">النسخ الاحتياطي والاستعادة اليدوية</h3>
                                         <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">احفظ ملف JSON القابل للقراءة في مكان آمن، واستعده عند تعذر المزامنة أو تغيير المتصفح.</p>
                                     </div>
                                     <i data-lucide="shield-check" class="w-6 h-6 text-emerald-600 dark:text-emerald-400 flex-shrink-0"></i>
                                 </div>
                                 <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <button type="button" @click="downloadClinicBackup()" class="inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-3 rounded-xl text-sm font-bold shadow-sm">
+                                        <button type="button" @click="downloadClinicBackup()" class="inline-flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-2 rounded-xl text-xs font-bold shadow-sm">
                                         <i data-lucide="download" class="w-4 h-4"></i>
                                         تنزيل نسخة احتياطية الآن
                                     </button>
-                                    <label class="inline-flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 px-4 py-3 rounded-xl text-sm font-bold cursor-pointer">
+                                    <label class="inline-flex items-center justify-center gap-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 px-3 py-2 rounded-xl text-xs font-bold cursor-pointer">
                                         <i data-lucide="upload" class="w-4 h-4"></i>
                                         استعادة من ملف JSON
                                         <input type="file" accept="application/json,.json" class="hidden" @change="handleBackupImport($event)">
@@ -3365,20 +3568,10 @@
                                 </div>
                             </div>
 
-                            <div class="bg-emerald-50 dark:bg-emerald-950/20 p-4 rounded-2xl border border-emerald-100 dark:border-emerald-900/50 shadow-sm">
-                                <div class="flex items-center gap-3">
-                                    <span class="text-2xl">🟢</span>
-                                    <div>
-                                        <h3 class="text-sm font-bold text-slate-800 dark:text-white">المزامنة تعمل تلقائياً في الخلفية</h3>
-                                        <p class="text-xs text-slate-600 dark:text-slate-300 mt-1">تسجيل الدخول والصلاحيات من حسابات Soli Medical المحلية فقط. لا يحتاج المستخدم إلى حساب Firebase.</p>
-                                    </div>
-                                </div>
-                            </div>
-
                             <!-- Doctor Info Settings -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
-                                <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div class="grid grid-cols-2 gap-3 md:gap-6">
                                     <div>
                                         <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">اسم الطبيب</label>
                                         <input type="text" x-model="doctorInfo.fullName" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
