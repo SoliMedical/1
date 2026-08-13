@@ -124,7 +124,7 @@
                 showInlineEditSymptomsModal: false,
                 showInlineEditBasicInfoModal: false,
                 showPrescriptionPrintModal: false,
-                printPageMode: 'auto',
+                printPageMode: 'one',
                 showSyncConflictsModal: false,
                 showCloudResetModal: false,
                 cloudResetPasswordInput: '',
@@ -177,6 +177,7 @@
                 selectedPatientForRecord: null,
                 selectedPrescriptionForPrint: null,
                 printDensity: 'normal',
+                printDensityScale: 1,
                 printPrescriptionSplitPage: false,
 
                 // Visit Types & Configurable Prices (Managed from Settings)
@@ -203,7 +204,9 @@
                     fullName: 'د. أحمد السالم',
                     specialty: 'استشاري الطب العام والباطنية والأمراض المزمنة',
                     email: 'admin',
-                    phone: '+20 100 123 4567'
+                    phone: '+20 100 123 4567',
+                    qrMode: 'whatsapp',
+                    qrContact: ''
                 },
                 clinicLogoDataUrl: '',
 
@@ -2209,9 +2212,11 @@
                     ].join(' ').trim().length;
                     const medicineLength = medicines.reduce((sum, item) => sum + String(item?.name || '').length + String(item?.timing || '').length + String(item?.extraDosageNotes || '').length, 0);
                     const score = textLength + medicineLength + (medicines.length * 42);
+                    const scale = score > 1250 ? 0.76 : score > 980 ? 0.84 : score > 720 ? 0.91 : score > 480 ? 0.96 : 1;
                     return {
-                        density: score > 720 || medicines.length > 8 ? 'ultra' : (score > 360 || medicines.length > 4 ? 'compact' : 'normal'),
-                        split: score > 760 || medicines.length > 7
+                        density: scale < 0.86 ? 'compact' : (scale < 0.98 ? 'tight' : 'normal'),
+                        scale,
+                        split: score > 1500 || medicines.length > 12
                     };
                 },
                 printPrescription(rx, patientObj) {
@@ -2224,8 +2229,9 @@
                     };
                     const printLayout = this.getPrescriptionPrintLayout(this.selectedPrescriptionForPrint);
                     this.printDensity = printLayout.density;
+                    this.printDensityScale = printLayout.scale;
                     this.printPrescriptionSplitPage = printLayout.split;
-                    this.printPageMode = 'auto';
+                    this.printPageMode = 'one';
                     this.showPrescriptionPrintModal = true;
                     this.$nextTick(() => this.refreshPrescriptionQrCode());
                 },
@@ -2235,21 +2241,35 @@
                 },
                 updatePrescriptionPrintMode() {
                     const autoSplit = this.getPrescriptionPrintLayout(this.selectedPrescriptionForPrint || {}).split;
+                    const printLayout = this.getPrescriptionPrintLayout(this.selectedPrescriptionForPrint || {});
+                    this.printDensity = printLayout.density;
+                    this.printDensityScale = this.printPageMode === 'one' ? printLayout.scale : 1;
                     this.printPrescriptionSplitPage = this.printPageMode === 'two' || (this.printPageMode === 'auto' && autoSplit);
                     this.$nextTick(() => this.refreshPrescriptionQrCode());
+                },
+                getClinicQrLink() {
+                    const info = this.doctorInfo || {};
+                    const mode = info.qrMode || 'whatsapp';
+                    const raw = String(info.qrContact || '').trim();
+                    if (mode === 'booking') {
+                        if (!raw) return '';
+                        return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+                    }
+                    const phone = raw || this.clinics?.[0]?.phone || info.phone || '';
+                    const waPhone = this.formatPhoneForWhatsApp(phone);
+                    return waPhone ? `https://wa.me/${waPhone}` : '';
                 },
                 refreshPrescriptionQrCode() {
                     this.$nextTick(() => {
                         const target = document.getElementById('prescriptionQrCode');
                         if (!target || !this.selectedPrescriptionForPrint) return;
                         target.innerHTML = '';
-                        const clinic = this.clinics?.[0] || {};
-                        const qrText = [
-                            `Soli Medical — ${this.doctorInfo.fullName || ''}`,
-                            `للحجز والتواصل: ${clinic.phone || this.doctorInfo.phone || 'غير مسجل'}`,
-                            clinic.location ? `العنوان: ${clinic.location}` : '',
-                            clinic.hours ? `مواعيد العمل: ${clinic.hours}` : ''
-                        ].filter(Boolean).join('\n');
+                        const qrText = this.getClinicQrLink();
+                        if (!qrText) {
+                            target.textContent = 'أضف رابط QR من الإعدادات';
+                            target.classList.add('prescription-qr-fallback');
+                            return;
+                        }
                         if (window.QRCode) {
                             new QRCode(target, {
                                 text: qrText,
@@ -2473,26 +2493,55 @@
         .print-page { width: 100%; box-sizing: border-box; }
         .print-medicines-page { padding-top: 4mm; }
         .print-prescription-controls { direction: rtl; }
+        #printablePrescriptionArea.print-one-page {
+            --print-scale: 1;
+        }
+        #printablePrescriptionArea.print-one-page .print-rx-header {
+            min-height: calc(29mm * var(--print-scale));
+            padding-bottom: calc(3mm * var(--print-scale)) !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-doctor-name {
+            font-size: calc(1.875rem * var(--print-scale)) !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-doctor-specialty {
+            font-size: calc(.875rem * var(--print-scale)) !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-doctor-contact {
+            font-size: calc(.6875rem * var(--print-scale)) !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-section {
+            padding: calc(.75rem * var(--print-scale)) !important;
+            margin-top: calc(.75rem * var(--print-scale)) !important;
+            font-size: calc(.75rem * var(--print-scale)) !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-section p {
+            font-size: calc(.875rem * var(--print-scale)) !important;
+            line-height: 1.25 !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-medicines-block {
+            gap: calc(1rem * var(--print-scale)) !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-medicines-block ol {
+            font-size: calc(.875rem * var(--print-scale)) !important;
+            line-height: 1.25 !important;
+        }
+        #printablePrescriptionArea.print-one-page .print-medicines-block li {
+            padding-bottom: calc(.25rem * var(--print-scale)) !important;
+        }
+        #printablePrescriptionArea.print-one-page .prescription-qr canvas,
+        #printablePrescriptionArea.print-one-page .prescription-qr img {
+            width: calc(19mm * var(--print-scale)) !important;
+            height: calc(19mm * var(--print-scale)) !important;
+        }
         .prescription-qr { display: flex; align-items: center; gap: 8px; justify-content: center; }
         .prescription-qr canvas, .prescription-qr img { width: 19mm !important; height: 19mm !important; image-rendering: pixelated; }
         .prescription-qr-fallback { width: 19mm; height: 19mm; border: 2px solid #0f2d4a; display: grid; place-items: center; font-weight: 800; color: #0f2d4a; }
-        .print-density-compact .print-rx-header { min-height: 23mm; }
-        .print-density-compact .print-doctor-name { font-size: 24px !important; }
-        .print-density-compact .print-doctor-specialty { font-size: 9px !important; }
-        .print-density-compact .print-doctor-contact { font-size: 9px !important; }
-        .print-density-compact .print-section { padding: 2.2mm !important; margin-top: 2mm !important; font-size: 10px !important; }
-        .print-density-compact .print-section p { font-size: 11px !important; line-height: 1.35 !important; }
-        .print-density-compact .print-medicines-block { gap: 2mm !important; }
-        .print-density-compact .print-medicines-block ol { font-size: 11px !important; line-height: 1.35 !important; }
-        .print-density-compact .print-medicines-block li { padding-bottom: 1mm !important; }
-        .print-density-ultra .print-rx-header { min-height: 20mm; }
-        .print-density-ultra .print-doctor-name { font-size: 21px !important; }
-        .print-density-ultra .print-doctor-specialty { font-size: 8px !important; }
-        .print-density-ultra .print-doctor-contact { font-size: 8px !important; }
-        .print-density-ultra .print-section { padding: 1.6mm !important; margin-top: 1.5mm !important; font-size: 9px !important; }
-        .print-density-ultra .print-section p { font-size: 9.5px !important; line-height: 1.25 !important; }
-        .print-density-ultra .print-medicines-block ol { font-size: 10px !important; line-height: 1.25 !important; }
-        .print-density-ultra .print-medicines-block li { padding-bottom: .7mm !important; }
+        .print-density-tight .print-section { padding: 2.5mm !important; margin-top: 2.2mm !important; }
+        .print-density-compact .print-section { padding: 2mm !important; margin-top: 1.8mm !important; }
+        .print-density-tight .print-section p, .print-density-tight .print-medicines-block ol { line-height: 1.3 !important; }
+        .print-density-compact .print-section p, .print-density-compact .print-medicines-block ol { line-height: 1.2 !important; }
+        .print-density-tight .print-medicines-block li { padding-bottom: 1mm !important; }
+        .print-density-compact .print-medicines-block li { padding-bottom: .7mm !important; }
 
         /* Dedicated Print Styles for Rx Prescription */
         @media print {
@@ -2550,7 +2599,7 @@
             }
             #printablePrescriptionArea .print-rx-header img { max-width: 24mm !important; max-height: 24mm !important; }
             #printablePrescriptionArea .print-text-wrap { overflow-wrap: anywhere !important; word-break: break-word !important; }
-            #printablePrescriptionArea .print-doctor-specialty { white-space: nowrap !important; }
+            #printablePrescriptionArea .print-doctor-specialty { white-space: normal !important; }
             .print-clinic-footer {
                 display: block !important;
                 visibility: visible !important;
@@ -3831,7 +3880,27 @@
                                         </div>
                                     </div>
                                 </div>
-                                <button @click="alert('تم حفظ إعدادات الطبيب والروشتة بنجاح!')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2.5 rounded-xl shadow-lg">
+                                <div class="border-t border-slate-100 dark:border-slate-800 pt-6 space-y-4">
+                                    <div>
+                                        <h4 class="text-sm font-bold text-slate-800 dark:text-white">رابط الحجز والتواصل داخل QR</h4>
+                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">سيحتوي الرمز على رابط مباشر فقط، وليس على نصوص بيانات الطبيب.</p>
+                                    </div>
+                                    <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">نوع الرابط</label>
+                                            <select x-model="doctorInfo.qrMode" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
+                                                <option value="whatsapp">محادثة واتساب</option>
+                                                <option value="booking">صفحة حجز المواعيد</option>
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" x-text="doctorInfo.qrMode === 'booking' ? 'رابط صفحة الحجز' : 'رقم واتساب الطبيب (اختياري)'"></label>
+                                            <input type="text" x-model="doctorInfo.qrContact" :placeholder="doctorInfo.qrMode === 'booking' ? 'https://example.com/booking' : 'اتركه فارغاً لاستخدام رقم الطبيب'" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm" dir="ltr">
+                                        </div>
+                                    </div>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400" x-text="getClinicQrLink() ? 'الرابط الحالي: ' + getClinicQrLink() : 'أدخل رابطاً أو رقم واتساب حتى يظهر QR صالح للحجز.'"></p>
+                                </div>
+                                <button @click="persistState(); queueCloudSync(); alert('تم حفظ إعدادات الطبيب والروشتة ورابط QR بنجاح!')" class="bg-blue-600 hover:bg-blue-700 text-white font-semibold px-6 py-2.5 rounded-xl shadow-lg">
                                     حفظ بيانات الطبيب
                                 </button>
 
@@ -4382,7 +4451,7 @@
                     </div>
                 </div>
 
-                <div id="printablePrescriptionArea" class="bg-white flex flex-col" :class="{ 'print-split-page': printPrescriptionSplitPage, 'print-density-compact': printDensity === 'compact', 'print-density-ultra': printDensity === 'ultra' }">
+                <div id="printablePrescriptionArea" class="bg-white flex flex-col" :class="{ 'print-split-page': printPrescriptionSplitPage, 'print-one-page': !printPrescriptionSplitPage, 'print-density-tight': printDensity === 'tight', 'print-density-compact': printDensity === 'compact' }" :style="{ '--print-scale': printPrescriptionSplitPage ? 1 : printDensityScale }">
                     <div class="print-page print-primary-page">
                         <!-- Familiar Arabic prescription header: logo at left, centered doctor identity, specialty and phone together. -->
                         <div class="print-rx-header flex items-center justify-between gap-3 border-b-2 border-blue-600 pb-3" style="direction: ltr;">
@@ -4473,7 +4542,7 @@
                             </div>
                             <div class="prescription-qr mt-2">
                                 <div id="prescriptionQrCode" aria-label="رمز QR لمعلومات التواصل مع العيادة"></div>
-                                <p class="text-[9px] leading-4 text-slate-500">امسح الرمز لمعلومات التواصل وحجز الموعد</p>
+                                <p class="text-[9px] leading-4 text-slate-500" x-text="doctorInfo.qrMode === 'booking' ? 'امسح الرمز لفتح صفحة حجز الموعد' : 'امسح الرمز لفتح محادثة واتساب' "></p>
                             </div>
                             <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
                         </div>
