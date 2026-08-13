@@ -2495,6 +2495,18 @@
         .print-prescription-controls { direction: rtl; }
         #printablePrescriptionArea.print-one-page {
             --print-scale: 1;
+            min-height: 196mm;
+        }
+        #printablePrescriptionArea.print-one-page .print-medicines-page,
+        #printablePrescriptionArea.print-split-page .print-medicines-page {
+            display: flex;
+            flex-direction: column;
+        }
+        #printablePrescriptionArea.print-one-page .print-medicines-page {
+            flex: 1 1 auto;
+        }
+        #printablePrescriptionArea .print-clinic-footer {
+            margin-top: auto;
         }
         #printablePrescriptionArea.print-one-page .print-rx-header {
             min-height: calc(29mm * var(--print-scale));
@@ -2580,6 +2592,20 @@
                 page-break-after: auto;
                 page-break-inside: auto;
                 overflow: visible !important;
+            }
+            #printablePrescriptionArea.print-one-page {
+                min-height: 196mm !important;
+                height: auto !important;
+                display: flex !important;
+                flex-direction: column !important;
+            }
+            #printablePrescriptionArea.print-one-page .print-primary-page {
+                flex: 0 0 auto !important;
+            }
+            #printablePrescriptionArea.print-one-page .print-medicines-page {
+                flex: 1 1 auto !important;
+                display: flex !important;
+                flex-direction: column !important;
             }
             #printablePrescriptionArea .print-page {
                 min-height: 0 !important;
@@ -4528,21 +4554,25 @@
                                     <span x-text="selectedPrescriptionForPrint.nextFollowUpDate"></span>
                                 </div>
                             </template>
-                            <div x-show="clinics.length > 0" class="print-clinic-footer border-t border-slate-200 pt-3 space-y-2">
-                                <p class="text-center font-bold text-slate-700 text-[11px]">فروع العيادة ومواعيد العمل</p>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] leading-5">
-                                    <template x-for="clinic in clinics" :key="clinic.id">
-                                        <div class="text-center border border-slate-200 rounded-lg px-2 py-1.5">
-                                            <p class="font-bold text-slate-700" x-text="clinic.name || 'فرع العيادة'"></p>
-                                            <p x-text="'العمل: ' + (clinic.hours || 'يُرجى مراجعة العيادة')"></p>
-                                            <p x-show="clinic.phone" x-text="'هاتف: ' + clinic.phone"></p>
+                            <div x-show="clinics.length > 0 || getClinicQrLink()" class="print-clinic-footer border-t border-slate-200 pt-3">
+                                <div class="flex items-end gap-3" style="direction: ltr;">
+                                    <div class="prescription-qr w-[25mm] shrink-0 flex-col gap-1" style="direction: rtl;">
+                                        <div id="prescriptionQrCode" aria-label="رمز QR لرابط التواصل مع العيادة"></div>
+                                        <p class="text-[8px] leading-3 text-slate-500 text-center" x-text="doctorInfo.qrMode === 'booking' ? 'الحجز' : 'واتساب'"></p>
+                                    </div>
+                                    <div x-show="clinics.length > 0" class="min-w-0 flex-1" style="direction: rtl;">
+                                        <p class="text-center font-bold text-slate-700 text-[11px] mb-2">فروع العيادة ومواعيد العمل</p>
+                                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] leading-5">
+                                            <template x-for="clinic in clinics" :key="clinic.id">
+                                                <div class="text-center border border-slate-200 rounded-lg px-2 py-1.5">
+                                                    <p class="font-bold text-slate-700" x-text="clinic.name || 'فرع العيادة'"></p>
+                                                    <p x-text="'العمل: ' + (clinic.hours || 'يُرجى مراجعة العيادة')"></p>
+                                                    <p x-show="clinic.phone" x-text="'هاتف: ' + clinic.phone"></p>
+                                                </div>
+                                            </template>
                                         </div>
-                                    </template>
+                                    </div>
                                 </div>
-                            </div>
-                            <div class="prescription-qr mt-2">
-                                <div id="prescriptionQrCode" aria-label="رمز QR لمعلومات التواصل مع العيادة"></div>
-                                <p class="text-[9px] leading-4 text-slate-500" x-text="doctorInfo.qrMode === 'booking' ? 'امسح الرمز لفتح صفحة حجز الموعد' : 'امسح الرمز لفتح محادثة واتساب' "></p>
                             </div>
                             <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
                         </div>
