@@ -50,8 +50,8 @@
         // FIREBASE SETUP — fill in your own project's config below.
         // 1) Go to console.firebase.google.com → create a project (free Spark plan is enough).
         // 2) Project settings → General → "Your apps" → add a Web app → copy the config object here.
-        // 3) In the left menu enable: Authentication → Sign-in method → Email/Password.
-        //    This version uses the clinic's named accounts; Anonymous Auth is not required.
+        // 3) In the left menu enable: Authentication → Sign-in method → Anonymous.
+        //    Clinic users still sign in locally; Firebase is used silently for Firestore sync only.
         // 4) In the left menu enable: Firestore Database → Create database (start in production mode).
         // 5) In Firestore → Rules, use this exact-document rule while testing (tighten later for real use):
         //      rules_version = '2';
@@ -480,9 +480,11 @@
                         });
                     });
 
-                    if (this.cloudSyncEnabled) this.observeFirebaseAuth();
+                    if (this.cloudSyncEnabled && this.isAuthenticated) this.connectFirebaseForLocalUser();
 
-                    window.addEventListener('online', () => { if (this.cloudSyncEnabled) this.cloudStatus = 'online'; });
+                    window.addEventListener('online', () => {
+                        if (this.cloudSyncEnabled && this.isAuthenticated) this.connectFirebaseForLocalUser();
+                    });
                     window.addEventListener('offline', () => { if (this.cloudSyncEnabled) this.cloudStatus = 'offline'; });
                 },
 
@@ -496,26 +498,23 @@
                 applyingRemoteUpdate: false,
                 cloudSyncTimer: null,
                 cloudUnsubscribe: null,
+                cloudAuthListenerStarted: false,
 
                 observeFirebaseAuth() {
                     if (!firebaseAuth) return;
                     firebaseAuth.onAuthStateChanged(user => {
-                        // Anonymous sessions from older versions are not used for clinic data.
-                        if (user?.isAnonymous) {
-                            firebaseAuth.signOut().catch(() => {});
-                            user = null;
-                        }
                         this.cloudAuthReady = !!user;
-                        this.authError = user
-                            ? ''
-                            : 'سجّل الدخول بحساب Email/Password في Firebase لتفعيل المزامنة السحابية؛ سيبقى الوضع المحلي متاحاً بدونه.';
+                        this.authError = '';
                         this.cloudStatus = user && navigator.onLine ? 'online' : 'offline';
                         if (user) {
                             this.startCloudSync();
-                        } else if (this.cloudUnsubscribe) {
+                            return;
+                        }
+                        if (this.cloudUnsubscribe) {
                             this.cloudUnsubscribe();
                             this.cloudUnsubscribe = null;
                         }
+                        if (!this.isAuthenticated) this.cloudStatus = 'offline';
                     });
                 },
 
@@ -918,51 +917,32 @@
                     this.renderIcons();
                 },
 
-                connectFirebaseForLocalUser(matchedUser, enteredPassword) {
-                    if (!this.cloudSyncEnabled || !firebaseAuth || !navigator.onLine) {
-                        this.cloudStatus = navigator.onLine ? 'offline' : 'offline';
+                connectFirebaseForLocalUser() {
+                    // Local credentials and permissions remain authoritative. Firebase is opened
+                    // only after local login and is never used to validate the clinic user.
+                    if (!this.cloudSyncEnabled || !firebaseAuth || !this.isAuthenticated) {
+                        this.cloudStatus = 'offline';
                         return;
                     }
-                    const authEmail = this.firebaseEmailForUser(matchedUser.contactEmail || matchedUser.email);
-                    const currentEmail = firebaseAuth.currentUser?.email?.toLowerCase();
-                    const finishCloudLogin = () => {
-                        this.cloudAuthReady = true;
-                        this.cloudStatus = 'online';
-                        this.authError = '';
-                        this.startCloudSync();
-                    };
-                    if (currentEmail === authEmail) {
-                        finishCloudLogin();
-                        return;
+                    if (!this.cloudAuthListenerStarted) {
+                        this.cloudAuthListenerStarted = true;
+                        this.observeFirebaseAuth();
                     }
-                    const provisionMissingFirebaseUser = (err) => {
-                        if (err?.code !== 'auth/user-not-found') throw err;
-                        if (enteredPassword.length < 6) {
-                            throw { code: 'auth/weak-password' };
-                        }
-                        const secondaryName = 'auto-link-' + Date.now();
-                        const secondaryApp = firebase.initializeApp(firebaseConfig, secondaryName);
-                        return secondaryApp.auth().createUserWithEmailAndPassword(authEmail, enteredPassword)
-                            .finally(() => secondaryApp.delete().catch(() => {}))
-                            .then(() => firebaseAuth.signInWithEmailAndPassword(authEmail, enteredPassword));
-                    };
-                    const signIn = () => firebaseAuth.signInWithEmailAndPassword(authEmail, enteredPassword)
-                        .catch(provisionMissingFirebaseUser)
-                        .then(finishCloudLogin)
-                        .catch(err => {
-                            this.cloudAuthReady = false;
-                            this.cloudStatus = 'offline';
-                            this.authError = err?.code === 'auth/weak-password'
-                                ? 'تم الدخول محلياً. كلمة المرور الحالية أقصر من 6 أحرف، لذلك يلزم ربط الحساب بكلمة مرور Firebase جديدة مرة واحدة.'
-                                : err?.code === 'auth/email-already-in-use'
-                                    ? 'تم الدخول محلياً، لكن حساب Firebase موجود بكلمة مرور مختلفة. استخدم أداة الربط مرة واحدة من إعدادات النظام.'
-                                    : 'تم الدخول محلياً، وتعذّر تشغيل المزامنة السحابية حالياً.';
-                        });
                     if (firebaseAuth.currentUser) {
-                        firebaseAuth.signOut().then(signIn).catch(signIn);
-                    } else {
-                        signIn();
+                        this.cloudAuthReady = true;
+                        this.cloudStatus = navigator.onLine ? 'online' : 'offline';
+                        this.startCloudSync();
+                        return;
                     }
+                    if (!navigator.onLine) {
+                        this.cloudStatus = 'offline';
+                        return;
+                    }
+                    this.cloudStatus = 'connecting';
+                    firebaseAuth.signInAnonymously().catch(err => {
+                        console.warn('تعذر تشغيل المزامنة الصامتة:', err);
+                        this.cloudStatus = 'offline';
+                    });
                 },
 
                 handleLogin() {
@@ -995,7 +975,7 @@
                     this.landOnAllowedPage(matchedUser);
                     this.isLoading = false;
                     this.renderIcons();
-                    this.connectFirebaseForLocalUser(matchedUser, enteredPassword);
+                    this.connectFirebaseForLocalUser(matchedUser);
                 },
 
                 forgotPassword() {
@@ -1014,17 +994,7 @@
                             : 'إذا كان الحساب موجوداً، سيتم إرسال رابط الاستعادة إلى البريد الإلكتروني المسجل.';
                         return;
                     }
-                    if (this.cloudSyncEnabled && navigator.onLine) {
-                        firebaseAuth.sendPasswordResetEmail(user.contactEmail)
-                            .then(() => {
-                                this.forgotPasswordMessage = `تم إرسال رابط استعادة كلمة المرور فعلياً إلى: ${user.contactEmail} ✅`;
-                            })
-                            .catch(() => {
-                                this.forgotPasswordMessage = `تعذر إرسال البريد الآن، يرجى المحاولة لاحقاً أو التواصل مع مدير النظام. (${user.contactEmail})`;
-                            });
-                    } else {
-                        this.forgotPasswordMessage = `تم إرسال رابط استعادة كلمة المرور إلى البريد الإلكتروني: ${user.contactEmail} ✅ (سيتم الإرسال الفعلي بمجرد الاتصال بالإنترنت وربط Firebase)`;
-                    }
+                    this.forgotPasswordMessage = `يرجى التواصل مع مدير النظام لإعادة تعيين كلمة مرور الحساب المحلي${user.contactEmail ? `، ويمكن مراسلته على ${user.contactEmail}` : ''}.`;
                 },
 
                 logout() {
@@ -1060,17 +1030,6 @@
                     this.users.push(newUser);
                     this.userPermissionDrafts[newUser.id] = { ...newUser.permissions };
 
-                    // Also register this account with Firebase Auth (so it can log in with real-time
-                    // cloud sync from any device), using a temporary secondary app instance so the
-                    // admin currently logged in isn't replaced by the newly created session.
-                    if (this.cloudSyncEnabled && navigator.onLine) {
-                        const authEmail = this.firebaseEmailForUser(newUser.contactEmail || newUser.email);
-                        const secondaryApp = firebase.initializeApp(firebaseConfig, 'secondary-' + Date.now());
-                        secondaryApp.auth().createUserWithEmailAndPassword(authEmail, newUser.password)
-                            .catch(err => console.error('تعذر إنشاء حساب Firebase للمستخدم الجديد:', err))
-                            .finally(() => secondaryApp.delete());
-                    }
-
                     this.newUserForm = {
                         fullName: '',
                         email: '',
@@ -1080,39 +1039,6 @@
                         permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, settings: false }
                     };
                     this.renderIcons();
-                },
-
-                migrateUserToFirebase() {
-                    this.firebaseMigrationMessage = '';
-                    const user = this.users.find(u => String(u.id) === String(this.firebaseMigrationUserId));
-                    const password = (this.firebaseMigrationPassword || '').trim();
-                    if (!user) {
-                        this.firebaseMigrationMessage = 'اختر حساباً محلياً أولاً.';
-                        return;
-                    }
-                    if (!this.cloudSyncEnabled || !firebaseAuth) {
-                        this.firebaseMigrationMessage = 'إعداد Firebase غير متاح حالياً؛ سيستمر الحساب بالوضع المحلي.';
-                        return;
-                    }
-                    if (password.length < 6) {
-                        this.firebaseMigrationMessage = 'استخدم كلمة مرور Firebase جديدة من 6 أحرف أو أكثر.';
-                        return;
-                    }
-                    const authEmail = this.firebaseEmailForUser(user.contactEmail || user.email);
-                    const secondaryApp = firebase.initializeApp(firebaseConfig, 'migration-' + Date.now());
-                    secondaryApp.auth().createUserWithEmailAndPassword(authEmail, password)
-                        .then(() => {
-                            this.firebaseMigrationMessage = `تم إنشاء حساب Firebase لـ ${user.fullName}. سجّل الدخول باسم «${user.email}» أو بالبريد «${authEmail}» باستخدام كلمة المرور الجديدة.`;
-                        })
-                        .catch(err => {
-                            this.firebaseMigrationMessage = err?.code === 'auth/email-already-in-use'
-                                ? `الحساب ${authEmail} موجود بالفعل في Firebase. استخدم كلمة مروره عند تسجيل الدخول.`
-                                : 'تعذر إنشاء حساب Firebase الآن. تحقق من تفعيل Email/Password واتصال الإنترنت.';
-                        })
-                        .finally(() => {
-                            this.firebaseMigrationPassword = '';
-                            secondaryApp.delete().catch(() => {});
-                        });
                 },
 
                 removeUser(userId) {
@@ -1969,13 +1895,17 @@
                 // PDF Export Simulation via standard Print/PDF saver
                 exportPrescriptionPDF(rx, patientObj) {
                     this.printPrescription(rx, patientObj);
-                    setTimeout(() => {
-                        window.print();
+                                        setTimeout(() => {
+                        this.triggerPrintWindow();
                     }, 400);
                 },
-
                 triggerPrintWindow() {
+                    const previousTitle = document.title;
+                    document.title = '';
                     window.print();
+                    setTimeout(() => {
+                        document.title = previousTitle;
+                    }, 1000);
                 },
 
                 openInvoiceModal() {
@@ -2104,8 +2034,13 @@
         /* Dedicated Print Styles for Rx Prescription */
         @media print {
             @page {
-                size: A4;
-                margin: 10mm;
+                size: A5 portrait;
+                margin: 0;
+            }
+            html, body {
+                margin: 0 !important;
+                padding: 0 !important;
+                background: #fff !important;
             }
             body * {
                 visibility: hidden;
@@ -2117,13 +2052,17 @@
                 position: absolute;
                 left: 0;
                 top: 0;
-                width: 100%;
-                height: 277mm;
-                min-height: 277mm !important;
-                max-height: 277mm;
+                width: 148mm !important;
+                height: 210mm !important;
+                min-height: 210mm !important;
+                max-height: 210mm !important;
+                box-sizing: border-box;
                 background: white !important;
                 color: black !important;
-                padding: 12px;
+                padding: 8mm !important;
+                margin: 0 !important;
+                border: 0 !important;
+                border-radius: 0 !important;
                 box-shadow: none !important;
                 border: none !important;
                 page-break-after: avoid;
@@ -2170,7 +2109,7 @@
                         </div>
                         <button type="submit" :disabled="isLoading" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-lg transition-all">تسجيل الدخول</button>
                     </form>
-                    <p class="mt-5 text-[11px] leading-5 text-slate-500 dark:text-slate-400 text-center">للدخول مع المزامنة السحابية، استخدم حساب Email/Password الذي أنشأه مدير النظام في Firebase. اكتب اسم المستخدم المحلي أو بريده المسجل؛ عند انقطاع الإنترنت سيستمر الدخول المحلي إذا كانت بيانات الحساب محفوظة على هذا الجهاز.</p>
+                    <p class="mt-5 text-[11px] leading-5 text-slate-500 dark:text-slate-400 text-center">الدخول يتم من حسابات Soli Medical المحلية والصلاحيات التي يحددها مدير النظام. تعمل المزامنة تلقائياً في الخلفية عند توفر الاتصال، ويستمر النظام محلياً عند انقطاعه.</p>
                 </div>
             </div>
         </template>
@@ -2279,6 +2218,15 @@
                             <h1 class="text-lg lg:text-xl font-bold text-slate-800 dark:text-white truncate" x-text="getTabTitle()"></h1>
                         </div>
                         <div class="flex items-center space-x-3 space-x-reverse">
+                            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap"
+                                  :class="{
+                                      'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300': cloudStatus === 'online' && cloudAuthReady,
+                                      'bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:text-blue-300': cloudStatus === 'connecting',
+                                      'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300': cloudStatus === 'offline' || !cloudSyncEnabled
+                                  }"
+                                  :title="cloudStatus === 'online' && cloudAuthReady ? 'المزامنة السحابية تعمل في الخلفية' : 'سيستمر النظام محلياً حتى يعود الاتصال'">
+                                <span x-text="cloudStatus === 'online' && cloudAuthReady ? '🟢 متصل' : (cloudStatus === 'connecting' ? '🔵 جارٍ الاتصال' : '🟡 وضع محلي - بانتظار الاتصال')"></span>
+                            </span>
                             <button @click="darkMode = !darkMode" class="p-2 text-slate-500 dark:text-amber-400"><i :data-lucide="darkMode ? 'sun' : 'moon'" class="w-5 h-5"></i></button>
                         </div>
                     </header>
@@ -3290,52 +3238,13 @@
                                 </div>
                             </div>
 
-                            <!-- Firebase Cloud Sync Setup -->
-                            <div x-show="currentUser?.role === 'admin'" class="bg-blue-50 dark:bg-blue-950/20 p-6 lg:p-8 rounded-2xl border border-blue-100 dark:border-blue-900/60 shadow-sm space-y-4">
-                                <div class="flex flex-wrap items-center justify-between gap-3 border-b border-blue-100 dark:border-blue-900/60 pb-4">
+                            <div class="bg-emerald-50 dark:bg-emerald-950/20 p-4 rounded-2xl border border-emerald-100 dark:border-emerald-900/50 shadow-sm">
+                                <div class="flex items-center gap-3">
+                                    <span class="text-2xl">🟢</span>
                                     <div>
-                                        <h3 class="text-lg font-bold text-slate-800 dark:text-white">تفعيل المزامنة السحابية عبر Firebase</h3>
-                                        <p class="text-xs text-slate-600 dark:text-slate-300 mt-1">المزامنة لا تبدأ إلا بعد تسجيل الدخول بحساب Email/Password مسجل في Firebase.</p>
+                                        <h3 class="text-sm font-bold text-slate-800 dark:text-white">المزامنة تعمل تلقائياً في الخلفية</h3>
+                                        <p class="text-xs text-slate-600 dark:text-slate-300 mt-1">تسجيل الدخول والصلاحيات من حسابات Soli Medical المحلية فقط. لا يحتاج المستخدم إلى حساب Firebase.</p>
                                     </div>
-                                    <span class="text-[11px] font-bold px-2.5 py-1 rounded-full"
-                                          :class="cloudAuthReady && cloudStatus === 'online' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'"
-                                          x-text="cloudAuthReady && cloudStatus === 'online' ? 'متصل ومزامن' : 'بانتظار حساب Firebase'"></span>
-                                </div>
-                                <ol class="list-decimal list-inside space-y-2 text-xs leading-6 text-slate-700 dark:text-slate-300">
-                                    <li>افتح <a href="https://console.firebase.google.com/" target="_blank" rel="noopener" class="font-bold text-blue-700 dark:text-blue-300 underline">Firebase Console</a> ثم مشروع <span class="font-mono">clinic1-ba255</span>.</li>
-                                    <li>من <strong>Authentication → Sign-in method</strong> فعّل <strong>Email/Password</strong> فقط.</li>
-                                    <li>من <strong>Authentication → Users</strong> أنشئ حساب Firebase لكل مستخدم موجود. للحساب المحلي «admin» استخدم البريد الداخلي <span class="font-mono">admin@solimedical.local</span>، أو استخدم البريد الإلكتروني المسجل في خانة بيانات الاتصال.</li>
-                                    <li>في Firestore → Rules اسمح بالقراءة والكتابة للمستخدم المصادق عليه، ثم اختبر الدخول من جهاز آخر.</li>
-                                </ol>
-                                <pre class="text-[10px] leading-5 overflow-x-auto whitespace-pre-wrap bg-slate-900 text-slate-100 rounded-xl p-3" dir="ltr">rules_version = '2';
-service cloud.firestore {
-  match /databases/{database}/documents {
-    match /soliMedicalApp/sharedClinicData {
-      allow read, write: if request.auth != null;
-    }
-  }
-                                }</pre>
-                                <p x-show="authError" x-text="authError" class="text-xs font-semibold text-amber-700 dark:text-amber-300"></p>
-                                <div class="border-t border-blue-100 dark:border-blue-900/60 pt-4 space-y-3">
-                                    <div>
-                                        <h4 class="text-sm font-bold text-slate-800 dark:text-white">ترحيل حساب محلي إلى Firebase</h4>
-                                        <p class="text-[11px] leading-5 text-slate-600 dark:text-slate-300">اختر حساباً موجوداً وصِغ له كلمة مرور Firebase جديدة. لا يتم حفظ كلمة المرور الجديدة داخل النظام أو عرضهـا بعد إنشاء الحساب؛ تبقى الصلاحيات المحلية كما هي.</p>
-                                    </div>
-                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                        <select x-model="firebaseMigrationUserId" class="w-full px-3 py-2 rounded-xl border border-blue-200 dark:border-blue-900 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm">
-                                            <option value="">اختر حساباً محلياً</option>
-                                            <template x-for="user in users" :key="'firebase-migrate-' + user.id">
-                                                <option :value="user.id" x-text="user.fullName + ' — ' + user.email"></option>
-                                            </template>
-                                        </select>
-                                        <input type="password" x-model="firebaseMigrationPassword" minlength="6" autocomplete="new-password" placeholder="كلمة مرور Firebase الجديدة (6+ أحرف)" class="w-full px-3 py-2 rounded-xl border border-blue-200 dark:border-blue-900 bg-white dark:bg-slate-900 text-slate-800 dark:text-white text-sm">
-                                    </div>
-                                    <p x-show="firebaseMigrationEmail" class="text-[11px] text-blue-700 dark:text-blue-300">البريد الذي سيُنشأ في Firebase: <span class="font-mono" dir="ltr" x-text="firebaseMigrationEmail"></span></p>
-                                    <button type="button" @click="migrateUserToFirebase()" class="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">
-                                        <i data-lucide="cloud-upload" class="w-4 h-4"></i>
-                                        إنشاء حساب Firebase لهذا المستخدم
-                                    </button>
-                                    <p x-show="firebaseMigrationMessage" x-text="firebaseMigrationMessage" class="text-xs font-semibold text-blue-700 dark:text-blue-300 bg-white/70 dark:bg-slate-900/50 rounded-xl px-3 py-2"></p>
                                 </div>
                             </div>
 
@@ -3895,7 +3804,7 @@ service cloud.firestore {
                     </div>
                 </div>
 
-                <div id="printablePrescriptionArea" class="border-2 border-slate-300 rounded-2xl p-8 bg-white flex flex-col" style="min-height: 260mm;">
+                <div id="printablePrescriptionArea" class="bg-white flex flex-col" style="min-height: 210mm;">
                     <!-- Branded prescription header with optional clinic logo -->
                     <div class="flex items-center justify-center gap-4 border-b-2 border-blue-600 pb-4">
                         <img x-show="clinicLogoDataUrl" :src="clinicLogoDataUrl" alt="شعار العيادة" class="w-20 h-20 object-contain rounded-xl border border-slate-200 p-1 bg-white flex-shrink-0">
@@ -3976,19 +3885,6 @@ service cloud.firestore {
                         </template>
                         <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
 
-                        <!-- Clinic Branches Footer -->
-                        <div class="border-t pt-3 mt-1 space-y-1.5">
-                            <p class="text-center font-bold text-slate-500 text-[10px] tracking-wide">فروع العيادة ومواعيد العمل</p>
-                            <div class="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1">
-                                <template x-for="c in clinics" :key="c.id">
-                                    <p class="text-[10px] text-slate-500 border-b border-dashed pb-1 leading-relaxed">
-                                        <span class="font-bold text-slate-700" x-text="c.name"></span><br>
-                                        <span x-text="'الموقع: ' + (c.location || '-')"></span><br>
-                                        <span x-text="'العمل: ' + (c.hours || '-') + ' — ' + (c.phone || doctorInfo.phone || '-')"></span>
-                                    </p>
-                                </template>
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>

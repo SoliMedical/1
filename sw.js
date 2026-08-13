@@ -1,4 +1,4 @@
-const CACHE_NAME = "soli-medical-github-pages-v2";
+const CACHE_NAME = "soli-medical-github-pages-v3";
 const BASE_URL = new URL("./", self.registration.scope);
 const APP_SHELL = [
   new URL("./", BASE_URL).toString(),
