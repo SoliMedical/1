@@ -4,14 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Soli Medical - نظام إدارة عيادة الطبيب الواحد</title>
-    <meta name="theme-color" content="#0f2d4a">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Soli Medical">
-    <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="icon" type="image/png" href="/manus-storage/medicenter-icon_c9adbcea.png">
-    <link rel="apple-touch-icon" href="/manus-storage/medicenter-icon_c9adbcea.png">
     <!-- Tailwind CSS with Dark Mode Support -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -167,11 +159,9 @@
 
                 // Multi-user Accounts with Admin-defined Permissions
                 currentUser: null,
-                waitingQueueEnabled: true,
                 permissionModules: [
                     { key: 'dashboard', label: 'لوحة التحكم' },
                     { key: 'newVisit', label: 'إضافة زيارة / كشف' },
-                    { key: 'waitingQueue', label: 'مرضى في الانتظار' },
                     { key: 'followUps', label: 'المتابعة القادمة' },
                     { key: 'patients', label: 'المرضى والملفات الطبية' },
                     { key: 'invoices', label: 'الفواتير والمالية' },
@@ -189,7 +179,7 @@
                         password: '1234',
                         role: 'admin',
                         active: true,
-                        permissions: { dashboard: true, newVisit: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, settings: true }
+                        permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, settings: true }
                     },
                     {
                         id: 2,
@@ -199,7 +189,7 @@
                         password: '1111',
                         role: 'محاسب',
                         active: true,
-                        permissions: { dashboard: true, newVisit: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, settings: false }
+                        permissions: { dashboard: true, newVisit: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, settings: false }
                     }
                 ],
                 newUserForm: {
@@ -208,7 +198,7 @@
                     contactEmail: '',
                     password: '',
                     role: 'موظف استقبال',
-                    permissions: { dashboard: true, newVisit: true, waitingQueue: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, settings: false }
+                    permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, settings: false }
                 },
                 userPermissionDrafts: {},
                 userSaveFeedback: {},
@@ -390,7 +380,7 @@
                 ],
 
                 waitingQueue: [
-                    { id: 201, patientId: 1, patientName: 'دينا رمضان', symptom: 'ارتفاع درجة الحرارة', clinic: 'فرع المعادي', createdAt: '2026-08-10T09:00:00' }
+                    { id: 201, patientName: 'دينا رمضان', symptom: 'ارتفاع درجة الحرارة', clinic: 'فرع المعادي' }
                 ],
 
                 invoices: [
@@ -425,13 +415,6 @@
 
                 init() {
                     this.loadPersistedState();
-                    if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
-                    this.users.forEach(u => {
-                        if (!u.permissions) u.permissions = {};
-                        if (u.permissions.waitingQueue === undefined) {
-                            u.permissions.waitingQueue = u.role === 'admin' || !!u.permissions.newVisit || !!u.permissions.patients;
-                        }
-                    });
                     this.restoreSession();
                     this.renderIcons();
                     this.$watch('currentView', () => {
@@ -687,7 +670,7 @@
                 // is lost on refresh. When the app is later connected to Supabase (or another
                 // backend), these same read/write points are where the cloud sync calls should go.
                 storageKey: 'soliMedicalData_v1',
-                persistentKeys: ['patients', 'waitingQueue', 'waitingQueueEnabled', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections'],
+                persistentKeys: ['patients', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections'],
 
                 loadPersistedState() {
                     try {
@@ -916,7 +899,6 @@
                     dashboard: 'dashboard',
                     newVisit: 'newVisit',
                     followUps: 'followUps',
-                    waitingQueue: 'waitingQueue',
                     patientsList: 'patients',
                     medicalRecord: 'patients',
                     invoices: 'invoices',
@@ -934,8 +916,6 @@
                     if (!firstAllowed) { this.currentView = 'dashboard'; return; }
                     if (firstAllowed.key === 'newVisit') {
                         this.openPatientFormPage();
-                    } else if (firstAllowed.key === 'waitingQueue') {
-                        this.currentView = 'waitingQueue';
                     } else {
                         this.currentView = firstAllowed.key;
                     }
@@ -943,11 +923,6 @@
 
                 navigateTo(view) {
                     const requiredPermission = this.viewPermissionMap[view];
-                    if (view === 'waitingQueue' && !this.waitingQueueEnabled) {
-                        this.landOnAllowedPage(this.currentUser);
-                        this.mobileMenuOpen = false;
-                        return;
-                    }
                     if (this.currentUser && requiredPermission && !this.currentUser.permissions[requiredPermission]) {
                         // Not allowed here — send them to the first section they DO have access to.
                         this.landOnAllowedPage(this.currentUser);
@@ -959,19 +934,11 @@
                     window.scrollTo({ top: 0, behavior: 'smooth' });
                 },
 
-                setWaitingQueueEnabled(value) {
-                    this.waitingQueueEnabled = !!value;
-                    if (!this.waitingQueueEnabled && this.currentView === 'waitingQueue') {
-                        this.landOnAllowedPage(this.currentUser);
-                    }
-                },
-
                 getTabTitle() {
                     const titles = {
                         dashboard: 'لوحة التحكم وإدارة العيادة',
                         newVisit: 'إضافة كشف جديد / متابعة',
                         followUps: 'المتابعة القادمة وتذكيرات المرضى',
-                        waitingQueue: 'مرضى في الانتظار',
                         patientsList: 'سجل إدارات المرضى والملفات الطبية',
                         patientForm: 'تسجيل زيارة / مريض جديد',
                         medicalRecord: 'السجل الطبي الموسع للمريض',
@@ -1345,11 +1312,9 @@
 
                         this.waitingQueue.unshift({
                             id: Date.now(),
-                            patientId: p.id,
                             patientName: p.fullName,
                             symptom: (p.selectedSymptoms && p.selectedSymptoms[0]) ? p.selectedSymptoms[0] : ('زيارة ' + p.visitType),
-                            clinic: 'عيادة الطبيب',
-                            createdAt: new Date().toISOString()
+                            clinic: 'عيادة الطبيب'
                         });
 
                         this.invoices.unshift({
@@ -1374,11 +1339,9 @@
                         this.patients.unshift(newP);
                         this.waitingQueue.unshift({
                             id: Date.now(),
-                            patientId: newP.id,
                             patientName: newP.fullName,
                             symptom: (newP.selectedSymptoms && newP.selectedSymptoms[0]) ? newP.selectedSymptoms[0] : ('زيارة ' + newP.visitType),
-                            clinic: 'عيادة الطبيب',
-                            createdAt: new Date().toISOString()
+                            clinic: 'عيادة الطبيب'
                         });
 
                         this.invoices.unshift({
@@ -1394,9 +1357,7 @@
                     }
                     this.matchedExistingPatient = null;
 
-                    if (this.currentUser?.permissions?.waitingQueue && this.waitingQueueEnabled) {
-                        this.navigateTo('waitingQueue');
-                    } else if (this.currentUser?.permissions?.patients) {
+                    if (this.currentUser?.permissions?.patients) {
                         this.navigateTo('patientsList');
                     } else {
                         // Employee only has "newVisit" access — keep them inside their own section
@@ -1547,8 +1508,6 @@
                         };
                         this.prescriptions.unshift(rx);
 
-                        this.removeFromQueueForPatient(this.selectedPatientForRecord.id);
-
                         this.newRecordForm = {
                             selectedDiagnosesList: [], customDiagnosis: '',
                             selectedVitals: [], customVital: '',
@@ -1557,12 +1516,7 @@
                             selectedMedicinesWithDosage: [], nextFollowUpDate: '', generalNotes: ''
                         };
                         this.renderIcons();
-                        alert('تم حفظ الزيارة وتوليد الروشتة بنجاح، وتم نقل المريض إلى إدارة المرضى والملفات الطبية ✅');
-                        if (this.currentUser?.permissions?.patients) {
-                            this.navigateTo('patientsList');
-                        } else if (this.currentUser?.permissions?.waitingQueue) {
-                            this.navigateTo('waitingQueue');
-                        }
+                        alert('تم حفظ الزيارة وتوليد الروشتة بنجاح ✅');
                     } catch (err) {
                         console.error('addMedicalRecord failed:', err);
                         alert('حدث خطأ غير متوقع أثناء الحفظ: ' + err.message + '\n\nجرّب الضغط على Ctrl+Shift+R لتحديث الصفحة بالكامل، أو استخدم زر "إعادة ضبط البيانات المحلية" في الإعدادات إذا استمرت المشكلة.');
@@ -1725,19 +1679,6 @@
                     }
                 },
 
-                openWaitingPatient(item) {
-                    const patient = this.patients.find(p => p.id === item.patientId) || this.patients.find(p => p.fullName === item.patientName);
-                    if (!patient) {
-                        alert('لم يتم العثور على ملف هذا المريض. يمكنك حذف البطاقة من قائمة الانتظار.');
-                        return;
-                    }
-                    this.openMedicalRecordPage(patient);
-                },
-
-                removeFromQueueForPatient(patientId) {
-                    this.waitingQueue = this.waitingQueue.filter(item => item.patientId !== patientId);
-                },
-
                 removeFromQueue(id) {
                     this.waitingQueue = this.waitingQueue.filter(i => i.id !== id);
                 }
@@ -1751,13 +1692,6 @@
     <style>
         body { font-family: 'Cairo', sans-serif; }
         [x-cloak] { display: none !important; }
-
-        /* Soli Medical responsive patient workflow: keep dense clinical tables usable on narrow screens. */
-        .patients-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-        @media (max-width: 640px) {
-            .patients-table-scroll table { min-width: 720px; }
-            .patients-table-scroll th, .patients-table-scroll td { white-space: normal; }
-        }
 
         /* Dedicated Print Styles for Rx Prescription */
         @media print {
@@ -1874,13 +1808,6 @@
                             <i data-lucide="user-plus" class="w-5 h-5"></i>
                             <span>إضافة زيارة / كشف</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.waitingQueue && waitingQueueEnabled" @click="navigateTo('waitingQueue')" :class="{'bg-amber-500 text-white font-semibold': currentView === 'waitingQueue'}" class="flex items-center justify-between px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-slate-800">
-                            <span class="flex items-center space-x-3 space-x-reverse">
-                                <i data-lucide="clock-3" class="w-5 h-5"></i>
-                                <span>مرضى في الانتظار</span>
-                            </span>
-                            <span x-show="waitingQueue.length > 0" x-text="waitingQueue.length" class="bg-amber-100 text-amber-700 text-[10px] font-bold min-w-5 h-5 px-1 rounded-full flex items-center justify-center"></span>
-                        </a>
                         <a x-show="currentUser?.permissions?.followUps" @click="navigateTo('followUps')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'followUps'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer justify-between space-x-3 space-x-reverse hover:bg-slate-800">
                             <span class="flex items-center space-x-3 space-x-reverse">
                                 <i data-lucide="bell" class="w-5 h-5"></i>
@@ -1976,63 +1903,6 @@
                             </div>
                         </div>
 
-                        <!-- WAITING QUEUE PAGE -->
-                        <div x-show="currentView === 'waitingQueue' && waitingQueueEnabled" class="max-w-5xl mx-auto space-y-6">
-                            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                <div>
-                                    <h3 class="font-bold text-slate-800 dark:text-white text-xl">مرضى في الانتظار</h3>
-                                    <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">افتح بطاقة المريض لبدء الكشف وكتابة الروشتة. بعد الحفظ تختفي البطاقة تلقائياً.</p>
-                                </div>
-                                <button @click="openPatientFormPage()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center gap-2 shadow-sm">
-                                    <i data-lucide="user-plus" class="w-4 h-4"></i>
-                                    <span>إضافة زيارة / كشف</span>
-                                </button>
-                            </div>
-
-                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                <div class="bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-4 shadow-sm">
-                                    <p class="text-xs text-slate-400 font-semibold">إجمالي المنتظرين</p>
-                                    <p class="text-3xl font-bold text-amber-600 mt-1" x-text="waitingQueue.length"></p>
-                                </div>
-                                <div class="bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-4 shadow-sm sm:col-span-2">
-                                    <p class="text-xs text-slate-400 font-semibold">طريقة الاستخدام</p>
-                                    <p class="text-sm text-slate-600 dark:text-slate-300 mt-1">اضغط «فتح الكشف»، أضف التشخيص والروشتة، ثم احفظ. سيُنقل المريض إلى إدارة المرضى والملفات الطبية.</p>
-                                </div>
-                            </div>
-
-                            <div class="space-y-3">
-                                <template x-for="item in waitingQueue" :key="item.id">
-                                    <article class="bg-white dark:bg-slate-900 rounded-2xl border border-amber-100 dark:border-slate-800 shadow-sm p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                                        <div class="flex items-start gap-3 min-w-0">
-                                            <div class="w-11 h-11 rounded-2xl bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 flex items-center justify-center flex-shrink-0">
-                                                <i data-lucide="user-round" class="w-5 h-5"></i>
-                                            </div>
-                                            <div class="min-w-0">
-                                                <h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="item.patientName"></h4>
-                                                <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="item.symptom || 'زيارة / كشف جديد'"></p>
-                                                <p class="text-[11px] text-slate-400 mt-1" x-text="item.clinic || 'عيادة الطبيب'"></p>
-                                            </div>
-                                        </div>
-                                        <div class="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
-                                            <button @click="openWaitingPatient(item)" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
-                                                <i data-lucide="stethoscope" class="w-4 h-4"></i>
-                                                <span>فتح الكشف وكتابة الروشتة</span>
-                                            </button>
-                                            <button @click="removeFromQueue(item.id)" class="bg-slate-100 hover:bg-red-50 dark:bg-slate-800 dark:hover:bg-red-950/30 text-slate-600 hover:text-red-600 dark:text-slate-300 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
-                                                <i data-lucide="x" class="w-4 h-4"></i>
-                                                <span>إزالة</span>
-                                            </button>
-                                        </div>
-                                    </article>
-                                </template>
-                                <div x-show="waitingQueue.length === 0" class="bg-white dark:bg-slate-900 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-800 p-10 text-center">
-                                    <i data-lucide="clipboard-check" class="w-10 h-10 mx-auto text-emerald-500 mb-3"></i>
-                                    <p class="font-bold text-slate-700 dark:text-slate-200">لا يوجد مرضى في الانتظار حالياً</p>
-                                    <p class="text-sm text-slate-400 mt-1">عند تسجيل زيارة جديدة ستظهر هنا تلقائياً.</p>
-                                </div>
-                            </div>
-                        </div>
-
                         <!-- UPCOMING FOLLOW-UPS PAGE -->
                         <div x-show="currentView === 'followUps'" class="max-w-4xl mx-auto space-y-6">
                             <div class="flex items-center justify-between">
@@ -2076,15 +1946,15 @@
 
                         <!-- PATIENTS LIST -->
                         <div x-show="currentView === 'patientsList'" class="space-y-6">
-                            <div class="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
-                                <input type="text" x-model="patientSearch" placeholder="بحث ذكي عن مريض..." class="w-full sm:max-w-md px-4 py-2.5 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-xl text-sm">
-                                <button @click="openPatientFormPage()" class="w-full sm:w-auto bg-blue-600 text-white px-4 py-2.5 rounded-xl text-sm font-bold flex items-center justify-center space-x-1 space-x-reverse">
+                            <div class="flex justify-between items-center gap-4">
+                                <input type="text" x-model="patientSearch" placeholder="بحث ذكي عن مريض..." class="w-full max-w-md px-4 py-2 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-xl text-sm">
+                                <button @click="openPatientFormPage()" class="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center space-x-1 space-x-reverse">
                                     <i data-lucide="user-plus" class="w-4 h-4"></i>
                                     <span>تسجيل مريض / زيارة</span>
                                 </button>
                             </div>
 
-                            <div class="patients-table-scroll bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 shadow-sm">
+                            <div class="bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 overflow-hidden shadow-sm">
                                 <table class="w-full text-right min-w-[600px]">
                                     <thead class="bg-slate-50 dark:bg-slate-800/80 text-xs uppercase text-slate-500">
                                         <tr>
@@ -2801,17 +2671,6 @@
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings'" class="max-w-4xl space-y-6">
-                            <div class="bg-white dark:bg-slate-900 p-5 rounded-2xl border dark:border-slate-800 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                <div>
-                                    <h3 class="font-bold text-slate-800 dark:text-white">قسم مرضى في الانتظار</h3>
-                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تحكم في ظهور الصفحة لجميع المستخدمين، مع بقاء صلاحية كل مستخدم قابلة للتخصيص أدناه.</p>
-                                </div>
-                                <label class="inline-flex items-center gap-3 cursor-pointer self-start sm:self-auto">
-                                    <span class="text-sm font-semibold text-slate-600 dark:text-slate-300" x-text="waitingQueueEnabled ? 'ظاهر' : 'مخفي'"></span>
-                                    <input type="checkbox" class="sr-only peer" :checked="waitingQueueEnabled" @change="setWaitingQueueEnabled($event.target.checked)">
-                                    <span class="relative w-11 h-6 rounded-full bg-slate-300 peer-checked:bg-amber-500 transition-colors after:content-[''] after:absolute after:top-0.5 after:right-0.5 after:w-5 after:h-5 after:rounded-full after:bg-white after:shadow-sm after:transition-transform peer-checked:after:-translate-x-5"></span>
-                                </label>
-                            </div>
                             
                             <!-- Doctor Info Settings -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
@@ -3440,11 +3299,4 @@
 
     </div>
 </body>
-    <script>
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', () => {
-                navigator.serviceWorker.register('/sw.js').catch(error => console.warn('Soli Medical Service Worker:', error));
-            });
-        }
-    </script>
 </html>
