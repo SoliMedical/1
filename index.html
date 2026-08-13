@@ -40,6 +40,8 @@
     <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet">
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Lightweight QR Code generator used only inside the prescription preview/print layout. -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <!-- Firebase (Authentication + Firestore realtime database with built-in offline support) -->
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
@@ -122,7 +124,13 @@
                 showInlineEditSymptomsModal: false,
                 showInlineEditBasicInfoModal: false,
                 showPrescriptionPrintModal: false,
+                printPageMode: 'auto',
                 showSyncConflictsModal: false,
+                showCloudResetModal: false,
+                cloudResetPasswordInput: '',
+                cloudResetConfirmation: '',
+                cloudResetBusy: false,
+                cloudResetAcknowledgedToken: '',
                 syncConflicts: [],
                 syncDeviceId: '',
                 syncRevision: 0,
@@ -950,6 +958,107 @@
                         console.error('تعذر مسح البيانات المحلية:', e);
                     }
                     window.location.reload(true);
+                },
+
+                openCloudResetModal() {
+                    if (this.currentUser?.role !== 'admin') {
+                        alert('هذا الإجراء متاح للمدير فقط.');
+                        return;
+                    }
+                    this.cloudResetPasswordInput = '';
+                    this.cloudResetConfirmation = '';
+                    this.showCloudResetModal = true;
+                    this.$nextTick(() => this.renderIcons());
+                },
+
+                getCloudResetDataSnapshot() {
+                    const snapshot = this.getSyncDataSnapshot();
+                    // Credentials and clinic configuration remain available so the clinic can
+                    // sign in again after a destructive records reset. All clinical/financial
+                    // collections are cleared and then propagated through Firestore.
+                    ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'expenses', 'syncConflicts'].forEach(key => {
+                        snapshot[key] = [];
+                    });
+                    return snapshot;
+                },
+
+                applyCloudResetSnapshot(snapshot, token) {
+                    this.applyingRemoteUpdate = true;
+                    this.persistentKeys.forEach(key => {
+                        if (snapshot[key] !== undefined) this[key] = snapshot[key];
+                    });
+                    this.cloudResetAcknowledgedToken = token || '';
+                    this.syncRevision = Number(snapshot._syncMeta?.revision || this.syncRevision || 0);
+                    this.localChangesPending = false;
+                    this.localEditBaseRevision = this.syncRevision;
+                    this.persistState();
+                    this.renderIcons();
+                    this.$nextTick(() => { this.applyingRemoteUpdate = false; });
+                },
+
+                async resetClinicDataEverywhere() {
+                    if (this.cloudResetBusy) return;
+                    if (this.currentUser?.role !== 'admin') {
+                        alert('هذا الإجراء متاح للمدير فقط.');
+                        return;
+                    }
+                    const admin = (this.users || []).find(user => user.role === 'admin' && user.active !== false);
+                    const expectedPassword = String(admin?.password || this.currentUser?.password || '');
+                    if (!expectedPassword || String(this.cloudResetPasswordInput || '') !== expectedPassword) {
+                        alert('الرقم السري للمدير غير صحيح.');
+                        return;
+                    }
+                    if (String(this.cloudResetConfirmation || '').trim() !== 'حذف') {
+                        alert('اكتب كلمة «حذف» في خانة التأكيد قبل المتابعة.');
+                        return;
+                    }
+                    if (!confirm('تحذير نهائي: سيتم حذف المرضى والزيارات والوصفات والفواتير والمصروفات وقائمة الانتظار وسجل التعارضات من النسخة المحلية والسحابة، ثم تُفرغ على جميع الأجهزة المتصلة. ستبقى حسابات المستخدمين وإعدادات العيادة محفوظة. هل تريد المتابعة؟')) return;
+
+                    this.cloudResetBusy = true;
+                    const token = `RESET-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                    const resetData = this.getCloudResetDataSnapshot();
+                    resetData._resetMeta = {
+                        token,
+                        requestedAt: new Date().toISOString(),
+                        requestedBy: this.currentUser?.fullName || 'المدير',
+                        scope: 'clinical-and-financial-records'
+                    };
+                    try {
+                        if (this.cloudSyncEnabled && this.cloudAuthReady && firestoreDB) {
+                            const docRef = firestoreDB.doc(this.cloudDocPath);
+                            const result = await firestoreDB.runTransaction(async transaction => {
+                                const snap = await transaction.get(docRef);
+                                const remoteMeta = snap.exists ? (snap.data()._syncMeta || {}) : {};
+                                const revision = Number(remoteMeta.revision || this.syncRevision || 0) + 1;
+                                const syncMeta = {
+                                    revision,
+                                    writerId: this.syncDeviceId,
+                                    writerName: this.currentUser?.fullName || 'المدير',
+                                    updatedAt: new Date().toISOString(),
+                                    operation: 'cloud-reset'
+                                };
+                                transaction.set(docRef, { ...resetData, _syncMeta: syncMeta }, { merge: false });
+                                return { revision };
+                            });
+                            resetData._syncMeta = { ...resetData._syncMeta, revision: result.revision };
+                            this.cloudStatus = 'online';
+                        } else {
+                            this.cloudStatus = 'offline';
+                            alert('لا يوجد اتصال سحابي حالياً؛ سيتم تطبيق إعادة الضبط على هذا الجهاز فقط. أعد الاتصال ثم نفّذ الإجراء مرة أخرى لحذف البيانات من جميع الأجهزة.');
+                            return;
+                        }
+                        this.applyCloudResetSnapshot(resetData, token);
+                        this.showCloudResetModal = false;
+                        this.cloudResetPasswordInput = '';
+                        this.cloudResetConfirmation = '';
+                        alert('تم حذف السجلات الطبية والمالية من السحابة وتفريغها على الأجهزة المتصلة بنجاح.');
+                    } catch (error) {
+                        console.error('تعذر تنفيذ إعادة الضبط السحابية:', error);
+                        this.cloudStatus = 'offline';
+                        alert('تعذر تنفيذ الحذف السحابي. لم تُمسح البيانات المحلية؛ تحقق من الاتصال وقواعد Firestore ثم أعد المحاولة.');
+                    } finally {
+                        this.cloudResetBusy = false;
+                    }
                 },
 
                 downloadClinicBackup() {
@@ -2116,11 +2225,45 @@
                     const printLayout = this.getPrescriptionPrintLayout(this.selectedPrescriptionForPrint);
                     this.printDensity = printLayout.density;
                     this.printPrescriptionSplitPage = printLayout.split;
+                    this.printPageMode = 'auto';
                     this.showPrescriptionPrintModal = true;
+                    this.$nextTick(() => this.refreshPrescriptionQrCode());
                 },
                 printPrescriptionA5(rx, patientObj) {
                     this.printPrescription(rx, patientObj);
                     this.$nextTick(() => window.setTimeout(() => this.triggerPrintWindow(), 180));
+                },
+                updatePrescriptionPrintMode() {
+                    const autoSplit = this.getPrescriptionPrintLayout(this.selectedPrescriptionForPrint || {}).split;
+                    this.printPrescriptionSplitPage = this.printPageMode === 'two' || (this.printPageMode === 'auto' && autoSplit);
+                    this.$nextTick(() => this.refreshPrescriptionQrCode());
+                },
+                refreshPrescriptionQrCode() {
+                    this.$nextTick(() => {
+                        const target = document.getElementById('prescriptionQrCode');
+                        if (!target || !this.selectedPrescriptionForPrint) return;
+                        target.innerHTML = '';
+                        const clinic = this.clinics?.[0] || {};
+                        const qrText = [
+                            `Soli Medical — ${this.doctorInfo.fullName || ''}`,
+                            `للحجز والتواصل: ${clinic.phone || this.doctorInfo.phone || 'غير مسجل'}`,
+                            clinic.location ? `العنوان: ${clinic.location}` : '',
+                            clinic.hours ? `مواعيد العمل: ${clinic.hours}` : ''
+                        ].filter(Boolean).join('\n');
+                        if (window.QRCode) {
+                            new QRCode(target, {
+                                text: qrText,
+                                width: 76,
+                                height: 76,
+                                colorDark: '#0f2d4a',
+                                colorLight: '#ffffff',
+                                correctLevel: QRCode.CorrectLevel.M
+                            });
+                        } else {
+                            target.textContent = 'QR';
+                            target.classList.add('prescription-qr-fallback');
+                        }
+                    });
                 },
 
                 // Normalizes any locally-entered phone number (e.g. 01021434947 or 1021434947)
@@ -2321,24 +2464,31 @@
             .patients-table-scroll td:last-child button { width: 100%; justify-content: center; }
         }
 
-        /* Soli Medical print system: readable A5 output, compact density classes, and a distinct cool-blue sidebar. */
-        .print-rx-header { position: relative; min-height: 24mm; }
-        .print-doctor-line { line-height: 1.05; }
-        .print-doctor-name { font-family: 'Amiri', 'Traditional Arabic', serif; }
+        /* Soli Medical print system: familiar Arabic header, restrained density scaling, and A5-safe layout. */
+        .print-rx-header { position: relative; min-height: 29mm; }
+        .print-doctor-line { line-height: 1.1; }
+        .print-doctor-name { font-family: 'Amiri', 'Traditional Arabic', serif; letter-spacing: 0 !important; }
+        .print-doctor-specialty, .print-doctor-contact { white-space: nowrap; }
         .print-text-wrap { overflow-wrap: anywhere; word-break: break-word; }
         .print-page { width: 100%; box-sizing: border-box; }
         .print-medicines-page { padding-top: 4mm; }
-        .print-density-compact .print-rx-header { min-height: 19mm; }
+        .print-prescription-controls { direction: rtl; }
+        .prescription-qr { display: flex; align-items: center; gap: 8px; justify-content: center; }
+        .prescription-qr canvas, .prescription-qr img { width: 19mm !important; height: 19mm !important; image-rendering: pixelated; }
+        .prescription-qr-fallback { width: 19mm; height: 19mm; border: 2px solid #0f2d4a; display: grid; place-items: center; font-weight: 800; color: #0f2d4a; }
+        .print-density-compact .print-rx-header { min-height: 23mm; }
         .print-density-compact .print-doctor-name { font-size: 24px !important; }
-        .print-density-compact .print-doctor-specialty { font-size: 10px !important; }
+        .print-density-compact .print-doctor-specialty { font-size: 9px !important; }
+        .print-density-compact .print-doctor-contact { font-size: 9px !important; }
         .print-density-compact .print-section { padding: 2.2mm !important; margin-top: 2mm !important; font-size: 10px !important; }
         .print-density-compact .print-section p { font-size: 11px !important; line-height: 1.35 !important; }
         .print-density-compact .print-medicines-block { gap: 2mm !important; }
         .print-density-compact .print-medicines-block ol { font-size: 11px !important; line-height: 1.35 !important; }
         .print-density-compact .print-medicines-block li { padding-bottom: 1mm !important; }
-        .print-density-ultra .print-rx-header { min-height: 17mm; }
+        .print-density-ultra .print-rx-header { min-height: 20mm; }
         .print-density-ultra .print-doctor-name { font-size: 21px !important; }
-        .print-density-ultra .print-doctor-specialty { font-size: 9px !important; }
+        .print-density-ultra .print-doctor-specialty { font-size: 8px !important; }
+        .print-density-ultra .print-doctor-contact { font-size: 8px !important; }
         .print-density-ultra .print-section { padding: 1.6mm !important; margin-top: 1.5mm !important; font-size: 9px !important; }
         .print-density-ultra .print-section p { font-size: 9.5px !important; line-height: 1.25 !important; }
         .print-density-ultra .print-medicines-block ol { font-size: 10px !important; line-height: 1.25 !important; }
@@ -2398,14 +2548,17 @@
                 page-break-after: auto;
                 break-after: auto;
             }
-            #printablePrescriptionArea .print-rx-header img { max-width: 22mm !important; max-height: 22mm !important; }
+            #printablePrescriptionArea .print-rx-header img { max-width: 24mm !important; max-height: 24mm !important; }
             #printablePrescriptionArea .print-text-wrap { overflow-wrap: anywhere !important; word-break: break-word !important; }
+            #printablePrescriptionArea .print-doctor-specialty { white-space: nowrap !important; }
             .print-clinic-footer {
                 display: block !important;
                 visibility: visible !important;
                 break-inside: avoid;
                 page-break-inside: avoid;
             }
+            .prescription-qr { break-inside: avoid; page-break-inside: avoid; }
+            #printablePrescriptionArea:not(.print-split-page) .print-medicines-page { page-break-before: auto; break-before: auto; }
             .no-print {
                 display: none !important;
             }
@@ -3310,6 +3463,10 @@
                                                             <i data-lucide="message-circle" class="w-3.5 h-3.5"></i>
                                                             <span>واتساب</span>
                                                         </button>
+                                                        <button @click="printPrescription(rec, selectedPatientForRecord)" class="bg-slate-700 hover:bg-slate-800 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
+                                                            <i data-lucide="eye" class="w-3.5 h-3.5"></i>
+                                                            <span>معاينة</span>
+                                                        </button>
                                                         <button @click="printPrescriptionA5(rec, selectedPatientForRecord)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center space-x-1 space-x-reverse">
                                                             <i data-lucide="printer" class="w-3.5 h-3.5"></i>
                                                             <span>طباعة A5</span>
@@ -3584,6 +3741,7 @@
                                                     <p class="text-xs text-slate-600 dark:text-slate-300 truncate" x-text="(rx.medicinesWithDosage || []).map(m => m.name).join('، ') || 'لا توجد أدوية مسجلة'" ></p>
                                                     <div class="flex flex-wrap gap-1.5 lg:justify-end">
                                                         <button @click.stop="sendWhatsAppPrescription(rx, null)" class="bg-emerald-600 hover:bg-emerald-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="message-circle" class="w-3.5 h-3.5"></i><span>واتساب</span></button>
+                                                        <button @click.stop="printPrescription(rx, null)" class="bg-slate-700 hover:bg-slate-800 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="eye" class="w-3.5 h-3.5"></i><span>معاينة</span></button>
                                                         <button @click.stop="printPrescriptionA5(rx, null)" class="bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1"><i data-lucide="printer" class="w-3.5 h-3.5"></i><span>طباعة A5</span></button>
                                                     </div>
                                                 </div>
@@ -4004,11 +4162,14 @@
                                 </div>
                             </div>
 
-                            <!-- Danger Zone: Reset Local Data (Admin Only) -->
+                            <!-- Danger Zone: Local + Cloud Reset (Admin Only) -->
                             <div x-show="currentUser?.role === 'admin'" class="bg-red-50 dark:bg-red-900/10 p-6 lg:p-8 rounded-2xl border-2 border-red-100 dark:border-red-900 shadow-sm space-y-3">
-                                <h3 class="text-lg font-bold text-red-700 dark:text-red-400 border-b border-red-100 dark:border-red-900 pb-3">منطقة الخطر: إعادة ضبط البيانات المحلية</h3>
-                                <p class="text-xs text-red-600 dark:text-red-400">استخدم هذا فقط إذا واجهت أخطاء غريبة أو توقف حفظ البيانات بشكل غير طبيعي بسبب نسخة قديمة محفوظة في هذا المتصفح تحديداً. هذا لا يحذف بيانات الأجهزة الأخرى، فقط النسخة المحلية على هذا الجهاز، وستحتاج لتسجيل الدخول من جديد.</p>
-                                <button type="button" @click="resetLocalData()" class="bg-red-600 hover:bg-red-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow">إعادة ضبط البيانات المحلية على هذا الجهاز</button>
+                                <h3 class="text-lg font-bold text-red-700 dark:text-red-400 border-b border-red-100 dark:border-red-900 pb-3">منطقة الخطر: إعادة ضبط البيانات</h3>
+                                <p class="text-xs text-red-600 dark:text-red-400">إعادة الضبط المحلية تمسح نسخة هذا المتصفح فقط. أما إعادة الضبط السحابية فتحذف السجلات الطبية والمالية من Firestore وتبث التفريغ إلى جميع الأجهزة المتصلة، مع إبقاء حسابات المستخدمين وإعدادات العيادة.</p>
+                                <div class="flex flex-wrap gap-2">
+                                    <button type="button" @click="resetLocalData()" class="bg-red-600 hover:bg-red-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow">إعادة ضبط هذا الجهاز</button>
+                                    <button type="button" @click="openCloudResetModal()" class="bg-red-950 hover:bg-black text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow inline-flex items-center gap-2"><i data-lucide="cloud-off" class="w-4 h-4"></i>حذف البيانات من السحابة وكل الأجهزة</button>
+                                </div>
                             </div>
 
                         </div>
@@ -4018,6 +4179,29 @@
                 </div>
             </div>
         </template>
+
+        <!-- CLOUD RESET CONFIRMATION MODAL -->
+        <div x-show="showCloudResetModal" x-cloak class="fixed inset-0 z-[70] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 w-full max-w-lg rounded-2xl shadow-2xl border-2 border-red-200 dark:border-red-900 p-6 space-y-5" role="dialog" aria-modal="true" aria-labelledby="cloud-reset-title">
+                <div class="flex items-start gap-3">
+                    <div class="rounded-full bg-red-100 dark:bg-red-950/50 text-red-700 dark:text-red-300 p-2"><i data-lucide="triangle-alert" class="w-5 h-5"></i></div>
+                    <div>
+                        <h3 id="cloud-reset-title" class="text-lg font-bold text-red-700 dark:text-red-300">تأكيد الحذف من السحابة وكل الأجهزة</h3>
+                        <p class="text-xs text-slate-600 dark:text-slate-300 mt-2 leading-6">هذا الإجراء نهائي للسجلات الطبية والمالية: المرضى، الزيارات، الوصفات، الفواتير، المصروفات، قائمة الانتظار، وسجل التعارضات. لا يمكن التراجع عنه من داخل النظام، لذلك أنشئ نسخة JSON احتياطية قبل المتابعة.</p>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-200">الرقم السري للمدير</label>
+                    <input type="password" x-model="cloudResetPasswordInput" autocomplete="current-password" placeholder="اكتب الرقم السري للمدير" class="w-full px-3 py-2.5 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-slate-800 text-sm text-slate-900 dark:text-white">
+                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-200">اكتب كلمة <span class="text-red-600">حذف</span> للتأكيد</label>
+                    <input type="text" x-model="cloudResetConfirmation" autocomplete="off" placeholder="حذف" class="w-full px-3 py-2.5 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-slate-800 text-sm text-slate-900 dark:text-white">
+                </div>
+                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <button type="button" @click="showCloudResetModal = false" :disabled="cloudResetBusy" class="px-4 py-2 rounded-xl text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800">إلغاء</button>
+                    <button type="button" @click="resetClinicDataEverywhere()" :disabled="cloudResetBusy" class="px-4 py-2 rounded-xl text-sm font-bold text-white bg-red-600 hover:bg-red-700 disabled:opacity-50 inline-flex items-center gap-2"><i data-lucide="trash-2" class="w-4 h-4"></i><span x-text="cloudResetBusy ? 'جارٍ الحذف...' : 'تأكيد الحذف النهائي'"></span></button>
+                </div>
+            </div>
+        </div>
 
         <!-- INLINE EDIT SYMPTOMS & CHRONIC DISEASES MODAL -->
         <div x-show="showInlineEditSymptomsModal" x-cloak class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
@@ -4183,7 +4367,13 @@
             <div class="bg-white rounded-2xl max-w-2xl w-full p-8 space-y-6 shadow-2xl text-slate-900 my-6">
                 <div class="flex justify-between items-center border-b pb-4 no-print sticky top-0 bg-white z-10">
                     <h3 class="text-lg font-bold text-slate-800">معاينة الروشتة الطبية قبل الطباعة</h3>
-                    <div class="flex space-x-2 space-x-reverse">
+                    <div class="flex flex-wrap items-center justify-end gap-2">
+                        <div class="print-prescription-controls flex items-center gap-1 rounded-xl bg-slate-100 px-2 py-1.5">
+                            <span class="text-[11px] font-bold text-slate-500 px-1">العرض:</span>
+                            <button type="button" @click="printPageMode = 'one'; updatePrescriptionPrintMode()" :class="printPageMode === 'one' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-white'" class="px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors">صفحة واحدة</button>
+                            <button type="button" @click="printPageMode = 'two'; updatePrescriptionPrintMode()" :class="printPageMode === 'two' ? 'bg-blue-600 text-white' : 'text-slate-600 hover:bg-white'" class="px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors">صفحتان</button>
+                            <button type="button" @click="printPageMode = 'auto'; updatePrescriptionPrintMode()" :class="printPageMode === 'auto' ? 'bg-amber-500 text-white' : 'text-slate-600 hover:bg-white'" class="px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-colors">تلقائي</button>
+                        </div>
                         <button @click="triggerPrintWindow" class="bg-emerald-600 text-white px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-1 space-x-reverse">
                             <i data-lucide="printer" class="w-4 h-4"></i>
                             <span>طباعة A5 مباشرة</span>
@@ -4194,16 +4384,17 @@
 
                 <div id="printablePrescriptionArea" class="bg-white flex flex-col" :class="{ 'print-split-page': printPrescriptionSplitPage, 'print-density-compact': printDensity === 'compact', 'print-density-ultra': printDensity === 'ultra' }">
                     <div class="print-page print-primary-page">
-                        <!-- Branded prescription header: logo at far left, doctor identity in one Arabic row. -->
+                        <!-- Familiar Arabic prescription header: logo at left, centered doctor identity, specialty and phone together. -->
                         <div class="print-rx-header flex items-center justify-between gap-3 border-b-2 border-blue-600 pb-3" style="direction: ltr;">
                             <img x-show="clinicLogoDataUrl" :src="clinicLogoDataUrl" alt="شعار العيادة" class="w-20 h-20 object-contain rounded-xl border border-slate-200 p-1 bg-white flex-shrink-0">
-                            <div class="min-w-0 flex-1 text-right" style="direction: rtl;">
-                                <div class="print-doctor-line flex items-baseline justify-end flex-wrap gap-x-2 gap-y-0.5">
-                                    <h2 class="print-doctor-name text-3xl font-bold text-blue-700 tracking-wide" x-text="doctorInfo.fullName"></h2>
+                            <div class="min-w-0 flex-1 text-center" style="direction: rtl;">
+                                <div class="print-doctor-line flex flex-col items-center justify-center gap-0.5">
+                                    <h2 class="print-doctor-name text-3xl font-bold text-blue-700" x-text="doctorInfo.fullName"></h2>
                                     <p class="print-doctor-specialty text-sm font-semibold text-slate-600 print-text-wrap" x-text="doctorInfo.specialty"></p>
+                                    <p class="print-doctor-contact text-[11px] text-slate-500" x-text="doctorInfo.phone || ''"></p>
                                 </div>
-                                <p class="text-[11px] text-slate-500 mt-1" x-text="doctorInfo.phone || ''"></p>
                             </div>
+                            <div x-show="!clinicLogoDataUrl" class="w-20 flex-shrink-0"></div>
                         </div>
 
                         <div class="print-section grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl text-xs border font-medium mt-3">
@@ -4279,6 +4470,10 @@
                                         </div>
                                     </template>
                                 </div>
+                            </div>
+                            <div class="prescription-qr mt-2">
+                                <div id="prescriptionQrCode" aria-label="رمز QR لمعلومات التواصل مع العيادة"></div>
+                                <p class="text-[9px] leading-4 text-slate-500">امسح الرمز لمعلومات التواصل وحجز الموعد</p>
                             </div>
                             <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
                         </div>
