@@ -212,6 +212,8 @@
                     printFooterFontSize: 'normal',
                     printContentScale: 1,
                     printPagePadding: 'normal',
+                    printTopPadding: 'normal',
+                    printBottomPadding: 'normal',
                     printSectionSpacing: 'normal',
                     printAutoScale: true
                 },
@@ -234,6 +236,7 @@
                     { key: 'expenses', label: 'المنصرف' },
                     { key: 'reports', label: 'التقارير الشاملة' },
                     { key: 'pharmacy', label: 'الوصفات والروشتات' },
+                    { key: 'prescriptionSettings', label: 'الروشتة' },
                     { key: 'settings', label: 'إعدادات النظام' }
                 ],
                 users: [
@@ -245,7 +248,7 @@
                         password: '1234',
                         role: 'admin',
                         active: true,
-                        permissions: { dashboard: true, newVisit: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, settings: true }
+                        permissions: { dashboard: true, newVisit: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, prescriptionSettings: true, settings: true }
                     },
                     {
                         id: 2,
@@ -255,7 +258,7 @@
                         password: '1111',
                         role: 'محاسب',
                         active: true,
-                        permissions: { dashboard: true, newVisit: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, settings: false }
+                        permissions: { dashboard: true, newVisit: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, prescriptionSettings: false, settings: false }
                     }
                 ],
                 newUserForm: {
@@ -264,7 +267,7 @@
                     contactEmail: '',
                     password: '',
                     role: 'موظف استقبال',
-                    permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, settings: false }
+                    permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, prescriptionSettings: false, settings: false }
                 },
                 firebaseMigrationUserId: '',
                 firebaseMigrationPassword: '',
@@ -511,6 +514,8 @@
                         printFooterFontSize: 'normal',
                         printContentScale: 1,
                         printPagePadding: 'normal',
+                        printTopPadding: 'normal',
+                        printBottomPadding: 'normal',
                         printSectionSpacing: 'normal',
                         printAutoScale: true,
                         ...(this.doctorInfo || {})
@@ -525,6 +530,9 @@
                         if (!u.permissions) u.permissions = {};
                         if (u.permissions.waitingQueue === undefined) {
                             u.permissions.waitingQueue = u.role === 'admin' || !!u.permissions.newVisit || !!u.permissions.patients;
+                        }
+                        if (u.permissions.prescriptionSettings === undefined) {
+                            u.permissions.prescriptionSettings = u.role === 'admin' || !!u.permissions.settings;
                         }
                     });
                     this.restoreSession();
@@ -1426,6 +1434,7 @@
                     expenses: 'expenses',
                     reports: 'reports',
                     pharmacy: 'pharmacy',
+                    prescriptionSettings: 'prescriptionSettings',
                     settings: 'settings'
                 },
 
@@ -1490,6 +1499,7 @@
                         clinics: 'عيادات الطبيب وتفاصيل التواصل',
                         invoices: 'السجلات المالية والفواتير والتحصيل',
                         pharmacy: 'أرشيف الوصفات والروشتات الطبية',
+                        prescriptionSettings: 'إعدادات الروشتة والطباعة',
                         settings: 'إعدادات النظام والأسعار والقوائم'
                     };
                     return titles[this.currentView] || '';
@@ -2534,11 +2544,13 @@
             --qr-size: 19mm;
             --footer-font: 10px;
             --page-padding: 7mm;
+            --page-padding-top: 7mm;
+            --page-padding-bottom: 7mm;
             --section-padding: 3mm;
             --section-margin: 3mm;
             --section-line-height: 1.25;
             --medicine-gap: 4mm;
-            padding: var(--page-padding);
+            padding: var(--page-padding-top) var(--page-padding) var(--page-padding-bottom);
         }
         #printablePrescriptionArea.print-one-page {
             --print-scale: 1;
@@ -2657,7 +2669,7 @@
                 box-sizing: border-box;
                 background: white !important;
                 color: black !important;
-                padding: var(--page-padding) !important;
+                padding: var(--page-padding-top) var(--page-padding) var(--page-padding-bottom) !important;
                 margin: 0 !important;
                 border: 0 !important;
                 border-radius: 0 !important;
@@ -2828,6 +2840,10 @@
                         <a x-show="currentUser?.permissions?.pharmacy" @click="navigateTo('pharmacy')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'pharmacy'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="file-text" class="w-5 h-5"></i>
                             <span>الوصفات والروشتات الطبية</span>
+                        </a>
+                        <a x-show="currentUser?.permissions?.prescriptionSettings" @click="navigateTo('prescriptionSettings')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'prescriptionSettings'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
+                            <i data-lucide="printer" class="w-5 h-5"></i>
+                            <span>الروشتة</span>
                         </a>
                         <a x-show="currentUser?.permissions?.settings" @click="navigateTo('settings')" :class="{'bg-blue-600 text-white font-semibold': currentView === 'settings'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="settings" class="w-5 h-5"></i>
@@ -3189,11 +3205,11 @@
                                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
                                     <div class="relative">
                                         <label class="block text-xs font-semibold mb-1">رقم الهاتف</label>
-                                        <input type="text" x-model="patientForm.phone" @input="showPatientSuggestions = true" @focus="showPatientSuggestions = true" autocomplete="off" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white" placeholder="201012345678">
+                                        <input type="tel" inputmode="tel" autocomplete="tel" x-model="patientForm.phone" @input="showPatientSuggestions = true" @focus="showPatientSuggestions = true" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white" placeholder="201012345678">
                                     </div>
                                     <div>
                                         <label class="block text-xs font-semibold mb-1">السن</label>
-                                        <input type="number" x-model="patientForm.age" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white" placeholder="السن">
+                                        <input type="number" inputmode="numeric" x-model="patientForm.age" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white" placeholder="السن">
                                     </div>
                                     <div>
                                         <label class="block text-xs font-bold text-amber-600 mb-1">نوع الزيارة (تُسجل تلقائياً بالفاتورة)</label>
@@ -3557,7 +3573,7 @@
                                     </div>
                                     <div>
                                         <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">ملاحظات وتوصيات عامة:</label>
-                                        <input type="text" x-model="newRecordForm.generalNotes" placeholder="ملاحظات وتوصيات..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <textarea x-model="newRecordForm.generalNotes" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-lpignore="true" data-form-type="other" rows="3" placeholder="ملاحظات وتوصيات..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white resize-y"></textarea>
                                     </div>
                                 </div>
                                 
@@ -3722,7 +3738,7 @@
                                             <option :value="cat" x-text="cat"></option>
                                         </template>
                                     </select>
-                                    <input type="number" x-model.number="newExpenseForm.amount" placeholder="المبلغ (ج.م)" class="px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
+                                            <input type="number" inputmode="decimal" x-model.number="newExpenseForm.amount" placeholder="المبلغ (ج.م)" class="px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <input type="date" x-model="newExpenseForm.date" class="px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <button type="button" @click="addExpense" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-xs font-bold">إضافة مصروف</button>
                                 </div>
@@ -3910,9 +3926,9 @@
                         </div>
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
-                        <div x-show="currentView === 'settings'" class="max-w-4xl space-y-6">
+                        <div x-show="currentView === 'settings' || currentView === 'prescriptionSettings'" class="max-w-4xl space-y-6">
                             <!-- Manual Clinic Backup & Restore -->
-                            <div x-show="currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
+                            <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
                                 <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
                                     <div>
                                         <h3 class="text-base font-bold text-slate-800 dark:text-white">النسخ الاحتياطي والاستعادة اليدوية</h3>
@@ -3938,8 +3954,8 @@
                                 </div>
                             </div>
 
-                            <!-- Doctor Info Settings -->
-                            <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
+                            <!-- Doctor Info Settings / Prescription Page -->
+                            <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
                                     <div>
@@ -3952,7 +3968,7 @@
                                     </div>
                                     <div>
                                         <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">رقم التواصل المكتوب بأسفل الروشتة</label>
-                                        <input type="text" x-model="doctorInfo.phone" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
+                                        <input type="tel" inputmode="tel" autocomplete="tel" x-model="doctorInfo.phone" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
                                     </div>
                                 </div>
 
@@ -4014,11 +4030,10 @@
                                             <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">حجم رمز QR</label>
                                             <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="حجم رمز QR">
                                                 <template x-for="option in [{value:'small',label:'صغير',hint:'14 مم'},{value:'medium',label:'متوسط',hint:'19 مم'},{value:'large',label:'كبير',hint:'25 مم'}]" :key="option.value">
-                                                    <label class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printQrSize === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
-                                                        <input type="radio" class="sr-only" name="printQrSize" :value="option.value" x-model="doctorInfo.printQrSize" @change="savePrintSettings()">
+                                                    <button type="button" role="radio" :aria-checked="doctorInfo.printQrSize === option.value" @click.prevent.stop="doctorInfo.printQrSize = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printQrSize === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
                                                         <span class="block text-xs font-bold" x-text="option.label"></span>
                                                         <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
-                                                    </label>
+                                                    </button>
                                                 </template>
                                             </div>
                                         </div>
@@ -4026,11 +4041,10 @@
                                             <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">حجم خط التذييل</label>
                                             <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="حجم خط التذييل">
                                                 <template x-for="option in [{value:'small',label:'صغير',hint:'8px'},{value:'normal',label:'عادي',hint:'10px'},{value:'large',label:'كبير',hint:'12px'}]" :key="option.value">
-                                                    <label class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printFooterFontSize === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
-                                                        <input type="radio" class="sr-only" name="printFooterFontSize" :value="option.value" x-model="doctorInfo.printFooterFontSize" @change="savePrintSettings()">
+                                                    <button type="button" role="radio" :aria-checked="doctorInfo.printFooterFontSize === option.value" @click.prevent.stop="doctorInfo.printFooterFontSize = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printFooterFontSize === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
                                                         <span class="block text-xs font-bold" x-text="option.label"></span>
                                                         <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
-                                                    </label>
+                                                    </button>
                                                 </template>
                                             </div>
                                         </div>
@@ -4049,11 +4063,34 @@
                                             <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الهوامش الخارجية للصفحة</label>
                                             <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="الهوامش الخارجية للصفحة">
                                                 <template x-for="option in [{value:'tight',label:'ضيقة',hint:'4 مم'},{value:'normal',label:'عادية',hint:'7 مم'},{value:'wide',label:'واسعة',hint:'10 مم'}]" :key="option.value">
-                                                    <label class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printPagePadding === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
-                                                        <input type="radio" class="sr-only" name="printPagePadding" :value="option.value" x-model="doctorInfo.printPagePadding" @change="savePrintSettings()">
+                                                    <button type="button" role="radio" :aria-checked="doctorInfo.printPagePadding === option.value" @click.prevent.stop="doctorInfo.printPagePadding = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printPagePadding === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
                                                         <span class="block text-xs font-bold" x-text="option.label"></span>
                                                         <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
-                                                    </label>
+                                                    </button>
+                                                </template>
+                                            </div>
+                                        </div>
+                                    </div>
+                                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                                        <div class="space-y-2">
+                                            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الهامش العلوي للرأس</label>
+                                            <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="الهامش العلوي للرأس">
+                                                <template x-for="option in [{value:'tight',label:'ضيق',hint:'4 مم'},{value:'normal',label:'متوازن',hint:'7 مم'},{value:'wide',label:'واسع',hint:'10 مم'}]" :key="option.value">
+                                                    <button type="button" role="radio" :aria-checked="doctorInfo.printTopPadding === option.value" @click.prevent.stop="doctorInfo.printTopPadding = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printTopPadding === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
+                                                        <span class="block text-xs font-bold" x-text="option.label"></span>
+                                                        <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
+                                                    </button>
+                                                </template>
+                                            </div>
+                                        </div>
+                                        <div class="space-y-2">
+                                            <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الهامش السفلي للتذييل</label>
+                                            <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="الهامش السفلي للتذييل">
+                                                <template x-for="option in [{value:'tight',label:'ضيق',hint:'4 مم'},{value:'normal',label:'متوازن',hint:'7 مم'},{value:'wide',label:'واسع',hint:'10 مم'}]" :key="option.value">
+                                                    <button type="button" role="radio" :aria-checked="doctorInfo.printBottomPadding === option.value" @click.prevent.stop="doctorInfo.printBottomPadding = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printBottomPadding === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
+                                                        <span class="block text-xs font-bold" x-text="option.label"></span>
+                                                        <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
+                                                    </button>
                                                 </template>
                                             </div>
                                         </div>
@@ -4063,21 +4100,20 @@
                                             <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التباعد بين الأقسام</label>
                                             <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="التباعد بين أقسام الروشتة">
                                                 <template x-for="option in [{value:'tight',label:'مضغوط',hint:'أقل'},{value:'normal',label:'متوازن',hint:'قياسي'},{value:'wide',label:'مريح',hint:'أكثر'}]" :key="option.value">
-                                                    <label class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printSectionSpacing === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
-                                                        <input type="radio" class="sr-only" name="printSectionSpacing" :value="option.value" x-model="doctorInfo.printSectionSpacing" @change="savePrintSettings()">
+                                                    <button type="button" role="radio" :aria-checked="doctorInfo.printSectionSpacing === option.value" @click.prevent.stop="doctorInfo.printSectionSpacing = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printSectionSpacing === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
                                                         <span class="block text-xs font-bold" x-text="option.label"></span>
                                                         <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
-                                                    </label>
+                                                    </button>
                                                 </template>
                                             </div>
                                         </div>
-                                        <label class="flex items-start gap-3 rounded-xl border border-slate-200 dark:border-slate-700 p-4 cursor-pointer hover:border-blue-300 transition-colors">
-                                            <input type="checkbox" x-model="doctorInfo.printAutoScale" @change="savePrintSettings()" class="mt-0.5 w-4 h-4 accent-blue-600">
+                                        <button type="button" @click.prevent.stop="doctorInfo.printAutoScale = !doctorInfo.printAutoScale; savePrintSettings()" class="flex items-start gap-3 rounded-xl border border-slate-200 dark:border-slate-700 p-4 text-right cursor-pointer hover:border-blue-300 transition-colors" :class="doctorInfo.printAutoScale ? 'border-blue-500 bg-blue-50/40 dark:bg-blue-950/20' : ''">
+                                            <span class="mt-0.5 w-4 h-4 rounded border flex items-center justify-center flex-shrink-0" :class="doctorInfo.printAutoScale ? 'bg-blue-600 border-blue-600 text-white' : 'border-slate-400 dark:border-slate-500'"><i x-show="doctorInfo.printAutoScale" data-lucide="check" class="w-3 h-3"></i></span>
                                             <span>
                                                 <span class="block text-xs font-bold text-slate-700 dark:text-slate-300">تصغير الخط تدريجياً تلقائياً</span>
                                                 <span class="block text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-5">يحسب طول الأعراض والعلامات الحيوية والأدوية ويصغر المحتوى عند الحاجة في الصفحة الواحدة، مع إبقاء التذييل والـQR قابلين للقراءة.</span>
                                             </span>
-                                        </label>
+                                        </button>
                                     </div>
                                     <div class="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-slate-50 dark:bg-slate-800/70 px-4 py-3">
                                         <p class="text-[11px] text-slate-500 dark:text-slate-400">كل تغيير ظاهر في المعاينة فوراً، والحفظ يحدّث النسخة المحلية ويبدأ المزامنة بين الأجهزة.</p>
@@ -4119,6 +4155,7 @@
                                 </div>
                             </div>
 
+                            <div x-show="currentView === 'settings'" class="space-y-6">
                             <!-- User Accounts & Permissions Management (Admin Only) -->
                             <div x-show="currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-5">
                                 <div class="flex items-center justify-between border-b dark:border-slate-800 pb-3">
@@ -4231,13 +4268,13 @@
                                                     <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
                                                 </button>
                                             </div>
-                                            <input type="number" x-model.number="visitTypePrices[typeName]" class="w-full px-3 py-2 border rounded-lg text-sm bg-white dark:bg-slate-900 dark:text-white font-bold">
+                                            <input type="number" inputmode="decimal" x-model.number="visitTypePrices[typeName]" class="w-full px-3 py-2 border rounded-lg text-sm bg-white dark:bg-slate-900 dark:text-white font-bold">
                                         </div>
                                     </template>
                                 </div>
                                 <div class="flex flex-col sm:flex-row gap-2 pt-2 border-t dark:border-slate-800">
                                     <input type="text" x-model="newVisitTypeName" placeholder="اسم نوع الزيارة الجديد (مثال: استشارة)..." class="w-full sm:flex-1 min-w-0 px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                    <input type="number" x-model.number="newVisitTypePrice" placeholder="السعر (ج.م)" class="w-full sm:w-32 min-w-0 px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                    <input type="number" inputmode="decimal" x-model.number="newVisitTypePrice" placeholder="السعر (ج.م)" class="w-full sm:w-32 min-w-0 px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <button type="button" @click="addVisitType" class="w-full sm:w-auto bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap">إضافة نوع زيارة</button>
                                 </div>
                             </div>
@@ -4425,6 +4462,7 @@
                                 </div>
                             </div>
 
+                            </div>
                         </div>
 
 
@@ -4525,7 +4563,7 @@
                     </div>
                     <div>
                         <label class="block text-xs font-semibold mb-1">هاتف الفرع</label>
-                        <input type="text" x-model="clinicForm.phone" placeholder="اتركه فارغاً لاستخدام هاتف العيادة الرئيسي" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
+                        <input type="tel" inputmode="tel" autocomplete="tel" x-model="clinicForm.phone" placeholder="اتركه فارغاً لاستخدام هاتف العيادة الرئيسي" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
                     </div>
                     <div class="flex justify-end space-x-2 space-x-reverse pt-3 border-t dark:border-slate-800">
                         <button type="button" @click="showClinicModal = false" class="px-4 py-2 text-slate-600 text-sm">إلغاء</button>
@@ -4556,11 +4594,11 @@
                     <div class="grid grid-cols-2 gap-3">
                         <div>
                             <label class="block text-xs font-semibold mb-1">المبلغ (ج.م)</label>
-                            <input type="number" x-model.number="invoiceForm.amount" min="0" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
+                            <input type="number" inputmode="decimal" x-model.number="invoiceForm.amount" min="0" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
                         </div>
                         <div>
                             <label class="block text-xs font-semibold mb-1">الخصم (ج.م)</label>
-                            <input type="number" x-model.number="invoiceForm.discount" min="0" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
+                            <input type="number" inputmode="decimal" x-model.number="invoiceForm.discount" min="0" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 dark:text-white">
                         </div>
                     </div>
                     <div>
@@ -4589,12 +4627,12 @@
                     </div>
                     <div>
                         <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">رقم الهاتف</label>
-                        <input type="text" x-model="patientBasicInfoForm.phone" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white" placeholder="201012345678">
+                        <input type="tel" inputmode="tel" autocomplete="tel" x-model="patientBasicInfoForm.phone" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white" placeholder="201012345678">
                     </div>
                     <div class="grid grid-cols-2 gap-3">
                         <div>
                             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">السن</label>
-                            <input type="number" x-model="patientBasicInfoForm.age" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white">
+                            <input type="number" inputmode="numeric" x-model="patientBasicInfoForm.age" class="w-full px-3 py-2 border rounded-xl text-sm bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-white">
                         </div>
                         <div>
                             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300 mb-1">فصيلة الدم</label>
@@ -4640,6 +4678,8 @@
                     '--qr-size': { small: '14mm', medium: '19mm', large: '25mm' }[doctorInfo.printQrSize || 'medium'],
                     '--footer-font': { small: '8px', normal: '10px', large: '12px' }[doctorInfo.printFooterFontSize || 'normal'],
                     '--page-padding': { tight: '4mm', normal: '7mm', wide: '10mm' }[doctorInfo.printPagePadding || 'normal'],
+                    '--page-padding-top': { tight: '4mm', normal: '7mm', wide: '10mm' }[doctorInfo.printTopPadding || 'normal'],
+                    '--page-padding-bottom': { tight: '4mm', normal: '7mm', wide: '10mm' }[doctorInfo.printBottomPadding || 'normal'],
                     '--section-padding': { tight: '2mm', normal: '3mm', wide: '4.5mm' }[doctorInfo.printSectionSpacing || 'normal'],
                     '--section-margin': { tight: '2mm', normal: '3mm', wide: '4.5mm' }[doctorInfo.printSectionSpacing || 'normal'],
                     '--section-line-height': { tight: '1.15', normal: '1.25', wide: '1.45' }[doctorInfo.printSectionSpacing || 'normal'],
@@ -4721,9 +4761,9 @@
                                     <span x-text="selectedPrescriptionForPrint.nextFollowUpDate"></span>
                                 </div>
                             </template>
-                            <div x-show="clinics.length > 0 || getClinicQrLink()" class="print-clinic-footer border-t border-slate-200 pt-3">
+                            <div class="print-clinic-footer border-t border-slate-200 pt-3">
                                 <div class="flex items-end gap-3" style="direction: ltr;">
-                                    <div class="prescription-qr w-[25mm] shrink-0 flex-col gap-1" style="direction: rtl;">
+                                    <div x-show="getClinicQrLink()" class="prescription-qr w-[25mm] shrink-0 flex-col gap-1" style="direction: rtl;">
                                         <div id="prescriptionQrCode" aria-label="رمز QR لرابط التواصل مع العيادة"></div>
                                         <p class="text-[8px] leading-3 text-slate-500 text-center" x-text="doctorInfo.qrMode === 'booking' ? 'الحجز' : 'واتساب'"></p>
                                     </div>
@@ -4739,6 +4779,7 @@
                                             </template>
                                         </div>
                                     </div>
+                                    <div x-show="clinics.length === 0" class="min-w-0 flex-1 text-center text-slate-400 text-[var(--footer-font)] py-2" style="direction: rtl;">لم تتم إضافة فروع أو مواعيد عمل بعد.</div>
                                 </div>
                             </div>
                             <p class="text-center font-bold text-blue-700 text-xs">مع أطيب تمنياتنا بالشفاء العاجل</p>
