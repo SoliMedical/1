@@ -46,7 +46,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
-    
+
     <!-- Alpine JS Application Logic -->
     <script>
         // =====================================================================
@@ -112,7 +112,7 @@
                 waitingClinicFilter: 'all',
                 waitingSort: 'oldest',
                 mobileMenuOpen: false,
-                
+
                 // Full Page View Navigation Control
                 currentView: 'dashboard',
                 openPrescriptionPatientId: null,
@@ -440,29 +440,29 @@
                 ],
 
                 patients: [
-                    { 
-                        id: 1, 
-                        fullName: 'دينا رمضان', 
-                        phone: '201098765432', 
-                        age: 29, 
-                        gender: 'أنثى', 
+                    {
+                        id: 1,
+                        fullName: 'دينا رمضان',
+                        phone: '201098765432',
+                        age: 29,
+                        gender: 'أنثى',
                         bloodType: 'O+',
                         visitType: 'كشف',
                         selectedSymptoms: ['ارتفاع درجة الحرارة', 'صداع شديد ونشاط نصفي'],
                         selectedChronicDiseases: ['السكري - النوع الأول', 'أمراض الشرايين والقلب'],
                         records: [
-                            { 
-                                id: 'REC-1', 
-                                date: '2026-08-10', 
-                                symptom: 'ارتفاع درجة الحرارة', 
-                                diagnosisList: ['نزلة برد حادة وتأثر بالمجرى التنفسي العلوي', 'التهاب الحلق واللوزتين'], 
+                            {
+                                id: 'REC-1',
+                                date: '2026-08-10',
+                                symptom: 'ارتفاع درجة الحرارة',
+                                diagnosisList: ['نزلة برد حادة وتأثر بالمجرى التنفسي العلوي', 'التهاب الحلق واللوزتين'],
                                 diagnosis: 'نزلة برد حادة وتأثر بالمجرى التنفسي العلوي ، التهاب الحلق واللوزتين',
                                 medicinesWithDosage: [
                                     { name: 'بانادول إكسترا (Panadol Extra)', timing: 'كل 8 ساعات', extraDosageNotes: 'بعد الأكل' },
                                     { name: 'كونجستال أقراص (Congestal)', timing: 'كل 12 ساعة', extraDosageNotes: 'بعد الأكل' }
-                                ], 
+                                ],
                                 nextFollowUpDate: '2026-08-17',
-                                notes: 'متابعة درجة الحرارة وأخذ قسط من الراحة' 
+                                notes: 'متابعة درجة الحرارة وأخذ قسط من الراحة'
                             }
                         ]
                     }
@@ -493,17 +493,17 @@
                 reportsSelectedYear: new Date().getFullYear().toString(),
 
                 prescriptions: [
-                    { 
-                        id: 'RX-501', 
-                        patientName: 'دينا رمضان', 
-                        patientPhone: '201098765432', 
+                    {
+                        id: 'RX-501',
+                        patientName: 'دينا رمضان',
+                        patientPhone: '201098765432',
                         diagnosisText: 'نزلة برد حادة وتأثر بالمجرى التنفسي العلوي، التهاب الحلق واللوزتين',
                         medicinesWithDosage: [
                             { name: 'بانادول إكسترا (Panadol Extra)', timing: 'كل 8 ساعات', extraDosageNotes: 'بعد الأكل' },
                             { name: 'كونجستال أقراص (Congestal)', timing: 'كل 12 ساعة', extraDosageNotes: 'بعد الأكل' }
                         ],
                         nextFollowUpDate: '2026-08-17',
-                        date: '2026-08-10' 
+                        date: '2026-08-10'
                     }
                 ],
 
@@ -1479,7 +1479,7 @@
                     this.connectFirebaseForLocalUser(matchedUser);
                 },
 
-                
+
 
                 logout() {
                     this.isAuthenticated = false;
@@ -2077,11 +2077,11 @@
                     this.matchedExistingPatient = null;
                     this.symptomSearchQuery = '';
                     this.chronicSearchQuery = '';
-                    this.patientForm = { 
-                        fullName: '', 
-                        phone: '', 
-                        age: '', 
-                        gender: 'ذكر', 
+                    this.patientForm = {
+                        fullName: '',
+                        phone: '',
+                        age: '',
+                        gender: 'ذكر',
                         bloodType: '',
                         visitType: 'كشف',
                         selectedSymptoms: [],
@@ -2309,7 +2309,7 @@
                     this.selectedPatientForRecord = patient;
                     if (!this.selectedPatientForRecord.selectedSymptoms) this.selectedPatientForRecord.selectedSymptoms = [];
                     if (!this.selectedPatientForRecord.selectedChronicDiseases) this.selectedPatientForRecord.selectedChronicDiseases = [];
-                    
+
                     this.diagnosisSearchQuery = '';
                     this.medicineSearchQuery = '';
                     this.vitalSearchQuery = '';
@@ -2714,7 +2714,7 @@
 
                 editPatient(patient) {
                     this.editingPatient = patient;
-                    this.patientForm = { 
+                    this.patientForm = {
                         ...patient,
                         visitType: patient.visitType || 'كشف',
                         selectedSymptoms: patient.selectedSymptoms || [],
@@ -3014,7 +3014,64 @@
                 display: none !important;
             }
         }
-    </style>
+
+/* Soli Medical settings redesign: grouped accordions, strong dark-mode contrast, and mobile-safe spacing. */
+.settings-accordion {
+  display: block;
+  margin: 0 0 1rem;
+  border: 1px solid rgba(148, 163, 184, .28);
+  border-radius: 1.25rem;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .72);
+  box-shadow: 0 8px 24px rgba(15, 23, 42, .06);
+}
+.settings-accordion-summary {
+  display: flex;
+  align-items: center;
+  gap: .75rem;
+  min-height: 4.4rem;
+  padding: .9rem 1.1rem;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: background-color .18s ease, color .18s ease;
+}
+.settings-accordion-summary::-webkit-details-marker { display: none; }
+.settings-accordion-summary:hover { background: rgba(241, 245, 249, .78); }
+.settings-accordion-summary strong { display: block; color: #172033; font-size: .98rem; line-height: 1.5; }
+.settings-accordion-summary small { display: block; margin-top: .15rem; color: #64748b; font-size: .72rem; line-height: 1.55; }
+.settings-accordion-icon { display: grid; place-items: center; width: 2.35rem; height: 2.35rem; border-radius: .8rem; flex: 0 0 auto; }
+.settings-accordion-chevron { color: #64748b; transition: transform .2s ease; flex: 0 0 auto; }
+.settings-accordion[open] .settings-accordion-chevron { transform: rotate(180deg); }
+.settings-accordion > :not(summary) { margin-left: .7rem; margin-right: .7rem; margin-bottom: .7rem; }
+.settings-accordion > summary + div { margin-top: .15rem; }
+.settings-accordion-blue .settings-accordion-icon { color: #2563eb; background: #dbeafe; }
+.settings-accordion-violet .settings-accordion-icon { color: #7c3aed; background: #ede9fe; }
+.settings-accordion-amber .settings-accordion-icon { color: #b45309; background: #fef3c7; }
+.settings-accordion-orange .settings-accordion-icon { color: #c2410c; background: #ffedd5; }
+.settings-accordion-emerald .settings-accordion-icon { color: #047857; background: #d1fae5; }
+.settings-accordion-cyan .settings-accordion-icon { color: #0e7490; background: #cffafe; }
+.settings-accordion-red .settings-accordion-icon { color: #b91c1c; background: #fee2e2; }
+.dark .settings-accordion { background: #111b2e; border-color: #334155; box-shadow: 0 10px 28px rgba(2, 6, 23, .28); }
+.dark .settings-accordion-summary:hover { background: #1b2940; }
+.dark .settings-accordion-summary strong { color: #f8fafc; }
+.dark .settings-accordion-summary small { color: #b8c4d6; }
+.dark .settings-accordion-chevron { color: #cbd5e1; }
+.dark .settings-accordion-blue .settings-accordion-icon { color: #93c5fd; background: rgba(30, 64, 175, .42); }
+.dark .settings-accordion-violet .settings-accordion-icon { color: #c4b5fd; background: rgba(91, 33, 182, .38); }
+.dark .settings-accordion-amber .settings-accordion-icon { color: #fcd34d; background: rgba(146, 64, 14, .38); }
+.dark .settings-accordion-orange .settings-accordion-icon { color: #fdba74; background: rgba(154, 52, 18, .38); }
+.dark .settings-accordion-emerald .settings-accordion-icon { color: #6ee7b7; background: rgba(6, 95, 70, .38); }
+.dark .settings-accordion-cyan .settings-accordion-icon { color: #67e8f9; background: rgba(14, 116, 144, .38); }
+.dark .settings-accordion-red .settings-accordion-icon { color: #fca5a5; background: rgba(127, 29, 29, .42); }
+@media (max-width: 640px) {
+  .settings-accordion-summary { min-height: 4.75rem; padding: .8rem .85rem; gap: .6rem; }
+  .settings-accordion-summary strong { font-size: .9rem; }
+  .settings-accordion-summary small { font-size: .68rem; }
+  .settings-accordion > :not(summary) { margin-left: .45rem; margin-right: .45rem; }
+}
+
+</style>
 </head>
 <body class="h-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 antialiased transition-colors duration-200" x-data="appData">
 
@@ -3614,7 +3671,7 @@
                             <div class="flex justify-between items-center border-b dark:border-slate-800 pb-4">
                                 <div>
                                     <h3 class="text-2xl font-bold text-slate-800 dark:text-white" x-text="'الملف الطبي الكامل: ' + (selectedPatientForRecord?.fullName || '')"></h3>
-                                    
+
                                     <div class="flex flex-wrap items-center gap-4 text-xs text-slate-500 dark:text-slate-400 mt-2 font-medium">
                                         <p><span class="font-bold">رقم الهاتف:</span> <span class="font-mono text-blue-600 dark:text-blue-400 font-bold" x-text="selectedPatientForRecord?.phone ? selectedPatientForRecord.phone : 'غير مسجل'"></span></p>
                                         <p><span class="font-bold">السن:</span> <span x-text="selectedPatientForRecord?.age ? (selectedPatientForRecord.age + ' سنة') : 'غير مسجل'"></span></p>
@@ -3627,7 +3684,7 @@
                                         <template x-if="authError">
                                             <span class="basis-full text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2" x-text="authError"></span>
                                         </template>
-                                        
+
                                         <button @click="openInlineEditBasicInfoModal" class="bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-blue-400 px-3 py-1 rounded-lg text-[11px] font-bold hover:bg-blue-100 flex items-center space-x-1 space-x-reverse border border-blue-200 dark:border-blue-800">
                                             <i data-lucide="edit-3" class="w-3.5 h-3.5"></i>
                                             <span>تعديل البيانات الأساسية</span>
@@ -3715,7 +3772,7 @@
                                     <i data-lucide="stethoscope" class="w-5 h-5 text-blue-600"></i>
                                     <span>تسجيل تشخيص وزيارة وكتابة روشتة جديدة</span>
                                 </h4>
-                                
+
                                 <!-- Vital Signs (العلامات الحيوية) -->
                                 <div x-show="recordFormSections.vitals" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">العلامات الحيوية (اختياري):</label>
@@ -3757,7 +3814,7 @@
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"><label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التشخيص الطبي (يمكن اختيار أكثر من تشخيص + كتابة يدوية):</label><div x-show="quickTemplates.length" class="flex items-center gap-1.5"><span class="text-[11px] text-slate-500">قالب سريع:</span><template x-for="template in quickTemplates" :key="'visit-template-' + template.id"><button type="button" @click="applyQuickTemplate(template)" class="px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 text-[11px] font-bold hover:bg-blue-100" x-text="template.name"></button></template></div></div>
                                     <input type="text" x-model="diagnosisSearchQuery" placeholder="بحث في قائمة التشخيصات المعتمدة..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
-                                    
+
                                     <div class="max-h-36 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
                                         <template x-for="d in filteredDiagnosesMaster" :key="d">
                                             <label class="flex items-center space-x-2 space-x-reverse cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded">
@@ -3855,7 +3912,7 @@
                                         <span x-show="!isLoadingMedicineArchive && medicineArchiveMessage" x-text="medicineArchiveMessage"></span>
                                         <span class="text-amber-700 dark:text-amber-300">تحقق من الاسم والتركيز والجرعة من هيئة الدواء المصرية قبل الوصف.</span>
                                     </div>
-                                    
+
                                     <div class="max-h-40 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-2 text-xs">
                                         <template x-for="med in filteredMedicinesMaster" :key="med">
                                             <label class="flex items-center space-x-2 space-x-reverse cursor-pointer p-2 rounded hover:bg-slate-100 dark:hover:bg-slate-800">
@@ -3876,7 +3933,7 @@
                                         <template x-for="item in newRecordForm.selectedMedicinesWithDosage" :key="item.name">
                                             <div class="flex flex-col md:flex-row gap-3 items-center bg-blue-50 dark:bg-slate-800 p-3 rounded-xl border border-blue-100 dark:border-slate-700 text-xs">
                                                 <span class="w-full md:w-1/3 font-bold font-mono text-blue-700 dark:text-blue-300" x-text="item.name"></span>
-                                                
+
                                                 <!-- Dropdown Presets -->
                                                 <select x-model="item.timing" class="w-full md:w-1/3 px-3 py-2 border rounded-lg bg-white dark:bg-slate-900 text-xs text-slate-800 dark:text-white">
                                                     <template x-for="dp in dosageTimingPresets" :key="dp">
@@ -3902,7 +3959,7 @@
                                         <textarea x-model="newRecordForm.generalNotes" autocomplete="off" autocapitalize="sentences" spellcheck="true" data-lpignore="true" data-form-type="other" rows="3" placeholder="ملاحظات وتوصيات..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white resize-y"></textarea>
                                     </div>
                                 </div>
-                                
+
                                 <button @click="addMedicalRecord" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-6 py-3 rounded-xl text-sm shadow">
                                     حفظ الزيارة وتوليد الروشتة
                                 </button>
@@ -4318,7 +4375,13 @@
                                 </div>
                             </div>
 
-                            <!-- Doctor Info Settings / Prescription Page -->
+                            <details class="settings-accordion settings-accordion-blue" open>
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="stethoscope" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>الروشتة وبيانات العيادة</strong><small>بيانات الطبيب، الشعار، الفروع، ومظهر الطباعة A5.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                                <!-- Doctor Info Settings / Prescription Page -->
                             <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
@@ -4544,9 +4607,16 @@
                                     </div>
                                 </div>
                             </div>
+                            </details>
 
                             <div x-show="currentView === 'settings'" class="space-y-6">
-                            <!-- User Accounts & Permissions Management (Admin Only) -->
+                            <details class="settings-accordion settings-accordion-violet">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="users" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>الحسابات والصلاحيات</strong><small>إدارة المستخدمين والأدوار وصلاحيات الوصول.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                                <!-- User Accounts & Permissions Management (Admin Only) -->
                             <div x-show="currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-5">
                                 <div class="flex items-center justify-between border-b dark:border-slate-800 pb-3">
                                     <h3 class="text-lg font-bold text-slate-800 dark:text-white">حسابات الدخول والصلاحيات</h3>
@@ -4639,8 +4709,15 @@
                                     <button type="button" @click="addUser" class="bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow">إضافة الحساب</button>
                                 </div>
                             </div>
+                            </details>
 
-                            <!-- Visit Types Prices Configuration -->
+                            <details class="settings-accordion settings-accordion-amber">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="receipt-text" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>الأسعار والتحصيل</strong><small>أسعار أنواع الزيارات والإعدادات المرتبطة بالفواتير.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                                <!-- Visit Types Prices Configuration -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">تحديد أسعار أنواع الزيارات والفواتير التلقائية</h3>
                                 <p class="text-xs text-slate-400 dark:text-slate-500">أي نوع زيارة تضيفه هنا يظهر تلقائياً في نموذج تسجيل المريض، وسعره هو ما يُستخدم لإنشاء فاتورة الزيارة تلقائياً.</p>
@@ -4663,8 +4740,15 @@
                                     <button type="button" @click="addVisitType" class="w-full sm:w-auto bg-blue-600 text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap">إضافة نوع زيارة</button>
                                 </div>
                             </div>
+                            </details>
 
-                            <!-- Expense Categories Management -->
+                            <details class="settings-accordion settings-accordion-orange">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="wallet-cards" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>تصنيفات المصروفات</strong><small>تنظيم بنود المصروفات المستخدمة في التقارير المالية.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                                <!-- Expense Categories Management -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">بنود المنصرف (مصروفات العيادة)</h3>
                                 <p class="text-xs text-slate-400 dark:text-slate-500">هذه البنود تظهر في القائمة المنسدلة عند تسجيل مصروف جديد بقسم "الفواتير والمالية".</p>
@@ -4683,8 +4767,15 @@
                                     <button type="button" @click="addExpenseCategory" class="bg-red-600 text-white px-4 py-2 rounded-xl text-xs font-bold whitespace-nowrap">إضافة</button>
                                 </div>
                             </div>
+                            </details>
 
-                            <!-- Master Symptoms List Management -->
+                            <details class="settings-accordion settings-accordion-emerald">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="clipboard-list" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>القوائم الطبية الأساسية</strong><small>الأعراض، الأمراض المزمنة، التشخيصات، المعمل، الأشعة، والعلامات الحيوية.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                                <!-- Master Symptoms List Management -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إدارة قائمة الأعراض الطبية</h3>
                                 <div class="flex gap-2">
@@ -4702,6 +4793,7 @@
                                     </template>
                                 </div>
                             </div>
+                            </details>
 
                             <!-- Master Chronic Diseases Management -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
@@ -4818,7 +4910,13 @@
                                 </div>
                             </div>
 
-                            <!-- Master Medicines Management -->
+                            <details class="settings-accordion settings-accordion-cyan">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="pill" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>الأدوية والوصفات</strong><small>إدارة أصناف الأدوية والبحث والجرعات المستخدمة في الروشتة.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                                <!-- Master Medicines Management -->
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إدارة أصناف الأدوية في الروشتة</h3>
                                 <div class="flex gap-2">
@@ -4836,8 +4934,15 @@
                                     </template>
                                 </div>
                             </div>
+                            </details>
 
-                            <!-- Danger Zone: Local + Cloud Reset (Admin Only) -->
+                            <details class="settings-accordion settings-accordion-red">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="shield-alert" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>منطقة الخطر</strong><small>النسخ الاحتياطي وإعادة ضبط البيانات المحلية أو السحابية.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                                <!-- Danger Zone: Local + Cloud Reset (Admin Only) -->
                             <div x-show="currentUser?.role === 'admin'" class="bg-red-50 dark:bg-red-900/10 p-6 lg:p-8 rounded-2xl border-2 border-red-100 dark:border-red-900 shadow-sm space-y-3">
                                 <h3 class="text-lg font-bold text-red-700 dark:text-red-400 border-b border-red-100 dark:border-red-900 pb-3">منطقة الخطر: إعادة ضبط البيانات</h3>
                                 <p class="text-xs text-red-600 dark:text-red-400">إعادة الضبط المحلية تمسح نسخة هذا المتصفح فقط. أما إعادة الضبط السحابية فتحذف السجلات الطبية والمالية من Firestore وتبث التفريغ إلى جميع الأجهزة المتصلة، مع إبقاء حسابات المستخدمين وإعدادات العيادة.</p>
@@ -4846,6 +4951,7 @@
                                     <button type="button" @click="openCloudResetModal()" class="bg-red-950 hover:bg-black text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow inline-flex items-center gap-2"><i data-lucide="cloud-off" class="w-4 h-4"></i>حذف البيانات من السحابة وكل الأجهزة</button>
                                 </div>
                             </div>
+                            </details>
 
                             </div>
                         </div>
