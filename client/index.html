@@ -138,6 +138,22 @@
                 localEditBaseRevision: 0,
                 showPassword: false,
 
+                // Commercial local-edition tools: onboarding, quick templates, audit trail, and idle lock.
+                showSetupWizard: false,
+                setupWizardStep: 1,
+                setupForm: { clinicName: '', doctorName: '', specialty: '', phone: '', location: '', hours: '' },
+                quickTemplates: [],
+                showQuickTemplateModal: false,
+                editingQuickTemplate: null,
+                quickTemplateForm: { name: '', diagnosis: '', notes: '', medicines: [] },
+                auditLog: [],
+                idleLockEnabled: true,
+                idleLockMinutes: 15,
+                showIdleLockModal: false,
+                idleUnlockPassword: '',
+                idleLockTimer: null,
+                lastActivityAt: null,
+
                 // Smart Search Inputs inside Forms
                 symptomSearchQuery: '',
                 chronicSearchQuery: '',
@@ -490,6 +506,20 @@
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
                     if (!Array.isArray(this.syncConflicts)) this.syncConflicts = [];
                     if (!Array.isArray(this.egyptianMedicineArchive)) this.egyptianMedicineArchive = [];
+                    if (!Array.isArray(this.quickTemplates)) this.quickTemplates = [];
+                    if (!Array.isArray(this.auditLog)) this.auditLog = [];
+                    if (!Number.isFinite(Number(this.idleLockMinutes))) this.idleLockMinutes = 15;
+                    this.setupForm = {
+                        clinicName: this.clinics?.[0]?.name || '',
+                        doctorName: this.doctorInfo?.fullName || '',
+                        specialty: this.doctorInfo?.specialty || '',
+                        phone: this.doctorInfo?.phone || '',
+                        location: this.clinics?.[0]?.location || '',
+                        hours: this.clinics?.[0]?.hours || ''
+                    };
+                    this.lastActivityAt = Date.now();
+                    this.startIdleLockMonitor();
+                    this.registerAuditActivityListeners();
                     this.$watch('patientSearch', () => { this.patientsPage = 1; });
                     this.$watch('patientsYearFilter', () => { this.patientsPage = 1; });
                     this.$watch('patientsMonthFilter', () => { this.patientsPage = 1; });
@@ -1162,12 +1192,127 @@
                     reader.readAsText(file);
                 },
 
+                // ---- COMMERCIAL LOCAL EDITION TOOLS ----
+                recordAudit(action, details = '') {
+                    const entry = {
+                        id: `AUD-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                        at: new Date().toISOString(),
+                        user: this.currentUser?.fullName || 'النظام المحلي',
+                        action,
+                        details
+                    };
+                    this.auditLog = [entry, ...(this.auditLog || [])].slice(0, 250);
+                    this.persistState();
+                    this.queueCloudSync();
+                },
+                registerAuditActivityListeners() {
+                    if (this._activityListenersRegistered) return;
+                    this._activityListenersRegistered = true;
+                    const markActivity = () => { this.lastActivityAt = Date.now(); };
+                    ['click', 'keydown', 'pointerdown', 'touchstart'].forEach(eventName => {
+                        window.addEventListener(eventName, markActivity, { passive: true });
+                    });
+                },
+                startIdleLockMonitor() {
+                    clearInterval(this.idleLockTimer);
+                    this.idleLockTimer = setInterval(() => {
+                        if (!this.idleLockEnabled || !this.isAuthenticated || this.showIdleLockModal) return;
+                        const timeout = Math.max(0, Number(this.idleLockMinutes || 0)) * 60 * 1000;
+                        if (timeout > 0 && Date.now() - Number(this.lastActivityAt || Date.now()) >= timeout) {
+                            this.showIdleLockModal = true;
+                            this.idleUnlockPassword = '';
+                            this.recordAudit('قفل تلقائي', `بعد ${this.idleLockMinutes} دقيقة من عدم النشاط`);
+                        }
+                    }, 30000);
+                },
+                unlockIdleSession() {
+                    const password = String(this.currentUser?.password ?? '');
+                    if (!this.idleUnlockPassword || String(this.idleUnlockPassword) !== password) {
+                        alert('كلمة المرور غير صحيحة.');
+                        return;
+                    }
+                    this.showIdleLockModal = false;
+                    this.idleUnlockPassword = '';
+                    this.lastActivityAt = Date.now();
+                    this.recordAudit('فتح القفل التلقائي');
+                },
+                openSetupWizard() {
+                    this.setupWizardStep = 1;
+                    this.setupForm = {
+                        clinicName: this.clinics?.[0]?.name || '',
+                        doctorName: this.doctorInfo?.fullName || '',
+                        specialty: this.doctorInfo?.specialty || '',
+                        phone: this.doctorInfo?.phone || '',
+                        location: this.clinics?.[0]?.location || '',
+                        hours: this.clinics?.[0]?.hours || ''
+                    };
+                    this.showSetupWizard = true;
+                    this.renderIcons();
+                },
+                saveSetupWizard() {
+                    const form = this.setupForm || {};
+                    if (!String(form.clinicName || '').trim() || !String(form.doctorName || '').trim()) {
+                        alert('يرجى إدخال اسم العيادة واسم الطبيب على الأقل.');
+                        return;
+                    }
+                    this.doctorInfo = {
+                        ...this.doctorInfo,
+                        fullName: String(form.doctorName).trim(),
+                        specialty: String(form.specialty || '').trim(),
+                        phone: String(form.phone || '').trim()
+                    };
+                    const firstClinic = this.clinics?.[0] || { id: Date.now() };
+                    this.clinics = [{
+                        ...firstClinic,
+                        name: String(form.clinicName).trim(),
+                        location: String(form.location || '').trim(),
+                        hours: String(form.hours || '').trim(),
+                        phone: String(form.phone || '').trim()
+                    }, ...(this.clinics || []).slice(1)];
+                    this.showSetupWizard = false;
+                    this.recordAudit('حفظ إعداد العيادة', this.doctorInfo.fullName);
+                    alert('تم حفظ إعدادات العيادة بنجاح.');
+                },
+                openQuickTemplateModal(template = null) {
+                    this.editingQuickTemplate = template;
+                    this.quickTemplateForm = template ? JSON.parse(JSON.stringify(template)) : { name: '', diagnosis: '', notes: '', medicines: [] };
+                    this.showQuickTemplateModal = true;
+                    this.renderIcons();
+                },
+                saveQuickTemplate() {
+                    const name = String(this.quickTemplateForm?.name || '').trim();
+                    if (!name) { alert('اكتب اسم القالب أولاً.'); return; }
+                    const template = { ...this.quickTemplateForm, id: this.editingQuickTemplate?.id || `TPL-${Date.now()}`, name };
+                    this.quickTemplates = this.editingQuickTemplate
+                        ? this.quickTemplates.map(item => item.id === template.id ? template : item)
+                        : [template, ...(this.quickTemplates || [])];
+                    this.showQuickTemplateModal = false;
+                    this.recordAudit(this.editingQuickTemplate ? 'تعديل قالب كشف' : 'إضافة قالب كشف', name);
+                },
+                deleteQuickTemplate(id) {
+                    if (!confirm('هل تريد حذف قالب الكشف؟')) return;
+                    const template = this.quickTemplates.find(item => item.id === id);
+                    this.quickTemplates = this.quickTemplates.filter(item => item.id !== id);
+                    this.recordAudit('حذف قالب كشف', template?.name || id);
+                },
+                applyQuickTemplate(template) {
+                    if (!template) return;
+                    this.newRecordForm.customDiagnosis = template.diagnosis || '';
+                    this.newRecordForm.generalNotes = template.notes || '';
+                    this.newRecordForm.selectedMedicinesWithDosage = Array.isArray(template.medicines) ? JSON.parse(JSON.stringify(template.medicines)) : [];
+                    this.recordAudit('تطبيق قالب كشف', template.name || 'قالب غير مسمى');
+                    alert(`تم تطبيق قالب «${template.name}» ويمكنك تعديله قبل الحفظ.`);
+                },
+                formatAuditDate(value) {
+                    try { return new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)); } catch (e) { return value || ''; }
+                },
+
                 // ---- LOCAL DATA PERSISTENCE (localStorage) ----
                 // NOTE: This keeps all clinic data saved on this device/browser only, so nothing
                 // is lost on refresh. When the app is later connected to Supabase (or another
                 // backend), these same read/write points are where the cloud sync calls should go.
                 storageKey: 'soliMedicalData_v1',
-                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts'],
+                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'quickTemplates', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
 
                 loadPersistedState() {
                     try {
@@ -3465,7 +3610,7 @@
 
                                 <!-- Multi-select Diagnoses List + Manual Diagnosis -->
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
-                                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التشخيص الطبي (يمكن اختيار أكثر من تشخيص + كتابة يدوية):</label>
+                                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"><label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التشخيص الطبي (يمكن اختيار أكثر من تشخيص + كتابة يدوية):</label><div x-show="quickTemplates.length" class="flex items-center gap-1.5"><span class="text-[11px] text-slate-500">قالب سريع:</span><template x-for="template in quickTemplates" :key="'visit-template-' + template.id"><button type="button" @click="applyQuickTemplate(template)" class="px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 text-[11px] font-bold hover:bg-blue-100" x-text="template.name"></button></template></div></div>
                                     <input type="text" x-model="diagnosisSearchQuery" placeholder="بحث في قائمة التشخيصات المعتمدة..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     
                                     <div class="max-h-36 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
@@ -3963,6 +4108,37 @@
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings' || currentView === 'prescriptionSettings'" class="max-w-4xl space-y-6">
+                            <!-- Local Edition Commercial Tools -->
+                            <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-blue-100 dark:border-blue-900/60 shadow-sm space-y-4">
+                                <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
+                                    <div>
+                                        <h3 class="text-base font-bold text-slate-800 dark:text-white">أدوات النسخة المحلية</h3>
+                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">إعداد سريع للعيادة، قوالب للكشف، وقفل تلقائي يحمي الشاشة عند تركها دون مراقبة.</p>
+                                    </div>
+                                    <i data-lucide="briefcase-medical" class="w-6 h-6 text-blue-600 dark:text-blue-400 flex-shrink-0"></i>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <button type="button" @click="openSetupWizard()" class="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/25 text-blue-700 dark:text-blue-300 px-4 py-3 text-right hover:border-blue-500 transition-colors">
+                                        <span class="block text-xs font-bold">معالج إعداد العيادة</span><span class="block text-[11px] mt-1 opacity-75">بيانات الطبيب، العنوان، الهاتف وساعات العمل</span>
+                                    </button>
+                                    <button type="button" @click="openQuickTemplateModal()" class="rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 text-right hover:border-blue-400 transition-colors">
+                                        <span class="block text-xs font-bold text-slate-700 dark:text-slate-200">إضافة قالب كشف سريع</span><span class="block text-[11px] mt-1 text-slate-500">احفظ تشخيصاً وملاحظات وأدوية متكررة</span>
+                                    </button>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <div><p class="text-xs font-bold text-slate-700 dark:text-slate-200">القفل التلقائي بعد عدم النشاط</p><p class="text-[11px] text-slate-500 mt-1">يطلب كلمة مرور المستخدم الحالي دون تسجيل الخروج أو فقد البيانات.</p></div>
+                                        <button type="button" @click="idleLockEnabled = !idleLockEnabled; startIdleLockMonitor(); persistState()" class="w-11 h-6 rounded-full transition-colors" :class="idleLockEnabled ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'"><span class="block w-5 h-5 rounded-full bg-white shadow transition-transform" :class="idleLockEnabled ? 'translate-x-0.5' : '-translate-x-5'"></span></button>
+                                    </div>
+                                    <div class="flex items-center gap-3"><label class="text-xs font-bold text-slate-600 dark:text-slate-300" for="idleLockMinutes">المدة بالدقائق</label><input id="idleLockMinutes" type="number" min="1" max="180" inputmode="numeric" x-model.number="idleLockMinutes" @change="startIdleLockMonitor(); persistState()" class="w-24 px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+                                    <div class="flex items-center justify-between"><h4 class="text-xs font-bold text-slate-700 dark:text-slate-200">قوالب الكشف المحفوظة</h4><span class="text-[11px] text-slate-500" x-text="quickTemplates.length + ' قالب'"></span></div>
+                                    <div class="space-y-2 max-h-40 overflow-y-auto"><template x-for="template in quickTemplates" :key="template.id"><div class="flex items-center justify-between gap-2 rounded-lg bg-slate-50 dark:bg-slate-800 px-3 py-2"><span class="text-xs font-bold truncate" x-text="template.name"></span><div class="flex gap-1"><button type="button" @click="openQuickTemplateModal(template)" class="text-[11px] text-blue-600">تعديل</button><button type="button" @click="deleteQuickTemplate(template.id)" class="text-[11px] text-red-600">حذف</button></div></div></template><p x-show="quickTemplates.length === 0" class="text-[11px] text-slate-400 text-center py-2">لم تُحفظ قوالب بعد.</p></div>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4"><div class="flex items-center justify-between mb-2"><h4 class="text-xs font-bold text-slate-700 dark:text-slate-200">سجل العمليات الأخير</h4><span class="text-[11px] text-slate-500" x-text="auditLog.length + ' عملية'"></span></div><div class="max-h-36 overflow-y-auto space-y-1"><template x-for="entry in auditLog.slice(0, 12)" :key="entry.id"><div class="text-[11px] flex justify-between gap-3 border-b border-slate-100 dark:border-slate-800 py-1"><span><b x-text="entry.action"></b> — <span x-text="entry.user"></span></span><span class="text-slate-400 whitespace-nowrap" x-text="formatAuditDate(entry.at)"></span></div></template><p x-show="auditLog.length === 0" class="text-[11px] text-slate-400 text-center">لا توجد عمليات مسجلة بعد.</p></div></div>
+                            </div>
+
                             <!-- Manual Clinic Backup & Restore -->
                             <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
                                 <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
@@ -4877,6 +5053,17 @@
         </div>
 
     </div>
+        <div x-show="showSetupWizard" x-cloak class="fixed inset-0 z-[80] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div @click.outside="showSetupWizard = false" class="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-5 space-y-5">
+                <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3"><div><h3 class="font-bold text-slate-800 dark:text-white">معالج إعداد العيادة</h3><p class="text-xs text-slate-500 mt-1">يمكن تعديل هذه البيانات لاحقاً من إعدادات الروشتة.</p></div><button type="button" @click="showSetupWizard = false" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><i data-lucide="x" class="w-5 h-5"></i></button></div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"><label class="text-xs font-bold">اسم العيادة<input type="text" x-model="setupForm.clinicName" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold">اسم الطبيب<input type="text" x-model="setupForm.doctorName" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold">التخصص<input type="text" x-model="setupForm.specialty" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold">الهاتف<input type="tel" inputmode="tel" x-model="setupForm.phone" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold sm:col-span-2">العنوان<input type="text" x-model="setupForm.location" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold sm:col-span-2">ساعات العمل<input type="text" x-model="setupForm.hours" placeholder="مثال: السبت - الخميس، 5م إلى 10م" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label></div>
+                <div class="flex justify-end gap-2"><button type="button" @click="showSetupWizard = false" class="px-4 py-2 rounded-xl text-sm text-slate-600 bg-slate-100 dark:bg-slate-800 dark:text-slate-300">إلغاء</button><button type="button" @click="saveSetupWizard()" class="px-5 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white">حفظ الإعداد</button></div>
+            </div>
+        </div>
+        <div x-show="showQuickTemplateModal" x-cloak class="fixed inset-0 z-[80] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div @click.outside="showQuickTemplateModal = false" class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-5 space-y-4"><div class="flex items-center justify-between"><h3 class="font-bold text-slate-800 dark:text-white" x-text="editingQuickTemplate ? 'تعديل قالب كشف' : 'إضافة قالب كشف سريع'"></h3><button type="button" @click="showQuickTemplateModal = false" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><i data-lucide="x" class="w-5 h-5"></i></button></div><label class="block text-xs font-bold">اسم القالب<input type="text" x-model="quickTemplateForm.name" placeholder="مثال: متابعة ضغط الدم" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="block text-xs font-bold">التشخيص الافتراضي<textarea x-model="quickTemplateForm.diagnosis" rows="2" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></textarea></label><label class="block text-xs font-bold">ملاحظات وتوصيات<textarea x-model="quickTemplateForm.notes" rows="2" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></textarea></label><p class="text-[11px] text-slate-500">يمكن إضافة الأدوية بعد إنشاء القالب من خلال تعديل بياناته أو تطوير محرر الأدوية في المرحلة التالية.</p><div class="flex justify-end gap-2"><button type="button" @click="showQuickTemplateModal = false" class="px-4 py-2 rounded-xl text-sm text-slate-600 bg-slate-100 dark:bg-slate-800 dark:text-slate-300">إلغاء</button><button type="button" @click="saveQuickTemplate()" class="px-5 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white">حفظ القالب</button></div></div>
+        </div>
+        <div x-show="showIdleLockModal" x-cloak class="fixed inset-0 z-[90] bg-slate-950/90 flex items-center justify-center p-4"><div class="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-6 text-center space-y-4"><i data-lucide="lock-keyhole" class="w-10 h-10 mx-auto text-blue-600"></i><div><h3 class="font-bold text-slate-800 dark:text-white">تم قفل الشاشة تلقائياً</h3><p class="text-xs text-slate-500 mt-1">أدخل كلمة مرور المستخدم الحالي للمتابعة.</p></div><input type="password" x-model="idleUnlockPassword" @keydown.enter.prevent="unlockIdleSession()" autocomplete="current-password" class="w-full px-4 py-3 border rounded-xl text-center bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><button type="button" @click="unlockIdleSession()" class="w-full px-4 py-3 rounded-xl font-bold bg-blue-600 text-white">فتح النظام</button></div></div>
 </body>
     <script>
         if ('serviceWorker' in navigator) {
