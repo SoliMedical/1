@@ -101,6 +101,9 @@
                 cloudAuthReady: false,
                 authError: '',
                 showPassword: false,
+                showForgotPassword: false,
+                forgotPasswordInput: '',
+                forgotPasswordMessage: '',
                 loginError: '',
                 backupInfo: '',
                 patientSearch: '',
@@ -136,6 +139,10 @@
                 syncRevision: 0,
                 localChangesPending: false,
                 localEditBaseRevision: 0,
+                showPassword: false,
+                showForgotPassword: false,
+                forgotPasswordInput: '',
+                forgotPasswordMessage: '',
 
                 // Smart Search Inputs inside Forms
                 symptomSearchQuery: '',
@@ -528,6 +535,9 @@
                     });
                     this.users.forEach(u => {
                         if (!u.permissions) u.permissions = {};
+                        if (u.role === 'admin') {
+                            this.permissionModules.forEach(m => { u.permissions[m.key] = true; });
+                        }
                         if (u.permissions.waitingQueue === undefined) {
                             u.permissions.waitingQueue = u.role === 'admin' || !!u.permissions.newVisit || !!u.permissions.patients;
                         }
@@ -1322,10 +1332,10 @@
                     if (!user || !user.contactEmail) {
                         this.forgotPasswordMessage = user
                             ? 'هذا الحساب لا يملك بريداً إلكترونياً مسجلاً، يرجى التواصل مع مدير النظام لإعادة تعيين كلمة المرور.'
-                            : 'إذا كان الحساب موجوداً، سيتم إرسال رابط الاستعادة إلى البريد الإلكتروني المسجل.';
+                            : 'لم يتم العثور على حساب بهذه البيانات. إذا كان الحساب تابعاً للعيادة، يرجى التواصل مع مدير النظام.';
                         return;
                     }
-                    this.forgotPasswordMessage = `يرجى التواصل مع مدير النظام لإعادة تعيين كلمة مرور الحساب المحلي${user.contactEmail ? `، ويمكن مراسلته على ${user.contactEmail}` : ''}.`;
+                    this.forgotPasswordMessage = `النظام يعمل بتسجيل دخول محلي ولا يرسل رابطاً آلياً حالياً. يرجى التواصل مع مدير النظام لإعادة تعيين كلمة المرور، ويمكن مراسلته على ${user.contactEmail}.`;
                 },
 
                 logout() {
@@ -1360,6 +1370,8 @@
                     };
                     this.users.push(newUser);
                     this.userPermissionDrafts[newUser.id] = { ...newUser.permissions };
+                    this.persistState();
+                    this.queueCloudSync();
 
                     this.newUserForm = {
                         fullName: '',
@@ -1380,6 +1392,8 @@
                     if (!confirm('هل تريد حذف هذا الحساب؟')) return;
                     this.users = this.users.filter(u => u.id !== userId);
                     delete this.userPermissionDrafts[userId];
+                    this.persistState();
+                    this.queueCloudSync();
                 },
 
                 toggleUserActive(userId) {
@@ -1394,6 +1408,8 @@
                         // If the admin suspends the account they're currently using elsewhere, log it out.
                         this.logout();
                     }
+                    this.persistState();
+                    this.queueCloudSync();
                 },
 
                 promoteToAdmin(userId) {
@@ -1405,17 +1421,26 @@
                     this.permissionModules.forEach(m => { fullPermissions[m.key] = true; });
                     user.permissions = fullPermissions;
                     this.userPermissionDrafts[userId] = { ...fullPermissions };
+                    this.persistState();
+                    this.queueCloudSync();
                 },
 
                 saveUserPermissions(userId) {
                     const user = this.users.find(u => u.id === userId);
                     if (!user) return;
-                    user.permissions = { ...this.userPermissionDrafts[userId] };
+                    const fullPermissions = {};
+                    this.permissionModules.forEach(m => { fullPermissions[m.key] = true; });
+                    user.permissions = user.id === 1 || user.role === 'admin'
+                        ? fullPermissions
+                        : { ...this.userPermissionDrafts[userId] };
+                    this.userPermissionDrafts[userId] = { ...user.permissions };
                     if (this.currentUser && this.currentUser.id === userId) {
                         this.currentUser = user;
                     }
                     this.userSaveFeedback[userId] = true;
                     setTimeout(() => { this.userSaveFeedback[userId] = false; }, 2000);
+                    this.persistState();
+                    this.queueCloudSync();
                 },
 
                 // Maps each page to the permission required to view it, so navigation can never
@@ -2536,7 +2561,7 @@
         .print-doctor-name { font-family: 'Amiri', 'Traditional Arabic', serif; letter-spacing: 0 !important; }
         .print-doctor-specialty, .print-doctor-contact { white-space: nowrap; }
         .print-text-wrap { overflow-wrap: anywhere; word-break: break-word; }
-        .print-page { width: 100%; box-sizing: border-box; }
+        .print-page { width: 100%; min-width: 0; box-sizing: border-box; }
         .print-medicines-page { padding-top: 4mm; }
         .print-prescription-controls { direction: rtl; }
         /* Soli Medical print controls: calm A5 spacing, readable Arabic hierarchy, and no clipped long content. */
@@ -2550,7 +2575,33 @@
             --section-margin: 3mm;
             --section-line-height: 1.25;
             --medicine-gap: 4mm;
+            width: min(148mm, 100%);
+            max-width: 100%;
+            min-width: 0;
+            margin-inline: auto;
+            box-sizing: border-box;
             padding: var(--page-padding-top) var(--page-padding) var(--page-padding-bottom);
+        }
+        #printablePrescriptionArea img,
+        #printablePrescriptionArea canvas,
+        #printablePrescriptionArea svg { max-width: 100%; }
+        #printablePrescriptionArea .print-text-wrap,
+        #printablePrescriptionArea .print-section,
+        #printablePrescriptionArea .print-clinic-footer { min-width: 0; }
+        @media (max-width: 640px) {
+            #printablePrescriptionArea {
+                width: 100%;
+                min-height: 196mm;
+                padding-left: max(3mm, var(--page-padding));
+                padding-right: max(3mm, var(--page-padding));
+            }
+            #printablePrescriptionArea .print-rx-header { gap: 2mm; }
+            #printablePrescriptionArea .print-rx-header img { width: 18mm; height: 18mm; }
+            #printablePrescriptionArea .print-doctor-name { font-size: clamp(1.35rem, 7vw, 1.875rem) !important; }
+            #printablePrescriptionArea .print-doctor-specialty { white-space: normal; line-height: 1.35; }
+            #printablePrescriptionArea .print-clinic-footer { flex-wrap: wrap; gap: 2mm; }
+            #printablePrescriptionArea .print-clinic-footer > * { min-width: 0; }
+            .print-prescription-controls { flex-wrap: wrap; justify-content: center; }
         }
         #printablePrescriptionArea.print-one-page {
             --print-scale: 1;
@@ -2756,10 +2807,28 @@
                         </div>
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">كلمة المرور</label>
-                            <input type="password" x-model="loginForm.password" required autocomplete="current-password" class="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل كلمة المرور">
+                            <div class="relative">
+                                <input :type="showPassword ? 'text' : 'password'" x-model="loginForm.password" required autocomplete="current-password" class="w-full px-4 py-2.5 pl-12 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل كلمة المرور">
+                                <button type="button" @click="showPassword = !showPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-blue-600" :aria-label="showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'">
+                                    <i :data-lucide="showPassword ? 'eye-off' : 'eye'" class="w-5 h-5"></i>
+                                </button>
+                            </div>
                         </div>
                         <button type="submit" :disabled="isLoading" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-lg transition-all">تسجيل الدخول</button>
                     </form>
+                    <div class="mt-4 text-center">
+                        <button type="button" @click="showForgotPassword = !showForgotPassword; forgotPasswordMessage = ''" class="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:underline">
+                            <span x-text="showForgotPassword ? 'إغلاق استعادة كلمة المرور' : 'نسيت كلمة المرور؟'"></span>
+                        </button>
+                        <div x-show="showForgotPassword" x-cloak class="mt-3 p-3 text-right rounded-xl border border-blue-100 dark:border-blue-900/50 bg-blue-50 dark:bg-blue-950/30">
+                            <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">اسم المستخدم أو البريد الإلكتروني المسجل</label>
+                            <div class="flex flex-col sm:flex-row gap-2">
+                                <input type="text" x-model="forgotPasswordInput" autocomplete="username" inputmode="email" class="flex-1 min-w-0 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-800 dark:text-white" placeholder="أدخل اسم المستخدم أو البريد">
+                                <button type="button" @click="forgotPassword" class="px-3 py-2 bg-slate-700 hover:bg-slate-800 text-white rounded-lg text-xs font-bold">عرض تعليمات الاستعادة</button>
+                            </div>
+                            <p x-show="forgotPasswordMessage" x-text="forgotPasswordMessage" class="mt-2 text-[11px] leading-5 text-slate-600 dark:text-slate-300"></p>
+                        </div>
+                    </div>
                     <p class="mt-5 text-[11px] leading-5 text-slate-500 dark:text-slate-400 text-center">الدخول يتم من حسابات Soli Medical المحلية والصلاحيات التي يحددها مدير النظام. تعمل المزامنة تلقائياً في الخلفية عند توفر الاتصال، ويستمر النظام محلياً عند انقطاعه.</p>
                 </div>
             </div>
@@ -3523,7 +3592,7 @@
                                 <!-- Egyptian Medicines Market Database Search & Selection -->
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">أصناف الأدوية المصرية (بحث ذكي بالاسم وجرعة مخصصة لكل دواء):</label>
-                                    <input type="text" x-model="medicineSearchQuery" placeholder="ابحث بالعربية أو الإنجليزية في أرشيف الأدوية المصري..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:text-white">
+                                    <input type="search" name="medicineArchiveSearch" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" x-model="medicineSearchQuery" placeholder="ابحث بالعربية أو الإنجليزية في أرشيف الأدوية المصري..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:text-white">
                                     <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
                                         <span x-show="isLoadingMedicineArchive" class="text-blue-600 dark:text-blue-300">جارٍ تحميل الأرشيف...</span>
                                         <span x-show="!isLoadingMedicineArchive && medicineArchiveMessage" x-text="medicineArchiveMessage"></span>
@@ -4061,8 +4130,8 @@
                                         </div>
                                         <div class="space-y-2">
                                             <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الهوامش الخارجية للصفحة</label>
-                                            <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="الهوامش الخارجية للصفحة">
-                                                <template x-for="option in [{value:'tight',label:'ضيقة',hint:'4 مم'},{value:'normal',label:'عادية',hint:'7 مم'},{value:'wide',label:'واسعة',hint:'10 مم'}]" :key="option.value">
+                                            <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2" role="radiogroup" aria-label="الهوامش الخارجية للصفحة">
+                                                <template x-for="option in [{value:'extra-tight',label:'شديدة الضيق',hint:'2 مم'},{value:'tight',label:'ضيقة',hint:'4 مم'},{value:'normal',label:'عادية',hint:'7 مم'},{value:'wide',label:'واسعة',hint:'10 مم'},{value:'extra-wide',label:'شديدة الاتساع',hint:'14 مم'}]" :key="option.value">
                                                     <button type="button" role="radio" :aria-checked="doctorInfo.printPagePadding === option.value" @click.prevent.stop="doctorInfo.printPagePadding = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printPagePadding === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
                                                         <span class="block text-xs font-bold" x-text="option.label"></span>
                                                         <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
@@ -4074,8 +4143,8 @@
                                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
                                         <div class="space-y-2">
                                             <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الهامش العلوي للرأس</label>
-                                            <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="الهامش العلوي للرأس">
-                                                <template x-for="option in [{value:'tight',label:'ضيق',hint:'4 مم'},{value:'normal',label:'متوازن',hint:'7 مم'},{value:'wide',label:'واسع',hint:'10 مم'}]" :key="option.value">
+                                            <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2" role="radiogroup" aria-label="الهامش العلوي للرأس">
+                                                <template x-for="option in [{value:'extra-tight',label:'شديد الضيق',hint:'2 مم'},{value:'tight',label:'ضيق',hint:'4 مم'},{value:'normal',label:'متوازن',hint:'7 مم'},{value:'wide',label:'واسع',hint:'10 مم'},{value:'extra-wide',label:'شديد الاتساع',hint:'14 مم'}]" :key="option.value">
                                                     <button type="button" role="radio" :aria-checked="doctorInfo.printTopPadding === option.value" @click.prevent.stop="doctorInfo.printTopPadding = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printTopPadding === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
                                                         <span class="block text-xs font-bold" x-text="option.label"></span>
                                                         <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
@@ -4085,8 +4154,8 @@
                                         </div>
                                         <div class="space-y-2">
                                             <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الهامش السفلي للتذييل</label>
-                                            <div class="grid grid-cols-3 gap-2" role="radiogroup" aria-label="الهامش السفلي للتذييل">
-                                                <template x-for="option in [{value:'tight',label:'ضيق',hint:'4 مم'},{value:'normal',label:'متوازن',hint:'7 مم'},{value:'wide',label:'واسع',hint:'10 مم'}]" :key="option.value">
+                                            <div class="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2" role="radiogroup" aria-label="الهامش السفلي للتذييل">
+                                                <template x-for="option in [{value:'extra-tight',label:'شديد الضيق',hint:'2 مم'},{value:'tight',label:'ضيق',hint:'4 مم'},{value:'normal',label:'متوازن',hint:'7 مم'},{value:'wide',label:'واسع',hint:'10 مم'},{value:'extra-wide',label:'شديد الاتساع',hint:'14 مم'}]" :key="option.value">
                                                     <button type="button" role="radio" :aria-checked="doctorInfo.printBottomPadding === option.value" @click.prevent.stop="doctorInfo.printBottomPadding = option.value; savePrintSettings()" class="cursor-pointer rounded-xl border px-3 py-2.5 text-center transition-colors" :class="doctorInfo.printBottomPadding === option.value ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300' : 'border-slate-200 dark:border-slate-700 hover:border-blue-300 text-slate-600 dark:text-slate-300'">
                                                         <span class="block text-xs font-bold" x-text="option.label"></span>
                                                         <span class="block text-[10px] mt-0.5 opacity-75" x-text="option.hint"></span>
@@ -4170,7 +4239,7 @@
                                         <span x-text="cloudSyncEnabled ? (cloudStatus === 'online' ? '🟢 متصل بالسحابة (Firebase)' : (cloudStatus === 'syncing' ? '🔵 جارٍ المزامنة' : '🟡 وضع محلي - بانتظار الاتصال')) : '⚪ المزامنة السحابية غير مفعّلة'"></span>
                                     </span>
                                 </div>
-                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني يُستخدم فقط لإرسال رابط استعادة كلمة المرور.</p>
+                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
                         <div class="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20 px-4 py-3">
                             <p class="text-xs font-bold text-amber-800 dark:text-amber-300"><i data-lucide="triangle-alert" class="w-4 h-4 inline-block align-middle ml-1"></i><span x-show="syncConflicts.length > 0">تم تسجيل <span x-text="syncConflicts.length"></span> تعارضات مزامنة للمراجعة.</span><span x-show="syncConflicts.length === 0">لا توجد تعارضات مزامنة مسجلة حالياً.</span></p>
                             <button type="button" @click="showSyncConflictsModal = true" class="text-xs font-bold text-amber-800 dark:text-amber-300 underline underline-offset-4">فتح السجل</button>
@@ -4210,12 +4279,12 @@
                                                 </div>
                                                 <div>
                                                     <label class="block text-[11px] font-semibold text-slate-500 mb-1">كلمة المرور</label>
-                                                    <input type="text" x-model="u.password" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
+                                                    <input type="password" x-model="u.password" autocomplete="new-password" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
                                                 </div>
                                             </div>
                                             <div>
                                                 <label class="block text-[11px] font-semibold text-slate-500 mb-1">البريد الإلكتروني (لاستعادة كلمة المرور)</label>
-                                                <input type="email" x-model="u.contactEmail" placeholder="example@email.com" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
+                                                    <input type="email" x-model="u.contactEmail" inputmode="email" autocomplete="email" placeholder="example@email.com" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
                                             </div>
                                             <div class="flex flex-wrap gap-x-4 gap-y-2 pt-2 border-t dark:border-slate-700 text-xs">
                                                 <template x-for="mod in permissionModules" :key="mod.key">
@@ -4239,8 +4308,8 @@
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <input type="text" x-model="newUserForm.fullName" placeholder="اسم الموظف الكامل" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                         <input type="text" x-model="newUserForm.email" placeholder="اسم المستخدم / البريد (لتسجيل الدخول)" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <input type="email" x-model="newUserForm.contactEmail" placeholder="البريد الإلكتروني (لاستعادة كلمة المرور)" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <input type="text" x-model="newUserForm.password" placeholder="كلمة المرور" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <input type="email" x-model="newUserForm.contactEmail" inputmode="email" autocomplete="email" placeholder="البريد الإلكتروني للتواصل عند الاستعادة" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <input type="password" x-model="newUserForm.password" autocomplete="new-password" placeholder="كلمة المرور" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     </div>
                                     <input type="text" x-model="newUserForm.role" placeholder="المسمى الوظيفي (مثال: موظف استقبال، ممرضة...)" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs">
@@ -4677,9 +4746,9 @@
                     '--print-scale': getPrescriptionPrintScale(),
                     '--qr-size': { small: '14mm', medium: '19mm', large: '25mm' }[doctorInfo.printQrSize || 'medium'],
                     '--footer-font': { small: '8px', normal: '10px', large: '12px' }[doctorInfo.printFooterFontSize || 'normal'],
-                    '--page-padding': { tight: '4mm', normal: '7mm', wide: '10mm' }[doctorInfo.printPagePadding || 'normal'],
-                    '--page-padding-top': { tight: '4mm', normal: '7mm', wide: '10mm' }[doctorInfo.printTopPadding || 'normal'],
-                    '--page-padding-bottom': { tight: '4mm', normal: '7mm', wide: '10mm' }[doctorInfo.printBottomPadding || 'normal'],
+                    '--page-padding': { 'extra-tight': '2mm', tight: '4mm', normal: '7mm', wide: '10mm', 'extra-wide': '14mm' }[doctorInfo.printPagePadding || 'normal'],
+                    '--page-padding-top': { 'extra-tight': '2mm', tight: '4mm', normal: '7mm', wide: '10mm', 'extra-wide': '14mm' }[doctorInfo.printTopPadding || 'normal'],
+                    '--page-padding-bottom': { 'extra-tight': '2mm', tight: '4mm', normal: '7mm', wide: '10mm', 'extra-wide': '14mm' }[doctorInfo.printBottomPadding || 'normal'],
                     '--section-padding': { tight: '2mm', normal: '3mm', wide: '4.5mm' }[doctorInfo.printSectionSpacing || 'normal'],
                     '--section-margin': { tight: '2mm', normal: '3mm', wide: '4.5mm' }[doctorInfo.printSectionSpacing || 'normal'],
                     '--section-line-height': { tight: '1.15', normal: '1.25', wide: '1.45' }[doctorInfo.printSectionSpacing || 'normal'],
