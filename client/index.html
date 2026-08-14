@@ -468,8 +468,13 @@
                 ],
 
                 waitingQueue: [
-                    { id: 201, patientId: 1, patientName: 'دينا رمضان', symptom: 'ارتفاع درجة الحرارة', clinic: 'فرع المعادي', createdAt: '2026-08-10T09:00:00' }
+                    { id: 201, patientId: 1, patientName: 'دينا رمضان', symptom: 'ارتفاع درجة الحرارة', clinic: 'فرع المعادي', status: 'waiting', createdAt: '2026-08-10T09:00:00' }
                 ],
+                    appointments: [],
+                    selectedAppointmentDate: new Date().toISOString().slice(0, 10),
+                    appointmentSearch: '',
+                    appointmentStatusFilter: 'all',
+                    appointmentForm: { patientName: '', phone: '', date: new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '' },
 
                 invoices: [
                     { id: 'INV-1001', patientName: 'دينا رمضان', serviceName: 'كشف طبي (كشف)', amount: 300, discount: 0, tax: 0, total: 300, date: '2026-08-10', status: 'مدفوعة' }
@@ -1037,7 +1042,7 @@
                     // Credentials and clinic configuration remain available so the clinic can
                     // sign in again after a destructive records reset. All clinical/financial
                     // collections are cleared and then propagated through Firestore.
-                    ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'expenses', 'syncConflicts'].forEach(key => {
+                    ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'expenses', 'syncConflicts'].forEach(key => {
                         snapshot[key] = [];
                     });
                     return snapshot;
@@ -1571,6 +1576,7 @@
                     newVisit: 'newVisit',
                     followUps: 'followUps',
                     waitingQueue: 'waitingQueue',
+                    appointments: 'waitingQueue',
                     patientsList: 'patients',
                     medicalRecord: 'patients',
                     invoices: 'invoices',
@@ -1636,6 +1642,7 @@
                         newVisit: 'إضافة كشف جديد / متابعة',
                         followUps: 'المتابعة القادمة وتذكيرات المرضى',
                         waitingQueue: 'مرضى في الانتظار',
+                        appointments: 'إدارة المواعيد والتقويم',
                         patientsList: 'سجل إدارات المرضى والملفات الطبية',
                         patientForm: 'تسجيل زيارة / مريض جديد',
                         medicalRecord: 'السجل الطبي الموسع للمريض',
@@ -1662,6 +1669,86 @@
 
                 getWaitingPatientVisitType(item) {
                     return item?.visitType || this.getPatientById(item?.patientId)?.visitType || 'كشف';
+                },
+
+                get appointmentStatusOptions() {
+                    return [
+                        { key: 'scheduled', label: 'مجدول', tone: 'blue' },
+                        { key: 'waiting', label: 'في الانتظار', tone: 'amber' },
+                        { key: 'in_consultation', label: 'داخل الكشف', tone: 'violet' },
+                        { key: 'completed', label: 'اكتمل', tone: 'emerald' },
+                        { key: 'cancelled', label: 'ملغي', tone: 'red' }
+                    ];
+                },
+                appointmentStatusLabel(status) {
+                    return this.appointmentStatusOptions.find(item => item.key === status)?.label || 'مجدول';
+                },
+                get appointmentsForSelectedDay() {
+                    const query = String(this.appointmentSearch || '').trim().toLowerCase();
+                    return (this.appointments || []).filter(item => {
+                        const matchesDate = item.date === this.selectedAppointmentDate;
+                        const haystack = [item.patientName, item.phone, item.visitType, item.notes].filter(Boolean).join(' ').toLowerCase();
+                        const matchesQuery = !query || haystack.includes(query);
+                        const matchesStatus = this.appointmentStatusFilter === 'all' || (item.status || 'scheduled') === this.appointmentStatusFilter;
+                        return matchesDate && matchesQuery && matchesStatus;
+                    }).sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+                },
+                get reportAppointments() {
+                    return (this.appointments || []).filter(item => this.isDateInReportPeriod(item.date));
+                },
+                get reportCompletedAppointments() {
+                    return this.reportAppointments.filter(item => item.status === 'completed');
+                },
+                openAppointmentsPage(date = null) {
+                    this.selectedAppointmentDate = date || this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
+                    this.appointmentForm.date = this.selectedAppointmentDate;
+                    this.navigateTo('appointments');
+                    this.renderIcons();
+                },
+                resetAppointmentForm() {
+                    this.appointmentForm = { patientName: '', phone: '', date: this.selectedAppointmentDate || new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '' };
+                },
+                addAppointment() {
+                    const form = this.appointmentForm || {};
+                    const patientName = String(form.patientName || '').trim();
+                    if (!patientName || !form.date || !form.time) { alert('اكتب اسم المريض والتاريخ والوقت أولاً.'); return; }
+                    const patient = (this.patients || []).find(item => String(item.fullName || '').trim() === patientName || (form.phone && String(item.phone || '').trim() === String(form.phone).trim()));
+                    const appointment = { id: 'APT-' + Date.now(), patientId: patient?.id || null, patientName, phone: String(form.phone || patient?.phone || '').trim(), date: form.date, time: form.time, visitType: form.visitType || 'كشف', notes: String(form.notes || '').trim(), status: 'scheduled', createdAt: new Date().toISOString() };
+                    this.appointments = [appointment, ...(this.appointments || [])];
+                    this.selectedAppointmentDate = appointment.date;
+                    this.resetAppointmentForm();
+                    this.recordAudit('إضافة موعد', patientName + ' - ' + appointment.date + ' ' + appointment.time);
+                    alert('تم حفظ الموعد بنجاح.');
+                },
+                updateAppointmentStatus(id, status) {
+                    const appointment = (this.appointments || []).find(item => item.id === id);
+                    if (!appointment) return;
+                    appointment.status = status;
+                    if (status === 'waiting') {
+                        const exists = (this.waitingQueue || []).some(item => item.appointmentId === id);
+                        if (!exists) this.waitingQueue.unshift({ id: Date.now(), appointmentId: id, patientId: appointment.patientId, patientName: appointment.patientName, phone: appointment.phone, symptom: appointment.visitType, clinic: 'عيادة الطبيب', status: 'waiting', createdAt: new Date().toISOString() });
+                    }
+                    if (status === 'in_consultation') {
+                        const queueItem = (this.waitingQueue || []).find(item => item.appointmentId === id);
+                        if (queueItem) queueItem.status = 'in_consultation';
+                    }
+                    if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(item => item.appointmentId !== id);
+                    this.recordAudit('تغيير حالة موعد', appointment.patientName + ': ' + this.appointmentStatusLabel(status));
+                },
+                setWaitingStatus(item, status) {
+                    if (!item) return;
+                    item.status = status;
+                    const appointment = (this.appointments || []).find(appt => appt.id === item.appointmentId);
+                    if (appointment) appointment.status = status;
+                    if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(entry => entry.id !== item.id);
+                    this.recordAudit('تغيير حالة قائمة الانتظار', item.patientName + ': ' + this.appointmentStatusLabel(status));
+                },
+                deleteAppointment(id) {
+                    const appointment = (this.appointments || []).find(item => item.id === id);
+                    if (!appointment || !confirm('حذف موعد ' + appointment.patientName + '؟')) return;
+                    this.appointments = this.appointments.filter(item => item.id !== id);
+                    this.waitingQueue = (this.waitingQueue || []).filter(item => item.appointmentId !== id);
+                    this.recordAudit('حذف موعد', appointment.patientName);
                 },
 
                 get waitingClinics() {
@@ -2143,6 +2230,7 @@
 
                         this.waitingQueue.unshift({
                             id: Date.now(),
+                            status: 'waiting',
                             patientId: p.id,
                             patientName: p.fullName,
                             symptom: (p.selectedSymptoms && p.selectedSymptoms[0]) ? p.selectedSymptoms[0] : ('زيارة ' + p.visitType),
@@ -2173,6 +2261,7 @@
                         this.patients.unshift(newP);
                         this.waitingQueue.unshift({
                             id: Date.now(),
+                            status: 'waiting',
                             patientId: newP.id,
                             patientName: newP.fullName,
                             symptom: (newP.selectedSymptoms && newP.selectedSymptoms[0]) ? newP.selectedSymptoms[0] : ('زيارة ' + newP.visitType),
@@ -2624,6 +2713,7 @@
                     this.patients = this.patients.filter(p => p.id !== id);
                     this.prescriptions = (this.prescriptions || []).filter(rx => rx.patientId !== id && String(rx.patientName || '').trim() !== patientName);
                     this.waitingQueue = (this.waitingQueue || []).filter(item => item.patientId !== id && String(item.patientName || '').trim() !== patientName);
+                    this.appointments = (this.appointments || []).filter(item => item.patientId !== id && String(item.patientName || '').trim() !== patientName);
                     this.invoices = (this.invoices || []).filter(invoice => invoice.patientId !== id && String(invoice.patientName || '').trim() !== patientName);
                     if (this.selectedPatientForRecord?.id === id) this.selectedPatientForRecord = null;
                     if (this.openPrescriptionPatientId === String(id)) this.openPrescriptionPatientId = null;
@@ -2634,6 +2724,9 @@
 
                 openWaitingPatient(item) {
                     const patient = this.patients.find(p => p.id === item.patientId) || this.patients.find(p => p.fullName === item.patientName);
+                    item.status = 'in_consultation';
+                    const linkedAppointment = (this.appointments || []).find(appt => appt.id === item.appointmentId);
+                    if (linkedAppointment) linkedAppointment.status = 'in_consultation';
                     if (!patient) {
                         alert('لم يتم العثور على ملف هذا المريض. يمكنك حذف البطاقة من قائمة الانتظار.');
                         return;
@@ -2988,6 +3081,10 @@
                             <i data-lucide="user-plus" class="w-5 h-5"></i>
                             <span>إضافة زيارة / كشف</span>
                         </a>
+                        <a x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'appointments'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
+                            <i data-lucide="calendar-days" class="w-5 h-5"></i>
+                            <span>المواعيد والتقويم</span>
+                        </a>
                         <a x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" :class="{'bg-amber-500 text-white font-semibold': currentView === 'waitingQueue'}" class="flex items-center justify-between px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <span class="flex items-center space-x-3 space-x-reverse">
                                 <i data-lucide="clock-3" class="w-5 h-5"></i>
@@ -3085,6 +3182,11 @@
                                     <p class="text-xs text-blue-700 dark:text-blue-300 font-bold">إضافة زيارة / كشف</p>
                                     <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تسجيل مريض أو زيارة جديدة</p>
                                 </button>
+                                <button x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" class="dashboard-action-card text-right bg-sky-50 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center mb-3"><i data-lucide="calendar-days" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-sky-700 dark:text-sky-300 font-bold">مواعيد اليوم</p>
+                                    <p class="text-2xl font-bold text-sky-700 dark:text-sky-300 mt-1" x-text="appointmentsForSelectedDay.length"></p>
+                                </button>
                                 <button x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" class="dashboard-action-card text-right bg-amber-50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center mb-3"><i data-lucide="clock-3" class="w-5 h-5"></i></span>
                                     <p class="text-xs text-amber-700 dark:text-amber-300 font-bold">مرضى في الانتظار</p>
@@ -3125,6 +3227,29 @@
                                     <p class="text-xs text-slate-700 dark:text-slate-200 font-bold">إعدادات القوائم والأدلة</p>
                                     <p class="text-sm font-bold text-slate-500 mt-2">إدارة بيانات النظام والصلاحيات</p>
                                 </button>
+                            </div>
+                        </div>
+
+                        <!-- APPOINTMENTS AND CALENDAR PAGE -->
+                        <div x-show="currentView === 'appointments'" class="max-w-6xl mx-auto space-y-6">
+                            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                                <div><h3 class="font-bold text-slate-800 dark:text-white text-xl">إدارة المواعيد والتقويم</h3><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">نظّم مواعيد اليوم وحوّل الموعد إلى قائمة الانتظار عند حضور المريض.</p></div>
+                                <input type="date" x-model="selectedAppointmentDate" @change="appointmentForm.date = selectedAppointmentDate" class="px-3 py-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm">
+                            </div>
+                            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                <div class="lg:col-span-1 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-3">
+                                    <h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4>
+                                    <input type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
+                                    <input type="tel" inputmode="tel" x-model="appointmentForm.phone" placeholder="رقم الهاتف" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
+                                    <div class="grid grid-cols-2 gap-2"><input type="date" x-model="appointmentForm.date" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><input type="time" x-model="appointmentForm.time" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
+                                    <select x-model="appointmentForm.visitType" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select>
+                                    <textarea x-model="appointmentForm.notes" rows="2" placeholder="ملاحظات الموعد" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></textarea>
+                                    <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold">حفظ الموعد</button>
+                                </div>
+                                <div class="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-4">
+                                    <div class="flex flex-col sm:flex-row gap-2"><input type="search" x-model="appointmentSearch" placeholder="ابحث في مواعيد اليوم..." class="flex-1 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
+                                    <div class="space-y-2"><template x-for="appointment in appointmentsForSelectedDay" :key="appointment.id"><article class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40"><div class="min-w-0"><div class="flex items-center gap-2"><span class="font-mono font-bold text-blue-600" x-text="appointment.time"></span><h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="appointment.patientName"></h4></div><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appointment.visitType + (appointment.phone ? ' • ' + appointment.phone : '')"></p><p x-show="appointment.notes" class="text-xs text-slate-400 mt-1" x-text="appointment.notes"></p></div><div class="flex items-center gap-2"><select :value="appointment.status" @change="updateAppointmentStatus(appointment.id, $event.target.value)" class="px-2 py-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs"><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select><button type="button" @click="deleteAppointment(appointment.id)" class="p-2 text-slate-400 hover:text-red-600" title="حذف الموعد"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></article></template><p x-show="appointmentsForSelectedDay.length === 0" class="text-center py-10 text-sm text-slate-400">لا توجد مواعيد مطابقة لهذا اليوم.</p></div>
+                                </div>
                             </div>
                         </div>
 
@@ -3187,6 +3312,7 @@
                                             <div class="min-w-0">
                                                 <h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="item.patientName"></h4>
                                                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="item.symptom || 'زيارة / كشف جديد'"></p>
+                                                <span class="inline-flex mt-2 px-2 py-1 rounded-full text-[10px] font-bold" :class="{'bg-amber-100 text-amber-700': (item.status || 'waiting') === 'waiting', 'bg-violet-100 text-violet-700': item.status === 'in_consultation', 'bg-emerald-100 text-emerald-700': item.status === 'completed'}" x-text="appointmentStatusLabel(item.status || 'waiting')"></span>
                                                 <p class="text-[11px] text-slate-400 mt-1" x-text="(getWaitingPatientPhone(item) || 'بدون هاتف') + ' • ' + (item.clinic || 'عيادة الطبيب')"></p>
                                             </div>
                                         </div>
@@ -3195,6 +3321,7 @@
                                                 <i data-lucide="stethoscope" class="w-4 h-4"></i>
                                                 <span>فتح الكشف وكتابة الروشتة</span>
                                             </button>
+                                            <select @change="setWaitingStatus(item, $event.target.value)" class="bg-slate-100 dark:bg-slate-800 px-3 py-2.5 rounded-xl text-xs font-bold"><option value="waiting" :selected="(item.status || 'waiting') === 'waiting'">في الانتظار</option><option value="in_consultation" :selected="item.status === 'in_consultation'">داخل الكشف</option><option value="completed">اكتمل</option><option value="cancelled">ملغي</option></select>
                                             <button @click="removeFromQueue(item.id)" class="bg-slate-100 hover:bg-red-50 dark:bg-slate-800 dark:hover:bg-red-950/30 text-slate-600 hover:text-red-600 dark:text-slate-300 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
                                                 <i data-lucide="x" class="w-4 h-4"></i>
                                                 <span>إزالة</span>
@@ -3975,7 +4102,11 @@
                                 </select>
                             </div>
 
-                            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div class="grid grid-cols-2 lg:grid-cols-6 gap-4">
+                                <div class="bg-sky-50 dark:bg-sky-900/20 border border-sky-100 dark:border-sky-800 p-4 rounded-2xl">
+                                    <p class="text-[11px] font-bold text-sky-700 dark:text-sky-400">المواعيد</p>
+                                    <h4 class="text-xl font-bold text-sky-700 dark:text-sky-400 mt-1" x-text="reportAppointments.length"></h4>
+                                </div>
                                 <div class="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-100 dark:border-emerald-800 p-4 rounded-2xl">
                                     <p class="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">إجمالي الوارد</p>
                                     <h4 class="text-xl font-bold text-emerald-700 dark:text-emerald-400 mt-1" x-text="reportIncome.toLocaleString() + ' ج.م'"></h4>
@@ -3987,6 +4118,10 @@
                                 <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 p-4 rounded-2xl">
                                     <p class="text-[11px] font-bold text-blue-700 dark:text-blue-400">سجلات المرضى (زيارات)</p>
                                     <h4 class="text-xl font-bold text-blue-700 dark:text-blue-400 mt-1" x-text="reportPatientRecords.length"></h4>
+                                </div>
+                                <div class="bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800 p-4 rounded-2xl">
+                                    <p class="text-[11px] font-bold text-violet-700 dark:text-violet-400">المواعيد المكتملة</p>
+                                    <h4 class="text-xl font-bold text-violet-700 dark:text-violet-400 mt-1" x-text="reportCompletedAppointments.length"></h4>
                                 </div>
                                 <div class="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800 p-4 rounded-2xl">
                                     <p class="text-[11px] font-bold text-indigo-700 dark:text-indigo-400">الروشتات المكتوبة</p>
