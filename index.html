@@ -46,37 +46,16 @@
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+    <script src="./firebase-config.js"></script>
 
     <!-- Alpine JS Application Logic -->
     <script>
-        // =====================================================================
-        // FIREBASE SETUP — fill in your own project's config below.
-        // 1) Go to console.firebase.google.com → create a project (free Spark plan is enough).
-        // 2) Project settings → General → "Your apps" → add a Web app → copy the config object here.
-        // 3) In the left menu enable: Authentication → Sign-in method → Anonymous.
-        //    Clinic users still sign in locally; Firebase is used silently for Firestore sync only.
-        // 4) In the left menu enable: Firestore Database → Create database (start in production mode).
-        // 5) In Firestore → Rules, use this exact-document rule while testing (tighten later for real use):
-        //      rules_version = '2';
-        //      service cloud.firestore {
-        //        match /databases/{database}/documents {
-        //          match /soliMedicalApp/sharedClinicData { allow read, write: if request.auth != null; }
-        //        }
-        //      }
-        // =====================================================================
-        const firebaseConfig = {
-            apiKey: "AIzaSyA17A_77NeF-_D5SJg9jbvD8y_a5uZo0do",
-            authDomain: "clinic1-ba255.firebaseapp.com",
-            projectId: "clinic1-ba255",
-            storageBucket: "clinic1-ba255.firebasestorage.app",
-            messagingSenderId: "247606627712",
-            appId: "1:247606627712:web:036d99bdd70ed1bc550565",
-            measurementId: "G-04YECK5TVN"
-        };
+        // إعداد Firebase يُحمّل من firebase-config.js لكي يحصل كل عميل على مشروع مستقل.
+        // حسابات الدخول والصلاحيات تبقى محلية داخل Soli Medical؛ Firebase للمزامنة الصامتة فقط.
+        const firebaseConfig = window.SOLI_FIREBASE_CONFIG || {};
 
-        // Cloud sync only activates once real config values are pasted above.
-        // Until then, the app runs fully offline on local browser storage (exactly as before).
-        const isFirebaseConfigured = firebaseConfig.apiKey !== 'YOUR_API_KEY';
+        // لا تبدأ المزامنة إلا مع إعداد Firebase فعلي؛ وإلا يعمل النظام بالبيانات المحلية فقط.
+        const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'YOUR_API_KEY');
 
         let firebaseAuth = null;
         let firestoreDB = null;
@@ -158,6 +137,8 @@
                 chronicSearchQuery: '',
                 diagnosisSearchQuery: '',
                 medicineSearchQuery: '',
+                diagnosisSuggestionsOpen: false,
+                medicineSuggestionsOpen: false,
                 egyptianMedicineArchive: [],
                 egyptianMedicineArchiveLoaded: false,
                 isLoadingMedicineArchive: false,
@@ -584,6 +565,7 @@
                             if (!this.applyingRemoteUpdate && key !== 'syncConflicts') {
                                 if (!this.localChangesPending) this.localEditBaseRevision = Number(this.syncRevision || 0);
                                 this.localChangesPending = true;
+                                this.syncChangeSequence = Number(this.syncChangeSequence || 0) + 1;
                             }
                             this.persistState();
                             this.queueCloudSync();
@@ -610,6 +592,10 @@
                 cloudDocPath: 'soliMedicalApp/sharedClinicData',
                 applyingRemoteUpdate: false,
                 cloudSyncTimer: null,
+                cloudRetryTimer: null,
+                cloudRetryAttempts: 0,
+                cloudWriteInFlight: false,
+                syncChangeSequence: 0,
                 cloudUnsubscribe: null,
                 cloudAuthListenerStarted: false,
 
@@ -641,11 +627,26 @@
                     this.persistentKeys.forEach(key => { snapshot[key] = this[key]; });
                     return snapshot;
                 },
+                saveConflictRecoverySnapshot(snapshot, remoteMeta = {}) {
+                    if (!snapshot || typeof snapshot !== 'object') return false;
+                    try {
+                        localStorage.setItem('soliMedicalLatestConflictRecovery_v1', JSON.stringify({
+                            savedAt: new Date().toISOString(),
+                            remoteRevision: Number(remoteMeta.revision || 0),
+                            data: snapshot
+                        }));
+                        return true;
+                    } catch (error) {
+                        console.warn('تعذر حفظ نسخة استرداد التعارض محلياً:', error);
+                        return false;
+                    }
+                },
                 recordSyncConflict(remoteData, remoteMeta, reason = 'تم اكتشاف تعديل متزامن من جهاز آخر.', localSnapshot = this) {
                     const remoteDeviceId = remoteMeta?.writerId || 'unknown-device';
                     const remoteRevision = Number(remoteMeta?.revision || 0);
                     const conflictKey = `${remoteDeviceId}:${remoteRevision}`;
                     if ((this.syncConflicts || []).some(item => item.key === conflictKey)) return;
+                    const recoveryAvailable = this.saveConflictRecoverySnapshot(localSnapshot, remoteMeta);
                     this.syncConflicts = [{
                         id: `SYNC-${Date.now()}`,
                         key: conflictKey,
@@ -655,7 +656,8 @@
                         remoteRevision,
                         reason,
                         localSummary: this.getSyncDataSummary(localSnapshot),
-                        remoteSummary: this.getSyncDataSummary(remoteData)
+                        remoteSummary: this.getSyncDataSummary(remoteData),
+                        recoveryAvailable
                     }, ...(this.syncConflicts || [])].slice(0, 40);
                     this.persistState();
                     this.renderIcons();
@@ -672,6 +674,33 @@
                     this.persistState();
                     this.queueCloudSync();
                     this.showSyncConflictsModal = false;
+                },
+                restoreLatestConflictRecovery() {
+                    let recovery;
+                    try {
+                        recovery = JSON.parse(localStorage.getItem('soliMedicalLatestConflictRecovery_v1') || 'null');
+                    } catch (error) {
+                        recovery = null;
+                    }
+                    if (!recovery?.data || typeof recovery.data !== 'object') {
+                        alert('لا توجد نسخة محلية محفوظة قابلة للاسترداد.');
+                        return;
+                    }
+                    if (!confirm('سيتم استرجاع آخر نسخة محلية تم حفظها عند التعارض ثم إعادة مزامنتها. استخدم هذا الخيار فقط بعد مراجعة السجل. هل تريد المتابعة؟')) return;
+                    this.applyingRemoteUpdate = true;
+                    this.persistentKeys.forEach(key => {
+                        if (recovery.data[key] !== undefined) this[key] = recovery.data[key];
+                    });
+                    this.localEditBaseRevision = Number(this.syncRevision || recovery.remoteRevision || 0);
+                    this.localChangesPending = true;
+                    this.syncChangeSequence = Number(this.syncChangeSequence || 0) + 1;
+                    this.persistState();
+                    this.$nextTick(() => {
+                        this.applyingRemoteUpdate = false;
+                        this.queueCloudSync();
+                        this.showSyncConflictsModal = false;
+                        alert('تم استرجاع النسخة المحلية ووضعت في طابور المزامنة.');
+                    });
                 },
 
                 async loadEgyptianMedicineArchive() {
@@ -730,13 +759,25 @@
                 },
 
                 startCloudSync() {
-                    if (this.cloudUnsubscribe || !this.cloudAuthReady) return;
+                    if (this.cloudUnsubscribe || !this.cloudAuthReady || !firestoreDB) {
+                        if (!firestoreDB) this.cloudStatus = 'offline';
+                        return;
+                    }
                     const docRef = firestoreDB.doc(this.cloudDocPath);
                     this.cloudUnsubscribe = docRef.onSnapshot(
                         { includeMetadataChanges: true },
                         (snap) => {
                             this.cloudStatus = snap.metadata.hasPendingWrites ? 'syncing' : (snap.metadata.fromCache ? 'offline' : 'online');
-                            if (!snap.exists) return;
+                            // First protected sync: the first authenticated device establishes
+                            // the shared clinic snapshot, including data created while offline.
+                            if (!snap.exists) {
+                                if (!this.localChangesPending) {
+                                    this.localEditBaseRevision = 0;
+                                    this.localChangesPending = true;
+                                }
+                                this.queueCloudSync();
+                                return;
+                            }
                             // Ignore the echo of our own write coming back from the server.
                             if (snap.metadata.hasPendingWrites) return;
                             const data = snap.data();
@@ -765,23 +806,35 @@
                         (err) => {
                             console.error('خطأ في مزامنة Firestore:', err);
                             this.cloudStatus = 'offline';
+                            this.scheduleCloudRetry();
                         }
                     );
                 },
 
+                scheduleCloudRetry() {
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || !this.localChangesPending) return;
+                    clearTimeout(this.cloudRetryTimer);
+                    this.cloudRetryAttempts = Math.min(Number(this.cloudRetryAttempts || 0) + 1, 5);
+                    const delay = Math.min(30000, 1000 * (2 ** this.cloudRetryAttempts));
+                    this.cloudRetryTimer = setTimeout(() => {
+                        if (navigator.onLine && this.cloudAuthReady && this.localChangesPending) this.queueCloudSync();
+                    }, delay);
+                },
+
                 // Debounced push so rapid local edits (typing, checkbox toggles) don't spam Firestore.
                 queueCloudSync() {
-                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate) return;
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate || !firestoreDB) return;
                     clearTimeout(this.cloudSyncTimer);
                     this.cloudSyncTimer = setTimeout(() => this.pushStateToCloud(), 600);
                 },
 
                 pushStateToCloud() {
-                    if (!this.cloudSyncEnabled || !this.cloudAuthReady) return;
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || !firestoreDB || this.cloudWriteInFlight) return;
                     const dataToSave = {};
                     this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
                     const docRef = firestoreDB.doc(this.cloudDocPath);
                     const baseRevision = Number(this.localEditBaseRevision || this.syncRevision || 0);
+                    const writeSequence = Number(this.syncChangeSequence || 0);
                     const writeMeta = {
                         revision: baseRevision + 1,
                         writerId: this.syncDeviceId,
@@ -789,6 +842,7 @@
                         updatedAt: new Date().toISOString()
                     };
                     this.cloudStatus = 'syncing';
+                    this.cloudWriteInFlight = true;
                     firestoreDB.runTransaction(async transaction => {
                         const snap = await transaction.get(docRef);
                         const remoteData = snap.exists ? snap.data() : {};
@@ -803,15 +857,21 @@
                         return { revision, conflict: conflict ? { data: remoteData, meta: remoteMeta } : null };
                     }).then(result => {
                         this.syncRevision = result.revision;
-                        this.localChangesPending = false;
+                        const changedDuringWrite = Number(this.syncChangeSequence || 0) !== writeSequence;
+                        this.localChangesPending = changedDuringWrite;
                         this.localEditBaseRevision = result.revision;
                         this.cloudStatus = 'online';
+                        this.cloudRetryAttempts = 0;
                         if (result.conflict) {
                             this.recordSyncConflict(result.conflict.data, result.conflict.meta, 'تم اكتشاف تعديل محفوظ من جهاز آخر قبل رفع التعديل المحلي؛ تم تسجيل تفاصيل التعارض.');
                         }
                     }).catch(err => {
                         console.error('تعذر رفع البيانات إلى Firestore (سيُعاد المحاولة تلقائياً عند عودة الاتصال):', err);
                         this.cloudStatus = 'offline';
+                        this.scheduleCloudRetry();
+                    }).finally(() => {
+                        this.cloudWriteInFlight = false;
+                        if (this.localChangesPending && navigator.onLine) this.queueCloudSync();
                     });
                 },
 
@@ -1237,27 +1297,11 @@
                 },
 
 
-                // ---- LOCAL LICENSE VERIFICATION ----
-                // The private signing key never belongs in this application.
-                licenseBase64urlToBytes(value) {
-                    const base64 = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
-                    const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
-                    const binary = atob(padded);
-                    return Uint8Array.from(binary, character => character.charCodeAt(0));
-                },
-                licenseStableStringify(value) {
-                    if (Array.isArray(value)) return '[' + value.map(item => this.licenseStableStringify(item)).join(',') + ']';
-                    if (value && typeof value === 'object') {
-                        return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + this.licenseStableStringify(value[key])).join(',') + '}';
-                    }
-                    return JSON.stringify(value);
-                },
                 // ---- LOCAL DATA PERSISTENCE (localStorage) ----
-                // NOTE: This keeps all clinic data saved on this device/browser only, so nothing
-                // is lost on refresh. When the app is later connected to Supabase (or another
-                // backend), these same read/write points are where the cloud sync calls should go.
+                // Local storage is the offline safety layer. Firebase/Firestore mirrors these
+                // same keys when cloud sync is configured for the clinic.
                 storageKey: 'soliMedicalData_v1',
-                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
+                    persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
 
                 loadPersistedState() {
                     try {
@@ -1316,8 +1360,8 @@
                             context.clearRect(0, 0, canvas.width, canvas.height);
                             context.drawImage(image, 0, 0, canvas.width, canvas.height);
                             const compressedLogo = canvas.toDataURL('image/webp', 0.9);
-                            if (compressedLogo.length > 1_500_000) {
-                                alert('تعذر حفظ الشعار لأن حجمه بعد الضغط ما زال كبيراً. اختر صورة أبسط أو أقل دقة.');
+                            if (compressedLogo.length > 350_000) {
+                                alert('تعذر حفظ الشعار لأن حجمه بعد الضغط كبير للمزامنة الآمنة. اختر صورة أبسط أو أقل دقة.');
                                 return;
                             }
                             this.clinicLogoDataUrl = compressedLogo;
@@ -1870,9 +1914,30 @@
                     return this.chronicDiseasesList.filter(c => c.toLowerCase().includes(this.chronicSearchQuery.toLowerCase()));
                 },
 
+                normalizeSearchText(value) {
+                    return String(value || '')
+                        .toLowerCase()
+                        .replace(/[أإآٱ]/g, 'ا')
+                        .replace(/ى/g, 'ي')
+                        .replace(/ة/g, 'ه')
+                        .replace(/[\u064B-\u065F\u0670]/g, '')
+                        .trim();
+                },
+
                 get filteredDiagnosesMaster() {
-                    if (!this.diagnosisSearchQuery) return this.diagnosesMasterList;
-                    return this.diagnosesMasterList.filter(d => d.toLowerCase().includes(this.diagnosisSearchQuery.toLowerCase()));
+                    const query = this.normalizeSearchText(this.diagnosisSearchQuery);
+                    if (!query) return this.diagnosesMasterList;
+                    return this.diagnosesMasterList.filter(d => this.normalizeSearchText(d).includes(query));
+                },
+
+                // اقتراحات قصيرة فوق قائمة التشخيصات: تضيف التشخيص بنقرة أو Enter دون تمرير القائمة الكاملة.
+                get diagnosisAutocompleteSuggestions() {
+                    const query = this.normalizeSearchText(this.diagnosisSearchQuery);
+                    if (!query) return [];
+                    return [...new Set(this.diagnosesMasterList || [])]
+                        .filter(item => this.normalizeSearchText(item).includes(query))
+                        .filter(item => !(this.newRecordForm.selectedDiagnosesList || []).includes(item))
+                        .slice(0, 7);
                 },
 
                 get filteredLabTestsMaster() {
@@ -1891,19 +1956,60 @@
                 },
 
                 get filteredMedicinesMaster() {
-                    const query = (this.medicineSearchQuery || '').trim().toLowerCase();
-                    if (!query) return this.medicinesMasterList;
-                    const localMatches = this.medicinesMasterList.filter(m => String(m).toLowerCase().includes(query));
-                    if (!this.egyptianMedicineArchiveLoaded || localMatches.length >= 12) return localMatches;
-                    const archiveMatches = this.egyptianMedicineArchive.filter(item => [item.arabicName, item.englishName, item.scientificName, item.manufacturer, item.drugClass].filter(Boolean).join(' ').toLowerCase().includes(query));
+                    const query = this.normalizeSearchText(this.medicineSearchQuery);
+                    if (!query) return this.medicinesMasterList.slice(0, 60);
+                    const localMatches = this.medicinesMasterList.filter(m => this.normalizeSearchText(m).includes(query));
+                    if (!this.egyptianMedicineArchiveLoaded || localMatches.length >= 12) return localMatches.slice(0, 60);
+                    const archiveMatches = this.egyptianMedicineArchive.filter(item => this.normalizeSearchText([item.arabicName, item.englishName, item.scientificName, item.manufacturer, item.drugClass].filter(Boolean).join(' ')).includes(query));
                     const archiveNames = archiveMatches.map(item => item.arabicName || item.englishName || item.scientificName).filter(Boolean);
-                    return [...new Set([...localMatches, ...archiveNames])].slice(0, 40);
+                    return [...new Set([...localMatches, ...archiveNames])].slice(0, 60);
+                },
+
+                // تعرض الأدوية المتكررة أولاً بما فيها الجرعة المحفوظة، ثم نتائج الأرشيف المصري.
+                get medicineAutocompleteSuggestions() {
+                    const query = this.normalizeSearchText(this.medicineSearchQuery);
+                    if (!query) return [];
+                    const results = [];
+                    const usedNames = new Set();
+                    const addResult = (name, timing = '', extraDosageNotes = '', source = 'أرشيف الدواء') => {
+                        const normalized = String(name || '').trim();
+                        if (!normalized || usedNames.has(normalized) || !this.normalizeSearchText(normalized).includes(query)) return;
+                        if ((this.newRecordForm.selectedMedicinesWithDosage || []).some(item => item.name === normalized)) return;
+                        usedNames.add(normalized);
+                        results.push({ name: normalized, timing, extraDosageNotes, source });
+                    };
+                    (this.recurringMedicinesList || []).forEach(item => {
+                        const parts = String(item || '').split(' — ').map(value => value.trim());
+                        addResult(parts[0], parts[1] || '', parts.slice(2).join(' — ') || '', 'قائمة متكررة');
+                    });
+                    this.filteredMedicinesMaster.forEach(medicine => addResult(medicine));
+                    return results.slice(0, 8);
                 },
 
                 get totalRevenue() {
                     return this.invoices
                         .filter(i => i.status === 'مدفوعة')
                         .reduce((sum, i) => sum + this.invoiceNetTotal(i), 0);
+                },
+
+                // مؤشرات لوحة القيادة تعتمد فقط الفواتير المدفوعة وصافيها بعد الخصم.
+                get dashboardDateKey() {
+                    const now = new Date();
+                    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                },
+                get dashboardRevenueToday() {
+                    return (this.invoices || []).filter(invoice => invoice.status === 'مدفوعة' && String(invoice.date || '').slice(0, 10) === this.dashboardDateKey)
+                        .reduce((sum, invoice) => sum + this.invoiceNetTotal(invoice), 0);
+                },
+                get dashboardRevenueMonth() {
+                    const monthKey = this.dashboardDateKey.slice(0, 7);
+                    return (this.invoices || []).filter(invoice => invoice.status === 'مدفوعة' && String(invoice.date || '').slice(0, 7) === monthKey)
+                        .reduce((sum, invoice) => sum + this.invoiceNetTotal(invoice), 0);
+                },
+                get dashboardRevenueYear() {
+                    const yearKey = this.dashboardDateKey.slice(0, 4);
+                    return (this.invoices || []).filter(invoice => invoice.status === 'مدفوعة' && String(invoice.date || '').slice(0, 4) === yearKey)
+                        .reduce((sum, invoice) => sum + this.invoiceNetTotal(invoice), 0);
                 },
 
                 // Settings Management
@@ -2118,6 +2224,30 @@
                         });
                     }
                     this.customMedicineInput = '';
+                },
+
+                selectDiagnosisSuggestion(diag) {
+                    const value = String(diag || '').trim();
+                    if (!value) return false;
+                    if (!this.newRecordForm.selectedDiagnosesList.includes(value)) this.newRecordForm.selectedDiagnosesList.push(value);
+                    this.diagnosisSearchQuery = '';
+                    this.diagnosisSuggestionsOpen = false;
+                    return true;
+                },
+
+                selectMedicineSuggestion(suggestion) {
+                    const name = String(suggestion?.name || '').trim();
+                    if (!name) return false;
+                    if (!(this.newRecordForm.selectedMedicinesWithDosage || []).some(item => item.name === name)) {
+                        this.newRecordForm.selectedMedicinesWithDosage.push({
+                            name,
+                            timing: suggestion.timing || 'كل 8 ساعات',
+                            extraDosageNotes: suggestion.extraDosageNotes || 'بعد الأكل'
+                        });
+                    }
+                    this.medicineSearchQuery = '';
+                    this.medicineSuggestionsOpen = false;
+                    return true;
                 },
 
                 toggleDiagnosisRecordSelection(diag) {
@@ -2735,6 +2865,12 @@
         body { font-family: 'Cairo', sans-serif; }
         [x-cloak] { display: none !important; }
 
+        /* Soli Medical visual system: deep slate surfaces and clear status contrast for clinic work. */
+        .dark .dashboard-action-card { background-color: #101c2f; border-color: #29425f; box-shadow: 0 8px 22px rgba(0, 0, 0, .16); }
+        .dark .dashboard-action-card:hover { background-color: #162740; border-color: #42698f; box-shadow: 0 14px 28px rgba(0, 0, 0, .24); }
+        .dark .dashboard-revenue-card { background-color: #0e1b2d; border-color: #31506e; }
+        .dashboard-action-card:focus-visible, .dashboard-revenue-card:focus-visible { outline: 3px solid rgba(59, 130, 246, .55); outline-offset: 3px; }
+
         /* Soli Medical responsive patient workflow: keep dense clinical tables usable on narrow screens. */
         .patients-table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         @media (max-width: 640px) {
@@ -3215,7 +3351,7 @@
 
                 <!-- MAIN AREA -->
                 <div class="flex-1 flex flex-col overflow-hidden min-w-0">
-                    <header class="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-4 lg:px-6 flex items-center justify-between z-10">
+                    <header class="h-16 bg-white dark:bg-[#0f1d31] border-b border-slate-200 dark:border-slate-700 px-4 lg:px-6 flex items-center justify-between z-10">
                         <div class="flex items-center space-x-3 space-x-reverse">
                             <button @click="mobileMenuOpen = !mobileMenuOpen" class="md:hidden p-2 rounded-xl text-slate-600 dark:text-slate-300"><i data-lucide="menu" class="w-6 h-6"></i></button>
                             <h1 class="text-lg lg:text-xl font-bold text-slate-800 dark:text-white truncate" x-text="getTabTitle()"></h1>
@@ -3235,22 +3371,29 @@
                     </header>
 
                     <!-- FULL PAGE VIEW CONTAINER -->
-                    <main class="flex-1 overflow-y-auto p-4 lg:p-8 bg-slate-50 dark:bg-slate-950">
+                    <main class="flex-1 overflow-y-auto p-4 lg:p-8 bg-slate-50 dark:bg-[#08111f]">
 
                         <!-- DASHBOARD -->
                         <div x-show="currentView === 'dashboard'" class="space-y-6">
-                            <div class="bg-gradient-to-r from-blue-600 to-indigo-700 text-white rounded-2xl p-6 shadow-lg">
+                            <div class="bg-gradient-to-r from-blue-600 to-indigo-700 dark:from-[#185ea8] dark:to-[#252a70] text-white rounded-2xl p-6 shadow-lg border border-blue-500/20">
                                 <div>
                                     <h2 class="text-2xl font-bold" x-text="'مرحباً بك، ' + doctorInfo.fullName"></h2>
                                     <p class="text-blue-100 text-sm mt-1" x-text="doctorInfo.specialty"></p>
                                 </div>
                             </div>
 
+                            <section x-show="currentUser?.permissions?.invoices" class="space-y-3" aria-label="ملخص الإيرادات">
+                                <div class="flex items-center justify-between gap-3 px-1"><div><h3 class="font-bold text-slate-800 dark:text-slate-100">ملخص الإيرادات</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">صافي الفواتير المدفوعة بعد الخصومات</p></div><button @click="navigateTo('invoices')" class="text-xs font-bold text-blue-600 dark:text-blue-300 hover:underline">عرض الفواتير</button></div>
+                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                    <button @click="incomePeriodFilter = 'daily'; navigateTo('invoices')" class="dashboard-revenue-card text-right rounded-2xl border border-emerald-100 dark:border-emerald-900/60 bg-white p-4 shadow-sm hover:-translate-y-0.5 transition-all"><span class="flex items-center justify-between gap-3"><span class="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300 flex items-center justify-center"><i data-lucide="sun" class="w-5 h-5"></i></span><span class="text-[10px] text-slate-400 dark:text-slate-500">اليوم</span></span><p class="mt-3 text-xl font-black text-emerald-700 dark:text-emerald-300" x-text="dashboardRevenueToday.toLocaleString('ar-EG') + ' ج.م'"></p><p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تحصيلات اليوم</p></button>
+                                    <button @click="incomePeriodFilter = 'monthly'; navigateTo('invoices')" class="dashboard-revenue-card text-right rounded-2xl border border-blue-100 dark:border-blue-900/60 bg-white p-4 shadow-sm hover:-translate-y-0.5 transition-all"><span class="flex items-center justify-between gap-3"><span class="w-9 h-9 rounded-xl bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 flex items-center justify-center"><i data-lucide="calendar-range" class="w-5 h-5"></i></span><span class="text-[10px] text-slate-400 dark:text-slate-500">الشهر الحالي</span></span><p class="mt-3 text-xl font-black text-blue-700 dark:text-blue-300" x-text="dashboardRevenueMonth.toLocaleString('ar-EG') + ' ج.م'"></p><p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تحصيلات هذا الشهر</p></button>
+                                    <button @click="reportsPeriodType = 'yearly'; navigateTo('reports')" class="dashboard-revenue-card text-right rounded-2xl border border-violet-100 dark:border-violet-900/60 bg-white p-4 shadow-sm hover:-translate-y-0.5 transition-all"><span class="flex items-center justify-between gap-3"><span class="w-9 h-9 rounded-xl bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300 flex items-center justify-center"><i data-lucide="landmark" class="w-5 h-5"></i></span><span class="text-[10px] text-slate-400 dark:text-slate-500">السنة الحالية</span></span><p class="mt-3 text-xl font-black text-violet-700 dark:text-violet-300" x-text="dashboardRevenueYear.toLocaleString('ar-EG') + ' ج.م'"></p><p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تحصيلات هذا العام</p></button>
+                                </div>
+                            </section>
+
                             <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
-                                <button x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" class="dashboard-action-card text-right bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
-                                    <span class="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center mb-3"><i data-lucide="user-plus" class="w-5 h-5"></i></span>
-                                    <p class="text-xs text-blue-700 dark:text-blue-300 font-bold">إضافة زيارة / كشف</p>
-                                    <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تسجيل مريض أو زيارة جديدة</p>
+                                <button x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" class="dashboard-action-card col-span-2 xl:col-span-3 text-right bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 p-5 sm:p-6 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="flex items-center justify-between gap-4"><span class="flex items-center gap-4"><span class="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-600/20"><i data-lucide="user-plus" class="w-6 h-6"></i></span><span><span class="block text-sm text-blue-800 dark:text-blue-200 font-black">إضافة زيارة / كشف جديد</span><span class="block text-xs text-slate-500 dark:text-slate-400 mt-1">ابدأ ملف مريض جديد أو أضف زيارة إلى ملف قائم.</span></span></span><i data-lucide="arrow-left" class="w-5 h-5 shrink-0 text-blue-600 dark:text-blue-300"></i></span>
                                 </button>
                                 <button x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" class="dashboard-action-card text-right bg-sky-50 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center mb-3"><i data-lucide="calendar-days" class="w-5 h-5"></i></span>
@@ -3269,8 +3412,8 @@
                                 </button>
                                 <button x-show="currentUser?.permissions?.invoices" @click="navigateTo('invoices')" class="dashboard-action-card text-right bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center mb-3"><i data-lucide="receipt" class="w-5 h-5"></i></span>
-                                    <p class="text-xs text-emerald-700 dark:text-emerald-300 font-bold">الفواتير والتحصيل</p>
-                                    <p class="text-2xl font-bold text-emerald-600 mt-1" x-text="totalRevenue + ' ج.م'"></p>
+                                    <p class="text-xs text-emerald-700 dark:text-emerald-300 font-bold">إجمالي التحصيل</p>
+                                    <p class="text-2xl font-bold text-emerald-600 dark:text-emerald-300 mt-1" x-text="totalRevenue.toLocaleString('ar-EG') + ' ج.م'"></p>
                                 </button>
                                 <button x-show="currentUser?.permissions?.followUps" @click="navigateTo('followUps')" class="dashboard-action-card text-right bg-violet-50 dark:bg-violet-950/30 border border-violet-100 dark:border-violet-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-violet-600 text-white flex items-center justify-center mb-3"><i data-lucide="bell" class="w-5 h-5"></i></span>
@@ -3808,7 +3951,23 @@
                                 <!-- Multi-select Diagnoses List + Manual Diagnosis -->
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"><label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التشخيص الطبي (يمكن اختيار أكثر من تشخيص + كتابة يدوية):</label></div>
-                                    <input type="text" x-model="diagnosisSearchQuery" placeholder="بحث في قائمة التشخيصات المعتمدة..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
+                                    <div class="relative">
+                                        <input type="search" x-model="diagnosisSearchQuery" @focus="diagnosisSuggestionsOpen = true" @input="diagnosisSuggestionsOpen = true" @keydown.enter.prevent="diagnosisAutocompleteSuggestions.length && selectDiagnosisSuggestion(diagnosisAutocompleteSuggestions[0])" @keydown.escape="diagnosisSuggestionsOpen = false" placeholder="اكتب التشخيص لتظهر الاقتراحات فوراً..." class="w-full px-3 py-2.5 pr-9 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white" autocomplete="off" spellcheck="false" aria-label="بحث وإكمال تلقائي للتشخيصات">
+                                        <i data-lucide="sparkles" class="w-4 h-4 text-blue-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+                                        <div x-show="diagnosisSuggestionsOpen && diagnosisAutocompleteSuggestions.length" x-cloak class="absolute z-30 top-full mt-1 inset-x-0 overflow-hidden rounded-xl border border-blue-100 dark:border-blue-800 bg-white dark:bg-slate-900 shadow-xl" role="listbox" aria-label="اقتراحات التشخيص">
+                                            <div class="px-3 py-2 bg-blue-50 dark:bg-blue-950/50 text-[10px] font-bold text-blue-700 dark:text-blue-300">إكمال تلقائي — اختر أو اضغط Enter لاختيار أول اقتراح</div>
+                                            <template x-for="suggestion in diagnosisAutocompleteSuggestions" :key="suggestion">
+                                                <button type="button" @mousedown.prevent="selectDiagnosisSuggestion(suggestion)" class="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-right text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors" role="option">
+                                                    <span x-text="suggestion"></span><i data-lucide="plus-circle" class="w-4 h-4 shrink-0 text-blue-500"></i>
+                                                </button>
+                                            </template>
+                                        </div>
+                                    </div>
+                                    <div x-show="newRecordForm.selectedDiagnosesList.length" x-cloak class="flex flex-wrap gap-1.5" aria-label="التشخيصات المختارة">
+                                        <template x-for="diagnosis in newRecordForm.selectedDiagnosesList" :key="diagnosis">
+                                            <button type="button" @click="toggleDiagnosisRecordSelection(diagnosis)" class="inline-flex items-center gap-1 rounded-lg bg-blue-100 dark:bg-blue-900/40 px-2.5 py-1 text-[11px] font-bold text-blue-800 dark:text-blue-200 hover:bg-red-100 dark:hover:bg-red-900/40" :title="'إزالة ' + diagnosis"><span x-text="diagnosis"></span><i data-lucide="x" class="w-3 h-3"></i></button>
+                                        </template>
+                                    </div>
 
                                     <div class="max-h-36 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
                                         <template x-for="d in filteredDiagnosesMaster" :key="d">
@@ -3901,7 +4060,18 @@
                                 <!-- Egyptian Medicines Market Database Search & Selection -->
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">أصناف الأدوية المصرية (بحث ذكي بالاسم وجرعة مخصصة لكل دواء):</label>
-                                    <input type="search" name="medicineArchiveSearch" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" x-model="medicineSearchQuery" placeholder="ابحث بالعربية أو الإنجليزية في أرشيف الأدوية المصري..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:text-white">
+                                    <div class="relative">
+                                        <input type="search" name="medicineArchiveSearch" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" x-model="medicineSearchQuery" @focus="medicineSuggestionsOpen = true" @input="medicineSuggestionsOpen = true" @keydown.enter.prevent="medicineAutocompleteSuggestions.length ? selectMedicineSuggestion(medicineAutocompleteSuggestions[0]) : addCustomMedicineToRecord()" @keydown.escape="medicineSuggestionsOpen = false" placeholder="اكتب اسم الدواء أو التركيز لتظهر الاقتراحات فوراً..." class="w-full px-3 py-2.5 pr-9 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white" aria-label="بحث وإكمال تلقائي للأدوية">
+                                        <i data-lucide="search-check" class="w-4 h-4 text-blue-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
+                                        <div x-show="medicineSuggestionsOpen && medicineAutocompleteSuggestions.length" x-cloak class="absolute z-30 top-full mt-1 inset-x-0 overflow-hidden rounded-xl border border-blue-100 dark:border-blue-800 bg-white dark:bg-slate-900 shadow-xl" role="listbox" aria-label="اقتراحات الدواء">
+                                            <div class="px-3 py-2 bg-blue-50 dark:bg-blue-950/50 text-[10px] font-bold text-blue-700 dark:text-blue-300">إكمال تلقائي — تضيف القائمة المتكررة الجرعة المحفوظة تلقائياً</div>
+                                            <template x-for="suggestion in medicineAutocompleteSuggestions" :key="suggestion.name">
+                                                <button type="button" @mousedown.prevent="selectMedicineSuggestion(suggestion)" class="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-right hover:bg-blue-50 dark:hover:bg-slate-800 transition-colors" role="option">
+                                                    <span class="min-w-0"><span class="block truncate text-xs font-bold text-slate-800 dark:text-slate-100" x-text="suggestion.name"></span><span class="block text-[10px] text-slate-500 dark:text-slate-400" x-text="suggestion.timing ? suggestion.source + ' · ' + suggestion.timing : suggestion.source"></span></span><i data-lucide="plus-circle" class="w-4 h-4 shrink-0 text-blue-500"></i>
+                                                </button>
+                                            </template>
+                                        </div>
+                                    </div>
                                     <div class="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500 dark:text-slate-400">
                                         <span x-show="isLoadingMedicineArchive" class="text-blue-600 dark:text-blue-300">جارٍ تحميل الأرشيف...</span>
                                         <span x-show="!isLoadingMedicineArchive && medicineArchiveMessage" x-text="medicineArchiveMessage"></span>
@@ -3991,7 +4161,7 @@
                                                 </div>
                                                 <div class="bg-emerald-50/70 dark:bg-emerald-900/20 p-3 rounded-xl border border-emerald-100 dark:border-emerald-800">
                                                     <p class="font-bold text-emerald-700 dark:text-emerald-300 mb-1">🧪 الفحوصات</p>
-                                                    <p class="text-slate-700 dark:text-slate-200" x-text="[...(rec.labTests || []), ...(rec.radiology || [])].join(' ، ') || '-' "></p>
+                                                    <p class="text-slate-700 dark:text-slate-200" x-text="formatResultItems([...(rec.labTests || []), ...(rec.radiology || [])]) || '-' "></p>
                                                 </div>
                                             </div>
                                             <div class="bg-slate-50 dark:bg-slate-900 p-4 rounded-xl space-y-3 border dark:border-slate-800">
@@ -5137,9 +5307,9 @@
         </div>
 
         <!-- PRINTABLE RX PRESCRIPTION MODAL WINDOW -->
-        <div x-show="showPrescriptionPrintModal" x-cloak class="fixed inset-0 z-50 bg-slate-900/70 backdrop-blur-md flex items-start justify-center p-4 overflow-y-auto">
-            <div class="bg-white rounded-2xl max-w-2xl w-full p-8 space-y-6 shadow-2xl text-slate-900 my-6">
-                <div class="flex justify-between items-center border-b pb-4 no-print sticky top-0 bg-white z-10">
+        <div x-show="showPrescriptionPrintModal" x-cloak class="fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-md flex items-start justify-center p-2 sm:p-4 overflow-y-auto">
+            <div class="bg-slate-100 rounded-2xl max-w-2xl w-full p-3 sm:p-6 space-y-4 shadow-2xl text-slate-900 my-2 sm:my-6">
+                <div class="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-slate-200 pb-4 no-print sticky top-0 bg-slate-100 z-10">
                     <h3 class="text-lg font-bold text-slate-800">معاينة الروشتة الطبية قبل الطباعة</h3>
                     <div class="flex flex-wrap items-center justify-end gap-2">
                         <div class="print-prescription-controls flex items-center gap-1 rounded-xl bg-slate-100 px-2 py-1.5">
@@ -5156,7 +5326,13 @@
                     </div>
                 </div>
 
-                    <div id="printablePrescriptionArea" class="bg-white flex flex-col" :class="{ 'print-split-page': printPrescriptionSplitPage, 'print-one-page': !printPrescriptionSplitPage, 'print-density-tight': printDensity === 'tight', 'print-density-compact': printDensity === 'compact', 'print-no-header': doctorInfo.printHeaderEnabled === false, 'print-no-footer': doctorInfo.printFooterEnabled === false }" :style="{
+                <div class="no-print grid grid-cols-3 gap-2 text-center" aria-label="حالة معاينة الطباعة">
+                    <div class="rounded-xl border border-slate-200 bg-white px-2 py-2 shadow-sm"><span class="block text-[10px] font-bold text-slate-400">المقاس</span><span class="text-xs font-bold text-slate-700">A5 عمودي</span></div>
+                    <div class="rounded-xl border border-slate-200 bg-white px-2 py-2 shadow-sm"><span class="block text-[10px] font-bold text-slate-400">الصفحات</span><span class="text-xs font-bold text-slate-700" x-text="printPrescriptionSplitPage ? 'صفحتان' : 'صفحة واحدة'"></span></div>
+                    <div class="rounded-xl border border-slate-200 bg-white px-2 py-2 shadow-sm"><span class="block text-[10px] font-bold text-slate-400">مقياس المحتوى</span><span class="text-xs font-bold text-slate-700" x-text="Math.round(getPrescriptionPrintScale() * 100) + '%'"></span></div>
+                </div>
+
+                    <div id="printablePrescriptionArea" class="bg-white flex flex-col rounded-lg sm:rounded-xl border border-slate-200 shadow-lg overflow-hidden" :class="{ 'print-split-page': printPrescriptionSplitPage, 'print-one-page': !printPrescriptionSplitPage, 'print-density-tight': printDensity === 'tight', 'print-density-compact': printDensity === 'compact', 'print-no-header': doctorInfo.printHeaderEnabled === false, 'print-no-footer': doctorInfo.printFooterEnabled === false }" :style="{
                     '--print-scale': getPrescriptionPrintScale(),
                     '--qr-size': { small: '14mm', medium: '19mm', large: '25mm' }[doctorInfo.printQrSize || 'medium'],
                     '--footer-font': { small: '8px', normal: '10px', large: '12px' }[doctorInfo.printFooterFontSize || 'normal'],
@@ -5296,7 +5472,10 @@
                     </template>
                 </div>
                 <div class="flex items-center justify-between gap-3 p-5 border-t border-slate-200 dark:border-slate-700">
-                    <button type="button" @click="clearSyncConflictLog" class="text-xs font-bold text-red-600 hover:text-red-700">مسح السجل المحلي</button>
+                    <div class="flex items-center gap-3">
+                        <button type="button" x-show="syncConflicts.some(item => item.recoveryAvailable)" @click="restoreLatestConflictRecovery" class="text-xs font-bold text-amber-700 dark:text-amber-300 hover:underline">استعادة آخر نسخة محلية</button>
+                        <button type="button" @click="clearSyncConflictLog" class="text-xs font-bold text-red-600 hover:text-red-700">مسح السجل المحلي</button>
+                    </div>
                     <button type="button" @click="showSyncConflictsModal = false" class="bg-blue-600 text-white px-5 py-2 rounded-xl text-sm font-bold">إغلاق</button>
                 </div>
             </div>
