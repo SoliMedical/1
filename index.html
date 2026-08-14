@@ -154,13 +154,6 @@
                 idleLockTimer: null,
                 lastActivityAt: null,
 
-                // Local license verification: only the public key is shipped in the PWA.
-                licenseInfo: null,
-                licenseInput: '',
-                licenseMessage: '',
-                licenseMessageType: 'info',
-                licensePublicKey: 'MCowBQYDK2VwAyEAeNsuisSIH3Xv3R38_xIPK_4ZIsBghFy_FGseup_wosY',
-                licenseStorageKey: 'soliMedicalLicense_v1',
 
                 // Smart Search Inputs inside Forms
                 symptomSearchQuery: '',
@@ -516,7 +509,7 @@
 
                 init() {
                     this.loadPersistedState();
-                    this.loadStoredLicense();
+
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
                     if (!Array.isArray(this.syncConflicts)) this.syncConflicts = [];
                     if (!Array.isArray(this.egyptianMedicineArchive)) this.egyptianMedicineArchive = [];
@@ -1336,120 +1329,6 @@
                         return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + this.licenseStableStringify(value[key])).join(',') + '}';
                     }
                     return JSON.stringify(value);
-                },
-                async verifyLicenseDocument(document) {
-                    if (!document?.payload || !document?.signature) return { valid: false, reason: 'بنية ملف الترخيص غير صحيحة.' };
-                    if (document.payload.product !== 'soli-medical') return { valid: false, reason: 'هذا الترخيص ليس خاصاً بنظام Soli Medical.' };
-                    if (!window.crypto?.subtle) return { valid: false, reason: 'المتصفح لا يدعم التحقق الآمن من التوقيع.' };
-                    try {
-                        const publicKey = await window.crypto.subtle.importKey(
-                            'spki',
-                            this.licenseBase64urlToBytes(this.licensePublicKey),
-                            { name: 'Ed25519' },
-                            false,
-                            ['verify']
-                        );
-                        const validSignature = await window.crypto.subtle.verify(
-                            { name: 'Ed25519' },
-                            publicKey,
-                            this.licenseBase64urlToBytes(document.signature),
-                            new TextEncoder().encode(this.licenseStableStringify(document.payload))
-                        );
-                        if (!validSignature) return { valid: false, reason: 'التوقيع غير صحيح أو تم تعديل ملف الترخيص.' };
-                        const expiresAt = new Date(document.payload.expiresAt);
-                        if (Number.isNaN(expiresAt.getTime())) return { valid: false, reason: 'تاريخ انتهاء الترخيص غير صحيح.' };
-                        return { valid: true, expired: Date.now() > expiresAt.getTime(), payload: document.payload };
-                    } catch (error) {
-                        console.warn('تعذر التحقق من الترخيص:', error);
-                        return { valid: false, reason: 'تعذر التحقق من ملف الترخيص في هذا المتصفح.' };
-                    }
-                },
-                async activateLicenseText(text = this.licenseInput) {
-                    try {
-                        const document = typeof text === 'string' ? JSON.parse(text) : text;
-                        const result = await this.verifyLicenseDocument(document);
-                        if (!result.valid) {
-                            this.licenseInfo = null;
-                            this.licenseMessage = result.reason;
-                            this.licenseMessageType = 'error';
-                            return false;
-                        }
-                        localStorage.setItem(this.licenseStorageKey, JSON.stringify(document));
-                        this.licenseInfo = result.payload;
-                        this.licenseMessage = result.expired
-                            ? 'الترخيص منتهي. يمكنك قراءة البيانات وتصدير النسخة الاحتياطية، ويلزم التجديد لإضافة وظائف جديدة.'
-                            : 'تم تفعيل الترخيص بنجاح. يعمل النظام محلياً دون اتصال دائم بالإنترنت.';
-                        this.licenseMessageType = result.expired ? 'warning' : 'success';
-                        this.recordAudit('تفعيل أو تحديث الترخيص', result.payload.licenseId);
-                        return true;
-                    } catch (error) {
-                        this.licenseInfo = null;
-                        this.licenseMessage = 'تعذر قراءة ملف الترخيص. اختر ملف JSON صادر من مولّد Soli Medical.';
-                        this.licenseMessageType = 'error';
-                        return false;
-                    }
-                },
-                async tryDemoLicense() {
-                    const demoLicense = {
-                        payload: {
-                            product: 'soli-medical',
-                            edition: 'clinic',
-                            licenseId: 'SM-2026-BD1C73F1',
-                            clinicName: 'عيادة النسا والتوليد',
-                            doctorName: 'د. أحمد حسني محرم',
-                            features: ['patients', 'prescriptions', 'billing', 'reports', 'appointments'],
-                            deviceLimit: 3,
-                            issuedAt: '2026-08-14T15:03:44.746Z',
-                            expiresAt: '2027-08-14T15:03:44.746Z'
-                        },
-                        signature: 'lM1YsE7AbCYNOkqvugj4G-kNSV8MnzsTol6c_2DOOvmmeSgCt-oWLrDKz8lUSzqIfH8o0o6vAnFi-gdYd2hdAA'
-                    };
-                    this.licenseInput = JSON.stringify(demoLicense, null, 2);
-                    await this.activateLicenseText(demoLicense);
-                    this.licenseMessage = 'تم تفعيل الترخيص التجريبي باسم عيادة النسا والتوليد. يمكنك الآن رؤية بيانات الترخيص في البطاقة.';
-                    this.licenseMessageType = 'success';
-                },
-                async loadStoredLicense() {
-                    try {
-                        const stored = localStorage.getItem(this.licenseStorageKey);
-                        if (!stored) return;
-                        const result = await this.verifyLicenseDocument(JSON.parse(stored));
-                        if (result.valid) {
-                            this.licenseInfo = result.payload;
-                            this.licenseMessage = result.expired
-                                ? 'الترخيص المحفوظ منتهي الصلاحية. البيانات المحلية لم تُحذف.'
-                                : 'الترخيص المحفوظ نشط.';
-                            this.licenseMessageType = result.expired ? 'warning' : 'success';
-                        } else {
-                            this.licenseInfo = null;
-                            this.licenseMessage = result.reason;
-                            this.licenseMessageType = 'error';
-                        }
-                    } catch (error) {
-                        this.licenseInfo = null;
-                    }
-                },
-                handleLicenseFileUpload(event) {
-                    const file = event?.target?.files?.[0];
-                    if (!file) return;
-                    const reader = new FileReader();
-                    reader.onload = async () => {
-                        this.licenseInput = String(reader.result || '');
-                        await this.activateLicenseText(this.licenseInput);
-                        event.target.value = '';
-                    };
-                    reader.onerror = () => {
-                        this.licenseMessage = 'تعذر قراءة ملف الترخيص.';
-                        this.licenseMessageType = 'error';
-                        event.target.value = '';
-                    };
-                    reader.readAsText(file);
-                },
-                licenseIsExpired() {
-                    return Boolean(this.licenseInfo?.expiresAt && Date.now() > new Date(this.licenseInfo.expiresAt).getTime());
-                },
-                formatLicenseDate(value) {
-                    try { return new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium' }).format(new Date(value)); } catch (error) { return value || ''; }
                 },
                 // ---- LOCAL DATA PERSISTENCE (localStorage) ----
                 // NOTE: This keeps all clinic data saved on this device/browser only, so nothing
@@ -4412,35 +4291,6 @@
                                 </div>
                                 <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4"><div class="flex items-center justify-between mb-2"><h4 class="text-xs font-bold text-slate-700 dark:text-slate-200">سجل العمليات الأخير</h4><span class="text-[11px] text-slate-500" x-text="auditLog.length + ' عملية'"></span></div><div class="max-h-36 overflow-y-auto space-y-1"><template x-for="entry in auditLog.slice(0, 12)" :key="entry.id"><div class="text-[11px] flex justify-between gap-3 border-b border-slate-100 dark:border-slate-800 py-1"><span><b x-text="entry.action"></b> — <span x-text="entry.user"></span></span><span class="text-slate-400 whitespace-nowrap" x-text="formatAuditDate(entry.at)"></span></div></template><p x-show="auditLog.length === 0" class="text-[11px] text-slate-400 text-center">لا توجد عمليات مسجلة بعد.</p></div></div>
                             </div>
-
-
-                            <!-- Local License Activation -->
-                            <div x-show="currentView === 'settings' && currentUser?.permissions?.settings" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-amber-100 dark:border-amber-900/60 shadow-sm space-y-4">
-                                <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
-                                    <div>
-                                        <h3 class="text-base font-bold text-slate-800 dark:text-white">ترخيص النسخة المحلية</h3>
-                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">يتم التفعيل مرة واحدة، ثم يعمل النظام دون اتصال دائم بالإنترنت. لا تُحذف بيانات العيادة عند انتهاء الترخيص.</p>
-                                    </div>
-                                    <i data-lucide="key-round" class="w-6 h-6 text-amber-600 dark:text-amber-400 flex-shrink-0"></i>
-                                </div>
-                                <div class="flex flex-wrap items-center gap-2">
-                                    <span class="rounded-full px-3 py-1 text-xs font-bold" :class="licenseInfo && !licenseIsExpired() ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : licenseInfo ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'" x-text="licenseInfo ? (licenseIsExpired() ? 'منتهي — البيانات محفوظة' : 'نشط') : 'غير مفعل'"></span>
-                                    <span x-show="licenseInfo" class="text-xs text-slate-500" x-text="licenseInfo ? licenseInfo.clinicName + ' • صالح حتى ' + formatLicenseDate(licenseInfo.expiresAt) : ''"></span>
-                                </div>
-                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                    <label class="inline-flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white px-3 py-2 rounded-xl text-xs font-bold cursor-pointer">
-                                        <i data-lucide="upload" class="w-4 h-4"></i>
-                                        استيراد ملف الترخيص
-                                        <input type="file" accept="application/json,.json" class="hidden" @change="handleLicenseFileUpload($event)">
-                                    </label>
-                                    <button type="button" @click="licenseInput = ''; licenseMessage = 'ألصق محتوى ملف الترخيص في الحقل ثم اضغط تفعيل.'; licenseMessageType = 'info'" class="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 hover:border-amber-400">إدخال مفتاح يدوياً</button>
-                                    <button type="button" @click="tryDemoLicense()" class="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">تجربة الترخيص</button>
-                                </div>
-                                <textarea x-model="licenseInput" rows="4" spellcheck="false" class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-3 font-mono text-[11px] text-slate-800 dark:text-slate-200" placeholder="يمكنك لصق محتوى ملف الترخيص JSON هنا"></textarea>
-                                <button type="button" @click="activateLicenseText()" class="w-full rounded-xl bg-slate-800 hover:bg-slate-900 dark:bg-blue-600 dark:hover:bg-blue-700 text-white px-4 py-2.5 text-xs font-bold">تفعيل أو تحديث الترخيص</button>
-                                <p x-show="licenseMessage" class="rounded-xl px-3 py-2 text-xs font-semibold" :class="licenseMessageType === 'success' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300' : licenseMessageType === 'warning' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300' : licenseMessageType === 'error' ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-300'" x-text="licenseMessage"></p>
-                            </div>
-
                             <!-- Manual Clinic Backup & Restore -->
                             <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
                                 <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
