@@ -2865,7 +2865,22 @@
         body { font-family: 'Cairo', sans-serif; }
         [x-cloak] { display: none !important; }
 
-        /* Soli Medical visual system: deep slate surfaces and clear status contrast for clinic work. */
+        /* Soli Medical visual system: clinical navy identity, restrained teal status accents, and high-contrast clinic workflows. */
+        .soli-login-shell { background: #edf3f5; }
+        .dark .soli-login-shell { background: #0b1725; }
+        .soli-login-card { background: rgba(255,255,255,.98); border: 1px solid #d5e1e8; box-shadow: 0 24px 54px rgba(15,45,74,.14); }
+        .dark .soli-login-card { background: #13263a; border-color: #2b4661; box-shadow: 0 24px 54px rgba(0,0,0,.28); }
+        .soli-login-mark { position: relative; width: 70px; height: 70px; margin: 0 auto 1.25rem; border-radius: 22px; background: #0f2d4a; box-shadow: 0 10px 20px rgba(15,45,74,.22); overflow: hidden; }
+        .soli-login-cross { position: absolute; width: 28px; height: 28px; top: 10px; right: 21px; color: #fff; stroke-width: 3; }
+        .soli-login-pulse { position: absolute; width: 54px; height: 24px; top: 34px; right: 8px; color: #34d399; stroke-width: 2.8; }
+        .soli-login-input { border-color: #cad8e1; background: #f8fafb; transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease; }
+        .soli-login-input:focus { border-color: #0f766e; background: #fff; box-shadow: 0 0 0 3px rgba(20,184,166,.15); }
+        .dark .soli-login-input { border-color: #34506a; background: #0b1827; }
+        .dark .soli-login-input:focus { border-color: #2dd4bf; background: #0d1d2e; box-shadow: 0 0 0 3px rgba(45,212,191,.16); }
+        .soli-login-cta { background: #0f2d4a; box-shadow: 0 10px 18px rgba(15,45,74,.2); }
+        .soli-login-cta:hover { background: #17466e; }
+        .soli-login-status { background: #e6f6f2; color: #0f766e; border: 1px solid #bde8dd; }
+        .dark .soli-login-status { background: rgba(13,148,136,.13); color: #5eead4; border-color: rgba(45,212,191,.26); }
         .dark .dashboard-action-card { background-color: #101c2f; border-color: #29425f; box-shadow: 0 8px 22px rgba(0, 0, 0, .16); }
         .dark .dashboard-action-card:hover { background-color: #162740; border-color: #42698f; box-shadow: 0 14px 28px rgba(0, 0, 0, .24); }
         .dark .dashboard-revenue-card { background-color: #0e1b2d; border-color: #31506e; }
@@ -3211,14 +3226,15 @@
 
         <!-- LOGIN VIEW -->
         <template x-if="!isAuthenticated">
-            <div class="min-h-screen bg-gradient-to-br from-blue-900 via-indigo-900 to-slate-900 flex items-center justify-center p-4">
-                <div class="w-full max-w-md bg-white dark:bg-slate-800 rounded-2xl shadow-2xl overflow-hidden p-8 border border-slate-100 dark:border-slate-700">
+            <div class="soli-login-shell min-h-screen flex items-center justify-center p-4 sm:p-6">
+                <div class="soli-login-card w-full max-w-md rounded-[1.75rem] overflow-hidden p-7 sm:p-8">
                     <div class="text-center mb-8">
-                        <div class="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-100 dark:bg-blue-900/50 text-blue-600 dark:text-blue-400 mb-4 shadow-inner">
-                            <i data-lucide="activity" class="w-10 h-10"></i>
+                        <div class="soli-login-mark" aria-hidden="true">
+                            <i data-lucide="plus" class="soli-login-cross"></i>
+                            <i data-lucide="activity" class="soli-login-pulse"></i>
                         </div>
-                        <h1 class="text-3xl font-bold text-slate-900 dark:text-white">Soli Medical</h1>
-                        <p class="text-slate-500 dark:text-slate-400 text-sm mt-1">نظام إدارة عيادة الطبيب الواحد</p>
+                        <h1 class="text-3xl font-bold tracking-tight text-[#0f2d4a] dark:text-white">Soli Medical</h1>
+                        <p class="text-slate-600 dark:text-slate-300 text-sm mt-2">إدارة العيادة بوضوح، حتى عند انقطاع الاتصال.</p>
                     </div>
 
                     <template x-if="loginError">
@@ -3230,17 +3246,17 @@
                     <form @submit.prevent="handleLogin" class="space-y-5">
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">اسم المستخدم أو البريد الإلكتروني</label>
-                            <input type="text" x-model="loginForm.email" required autocomplete="username" class="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل بيانات حسابك">
+                            <input type="text" x-model="loginForm.email" required autocomplete="username" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل بيانات حسابك">
                         </div>
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">كلمة المرور</label>
                             <div class="relative">
-                                <input type="text" x-model="loginForm.password" required autocomplete="off" class="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل كلمة المرور">
+                                <input type="text" x-model="loginForm.password" required autocomplete="off" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل كلمة المرور">
                             </div>
                         </div>
-                        <button type="submit" :disabled="isLoading" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl shadow-lg transition-all">تسجيل الدخول</button>
+                        <button type="submit" :disabled="isLoading" class="soli-login-cta w-full py-3 text-white font-semibold rounded-xl transition-all">تسجيل الدخول</button>
                     </form>
-                    <p class="mt-5 text-[11px] leading-5 text-slate-500 dark:text-slate-400 text-center">الدخول يتم من حسابات Soli Medical المحلية والصلاحيات التي يحددها مدير النظام. تعمل المزامنة تلقائياً في الخلفية عند توفر الاتصال، ويستمر النظام محلياً عند انقطاعه.</p>
+                    <div class="soli-login-status mt-5 rounded-xl px-3 py-2.5 text-[11px] leading-5 text-center font-semibold">حسابات محلية بصلاحيات العيادة · يعمل دون اتصال · يزامن التحديثات عند توفر الشبكة</div>
                 </div>
             </div>
         </template>
