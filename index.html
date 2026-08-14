@@ -4319,7 +4319,13 @@
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings' || currentView === 'prescriptionSettings'" class="max-w-4xl space-y-6">
                             <!-- Local Edition Commercial Tools -->
-                            <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-blue-100 dark:border-blue-900/60 shadow-sm space-y-4">
+                            <details x-show="currentView === 'prescriptionSettings'" x-cloak class="settings-accordion settings-accordion-blue">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="briefcase-medical" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>أدوات النسخة المحلية</strong><small>الإعداد السريع، القوالب، القفل، النسخ الاحتياطي، وسجل العمليات.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
+                            <div x-show="currentView === 'prescriptionSettings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-blue-100 dark:border-blue-900/60 shadow-sm space-y-4">
                                 <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
                                     <div>
                                         <h3 class="text-base font-bold text-slate-800 dark:text-white">أدوات النسخة المحلية</h3>
@@ -4349,7 +4355,7 @@
                                 <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4"><div class="flex items-center justify-between mb-2"><h4 class="text-xs font-bold text-slate-700 dark:text-slate-200">سجل العمليات الأخير</h4><span class="text-[11px] text-slate-500" x-text="auditLog.length + ' عملية'"></span></div><div class="max-h-36 overflow-y-auto space-y-1"><template x-for="entry in auditLog.slice(0, 12)" :key="entry.id"><div class="text-[11px] flex justify-between gap-3 border-b border-slate-100 dark:border-slate-800 py-1"><span><b x-text="entry.action"></b> — <span x-text="entry.user"></span></span><span class="text-slate-400 whitespace-nowrap" x-text="formatAuditDate(entry.at)"></span></div></template><p x-show="auditLog.length === 0" class="text-[11px] text-slate-400 text-center">لا توجد عمليات مسجلة بعد.</p></div></div>
                             </div>
                             <!-- Manual Clinic Backup & Restore -->
-                            <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
+                            <div x-show="currentView === 'prescriptionSettings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
                                 <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
                                     <div>
                                         <h3 class="text-base font-bold text-slate-800 dark:text-white">النسخ الاحتياطي والاستعادة اليدوية</h3>
@@ -4375,12 +4381,8 @@
                                 </div>
                             </div>
 
-                            <details class="settings-accordion settings-accordion-blue" open>
-                                <summary class="settings-accordion-summary">
-                                    <span class="settings-accordion-icon"><i data-lucide="stethoscope" class="w-5 h-5"></i></span>
-                                    <span class="min-w-0 flex-1"><strong>الروشتة وبيانات العيادة</strong><small>بيانات الطبيب، الشعار، الفروع، ومظهر الطباعة A5.</small></span>
-                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
-                                </summary>
+                            </details>
+
                                 <!-- Doctor Info Settings / Prescription Page -->
                             <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
@@ -4607,7 +4609,6 @@
                                     </div>
                                 </div>
                             </div>
-                            </details>
 
                             <div x-show="currentView === 'settings'" class="space-y-6">
                             <details class="settings-accordion settings-accordion-violet">
