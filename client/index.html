@@ -46,13 +46,16 @@
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+    <!-- إعداد Firebase الخاص بالعيادة؛ يُستبدل هذا الملف فقط عند تجهيز نسخة عميل جديدة. -->
+    <script src="./firebase-config.js"></script>
     
     <!-- Alpine JS Application Logic -->
     <script>
         // =====================================================================
-        // FIREBASE SETUP — fill in your own project's config below.
-        // 1) Go to console.firebase.google.com → create a project (free Spark plan is enough).
-        // 2) Project settings → General → "Your apps" → add a Web app → copy the config object here.
+        // FIREBASE SETUP — configuration is loaded from ./firebase-config.js.
+        // 1) Create one Firebase project per clinic.
+        // 2) Add a Web app and paste its public config into firebase-config.js.
+        // 3) Never put Admin SDK credentials or passwords in the client config.
         // 3) In the left menu enable: Authentication → Sign-in method → Anonymous.
         //    Clinic users still sign in locally; Firebase is used silently for Firestore sync only.
         // 4) In the left menu enable: Firestore Database → Create database (start in production mode).
@@ -64,19 +67,25 @@
         //        }
         //      }
         // =====================================================================
-        const firebaseConfig = {
-            apiKey: "AIzaSyA17A_77NeF-_D5SJg9jbvD8y_a5uZo0do",
-            authDomain: "clinic1-ba255.firebaseapp.com",
-            projectId: "clinic1-ba255",
-            storageBucket: "clinic1-ba255.firebasestorage.app",
-            messagingSenderId: "247606627712",
-            appId: "1:247606627712:web:036d99bdd70ed1bc550565",
-            measurementId: "G-04YECK5TVN"
+        // إعداد Firebase موجود في client/firebase-config.js لتسهيل تجهيز نسخة مستقلة لكل عيادة.
+        // إذا كان الملف غير موجود أو تُرك بالإعداد الافتراضي، يعمل النظام محلياً فقط.
+        const firebaseConfig = window.SOLI_FIREBASE_CONFIG || {
+            apiKey: 'YOUR_API_KEY',
+            authDomain: '',
+            projectId: '',
+            storageBucket: '',
+            messagingSenderId: '',
+            appId: ''
         };
 
-        // Cloud sync only activates once real config values are pasted above.
+        // Cloud sync only activates once real config values are present.
         // Until then, the app runs fully offline on local browser storage (exactly as before).
-        const isFirebaseConfigured = firebaseConfig.apiKey !== 'YOUR_API_KEY';
+        const isFirebaseConfigured = Boolean(
+            firebaseConfig.apiKey &&
+            firebaseConfig.apiKey !== 'YOUR_API_KEY' &&
+            firebaseConfig.projectId &&
+            firebaseConfig.appId
+        );
 
         let firebaseAuth = null;
         let firestoreDB = null;
