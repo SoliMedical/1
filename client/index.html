@@ -1389,6 +1389,26 @@
                         return false;
                     }
                 },
+                async tryDemoLicense() {
+                    const demoLicense = {
+                        payload: {
+                            product: 'soli-medical',
+                            edition: 'clinic',
+                            licenseId: 'SM-2026-7CF59F9A',
+                            clinicName: 'Soli Medical',
+                            doctorName: 'الطبيب المعالج',
+                            features: ['patients', 'prescriptions', 'billing', 'reports', 'appointments'],
+                            deviceLimit: 3,
+                            issuedAt: '2026-08-14T14:35:20.717Z',
+                            expiresAt: '2027-08-14T14:35:20.717Z'
+                        },
+                        signature: 'xnukCiK9h8RHvC8zrZkw70qIwlYhvlg1jGb5yjvEDeGvYEBZiR3Gp7ps8BUszglnJU8yUdzjBoln3Nddw69yCQ'
+                    };
+                    this.licenseInput = JSON.stringify(demoLicense, null, 2);
+                    await this.activateLicenseText(demoLicense);
+                    this.licenseMessage = 'تم تفعيل الترخيص التجريبي باسم Soli Medical. يمكنك الآن رؤية بيانات الترخيص في البطاقة.';
+                    this.licenseMessageType = 'success';
+                },
                 async loadStoredLicense() {
                     try {
                         const stored = localStorage.getItem(this.licenseStorageKey);
@@ -4414,6 +4434,7 @@
                                         <input type="file" accept="application/json,.json" class="hidden" @change="handleLicenseFileUpload($event)">
                                     </label>
                                     <button type="button" @click="licenseInput = ''; licenseMessage = 'ألصق محتوى ملف الترخيص في الحقل ثم اضغط تفعيل.'; licenseMessageType = 'info'" class="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 hover:border-amber-400">إدخال مفتاح يدوياً</button>
+                                    <button type="button" @click="tryDemoLicense()" class="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">تجربة الترخيص</button>
                                 </div>
                                 <textarea x-model="licenseInput" rows="4" spellcheck="false" class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-3 font-mono text-[11px] text-slate-800 dark:text-slate-200" placeholder="يمكنك لصق محتوى ملف الترخيص JSON هنا"></textarea>
                                 <button type="button" @click="activateLicenseText()" class="w-full rounded-xl bg-slate-800 hover:bg-slate-900 dark:bg-blue-600 dark:hover:bg-blue-700 text-white px-4 py-2.5 text-xs font-bold">تفعيل أو تحديث الترخيص</button>
