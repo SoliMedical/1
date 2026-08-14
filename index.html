@@ -138,6 +138,30 @@
                 localEditBaseRevision: 0,
                 showPassword: false,
 
+                // Commercial local-edition tools: onboarding, quick templates, audit trail, and idle lock.
+                showSetupWizard: false,
+                setupWizardStep: 1,
+                setupForm: { clinicName: '', doctorName: '', specialty: '', phone: '', location: '', hours: '' },
+                quickTemplates: [],
+                showQuickTemplateModal: false,
+                editingQuickTemplate: null,
+                quickTemplateForm: { name: '', diagnosis: '', notes: '', medicines: [] },
+                auditLog: [],
+                idleLockEnabled: true,
+                idleLockMinutes: 15,
+                showIdleLockModal: false,
+                idleUnlockPassword: '',
+                idleLockTimer: null,
+                lastActivityAt: null,
+
+                // Local license verification: only the public key is shipped in the PWA.
+                licenseInfo: null,
+                licenseInput: '',
+                licenseMessage: '',
+                licenseMessageType: 'info',
+                licensePublicKey: 'MCowBQYDK2VwAyEAeNsuisSIH3Xv3R38_xIPK_4ZIsBghFy_FGseup_wosY',
+                licenseStorageKey: 'soliMedicalLicense_v1',
+
                 // Smart Search Inputs inside Forms
                 symptomSearchQuery: '',
                 chronicSearchQuery: '',
@@ -452,8 +476,13 @@
                 ],
 
                 waitingQueue: [
-                    { id: 201, patientId: 1, patientName: 'دينا رمضان', symptom: 'ارتفاع درجة الحرارة', clinic: 'فرع المعادي', createdAt: '2026-08-10T09:00:00' }
+                    { id: 201, patientId: 1, patientName: 'دينا رمضان', symptom: 'ارتفاع درجة الحرارة', clinic: 'فرع المعادي', status: 'waiting', createdAt: '2026-08-10T09:00:00' }
                 ],
+                    appointments: [],
+                    selectedAppointmentDate: new Date().toISOString().slice(0, 10),
+                    appointmentSearch: '',
+                    appointmentStatusFilter: 'all',
+                    appointmentForm: { patientName: '', phone: '', date: new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '' },
 
                 invoices: [
                     { id: 'INV-1001', patientName: 'دينا رمضان', serviceName: 'كشف طبي (كشف)', amount: 300, discount: 0, tax: 0, total: 300, date: '2026-08-10', status: 'مدفوعة' }
@@ -487,9 +516,24 @@
 
                 init() {
                     this.loadPersistedState();
+                    this.loadStoredLicense();
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
                     if (!Array.isArray(this.syncConflicts)) this.syncConflicts = [];
                     if (!Array.isArray(this.egyptianMedicineArchive)) this.egyptianMedicineArchive = [];
+                    if (!Array.isArray(this.quickTemplates)) this.quickTemplates = [];
+                    if (!Array.isArray(this.auditLog)) this.auditLog = [];
+                    if (!Number.isFinite(Number(this.idleLockMinutes))) this.idleLockMinutes = 15;
+                    this.setupForm = {
+                        clinicName: this.clinics?.[0]?.name || '',
+                        doctorName: this.doctorInfo?.fullName || '',
+                        specialty: this.doctorInfo?.specialty || '',
+                        phone: this.doctorInfo?.phone || '',
+                        location: this.clinics?.[0]?.location || '',
+                        hours: this.clinics?.[0]?.hours || ''
+                    };
+                    this.lastActivityAt = Date.now();
+                    this.startIdleLockMonitor();
+                    this.registerAuditActivityListeners();
                     this.$watch('patientSearch', () => { this.patientsPage = 1; });
                     this.$watch('patientsYearFilter', () => { this.patientsPage = 1; });
                     this.$watch('patientsMonthFilter', () => { this.patientsPage = 1; });
@@ -1007,7 +1051,7 @@
                     // Credentials and clinic configuration remain available so the clinic can
                     // sign in again after a destructive records reset. All clinical/financial
                     // collections are cleared and then propagated through Firestore.
-                    ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'expenses', 'syncConflicts'].forEach(key => {
+                    ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'expenses', 'syncConflicts'].forEach(key => {
                         snapshot[key] = [];
                     });
                     return snapshot;
@@ -1162,12 +1206,257 @@
                     reader.readAsText(file);
                 },
 
+                // ---- COMMERCIAL LOCAL EDITION TOOLS ----
+                recordAudit(action, details = '') {
+                    const entry = {
+                        id: `AUD-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                        at: new Date().toISOString(),
+                        user: this.currentUser?.fullName || 'النظام المحلي',
+                        action,
+                        details
+                    };
+                    this.auditLog = [entry, ...(this.auditLog || [])].slice(0, 250);
+                    this.persistState();
+                    this.queueCloudSync();
+                },
+                registerAuditActivityListeners() {
+                    if (this._activityListenersRegistered) return;
+                    this._activityListenersRegistered = true;
+                    const markActivity = () => { this.lastActivityAt = Date.now(); };
+                    ['click', 'keydown', 'pointerdown', 'touchstart'].forEach(eventName => {
+                        window.addEventListener(eventName, markActivity, { passive: true });
+                    });
+                },
+                startIdleLockMonitor() {
+                    clearInterval(this.idleLockTimer);
+                    this.idleLockTimer = setInterval(() => {
+                        if (!this.idleLockEnabled || !this.isAuthenticated || this.showIdleLockModal) return;
+                        const timeout = Math.max(0, Number(this.idleLockMinutes || 0)) * 60 * 1000;
+                        if (timeout > 0 && Date.now() - Number(this.lastActivityAt || Date.now()) >= timeout) {
+                            this.showIdleLockModal = true;
+                            this.idleUnlockPassword = '';
+                            this.recordAudit('قفل تلقائي', `بعد ${this.idleLockMinutes} دقيقة من عدم النشاط`);
+                        }
+                    }, 30000);
+                },
+                unlockIdleSession() {
+                    const password = String(this.currentUser?.password ?? '');
+                    if (!this.idleUnlockPassword || String(this.idleUnlockPassword) !== password) {
+                        alert('كلمة المرور غير صحيحة.');
+                        return;
+                    }
+                    this.showIdleLockModal = false;
+                    this.idleUnlockPassword = '';
+                    this.lastActivityAt = Date.now();
+                    this.recordAudit('فتح القفل التلقائي');
+                },
+                openSetupWizard() {
+                    this.setupWizardStep = 1;
+                    this.setupForm = {
+                        clinicName: this.clinics?.[0]?.name || '',
+                        doctorName: this.doctorInfo?.fullName || '',
+                        specialty: this.doctorInfo?.specialty || '',
+                        phone: this.doctorInfo?.phone || '',
+                        location: this.clinics?.[0]?.location || '',
+                        hours: this.clinics?.[0]?.hours || ''
+                    };
+                    this.showSetupWizard = true;
+                    this.renderIcons();
+                },
+                saveSetupWizard() {
+                    const form = this.setupForm || {};
+                    if (!String(form.clinicName || '').trim() || !String(form.doctorName || '').trim()) {
+                        alert('يرجى إدخال اسم العيادة واسم الطبيب على الأقل.');
+                        return;
+                    }
+                    this.doctorInfo = {
+                        ...this.doctorInfo,
+                        fullName: String(form.doctorName).trim(),
+                        specialty: String(form.specialty || '').trim(),
+                        phone: String(form.phone || '').trim()
+                    };
+                    const firstClinic = this.clinics?.[0] || { id: Date.now() };
+                    this.clinics = [{
+                        ...firstClinic,
+                        name: String(form.clinicName).trim(),
+                        location: String(form.location || '').trim(),
+                        hours: String(form.hours || '').trim(),
+                        phone: String(form.phone || '').trim()
+                    }, ...(this.clinics || []).slice(1)];
+                    this.showSetupWizard = false;
+                    this.recordAudit('حفظ إعداد العيادة', this.doctorInfo.fullName);
+                    alert('تم حفظ إعدادات العيادة بنجاح.');
+                },
+                openQuickTemplateModal(template = null) {
+                    this.editingQuickTemplate = template;
+                    this.quickTemplateForm = template ? JSON.parse(JSON.stringify(template)) : { name: '', diagnosis: '', notes: '', medicines: [] };
+                    this.showQuickTemplateModal = true;
+                    this.renderIcons();
+                },
+                saveQuickTemplate() {
+                    const name = String(this.quickTemplateForm?.name || '').trim();
+                    if (!name) { alert('اكتب اسم القالب أولاً.'); return; }
+                    const template = { ...this.quickTemplateForm, id: this.editingQuickTemplate?.id || `TPL-${Date.now()}`, name };
+                    this.quickTemplates = this.editingQuickTemplate
+                        ? this.quickTemplates.map(item => item.id === template.id ? template : item)
+                        : [template, ...(this.quickTemplates || [])];
+                    this.showQuickTemplateModal = false;
+                    this.recordAudit(this.editingQuickTemplate ? 'تعديل قالب كشف' : 'إضافة قالب كشف', name);
+                },
+                deleteQuickTemplate(id) {
+                    if (!confirm('هل تريد حذف قالب الكشف؟')) return;
+                    const template = this.quickTemplates.find(item => item.id === id);
+                    this.quickTemplates = this.quickTemplates.filter(item => item.id !== id);
+                    this.recordAudit('حذف قالب كشف', template?.name || id);
+                },
+                applyQuickTemplate(template) {
+                    if (!template) return;
+                    this.newRecordForm.customDiagnosis = template.diagnosis || '';
+                    this.newRecordForm.generalNotes = template.notes || '';
+                    this.newRecordForm.selectedMedicinesWithDosage = Array.isArray(template.medicines) ? JSON.parse(JSON.stringify(template.medicines)) : [];
+                    this.recordAudit('تطبيق قالب كشف', template.name || 'قالب غير مسمى');
+                    alert(`تم تطبيق قالب «${template.name}» ويمكنك تعديله قبل الحفظ.`);
+                },
+                formatAuditDate(value) {
+                    try { return new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)); } catch (e) { return value || ''; }
+                },
+
+
+                // ---- LOCAL LICENSE VERIFICATION ----
+                // The private signing key never belongs in this application.
+                licenseBase64urlToBytes(value) {
+                    const base64 = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
+                    const padded = base64 + '='.repeat((4 - base64.length % 4) % 4);
+                    const binary = atob(padded);
+                    return Uint8Array.from(binary, character => character.charCodeAt(0));
+                },
+                licenseStableStringify(value) {
+                    if (Array.isArray(value)) return '[' + value.map(item => this.licenseStableStringify(item)).join(',') + ']';
+                    if (value && typeof value === 'object') {
+                        return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + this.licenseStableStringify(value[key])).join(',') + '}';
+                    }
+                    return JSON.stringify(value);
+                },
+                async verifyLicenseDocument(document) {
+                    if (!document?.payload || !document?.signature) return { valid: false, reason: 'بنية ملف الترخيص غير صحيحة.' };
+                    if (document.payload.product !== 'soli-medical') return { valid: false, reason: 'هذا الترخيص ليس خاصاً بنظام Soli Medical.' };
+                    if (!window.crypto?.subtle) return { valid: false, reason: 'المتصفح لا يدعم التحقق الآمن من التوقيع.' };
+                    try {
+                        const publicKey = await window.crypto.subtle.importKey(
+                            'spki',
+                            this.licenseBase64urlToBytes(this.licensePublicKey),
+                            { name: 'Ed25519' },
+                            false,
+                            ['verify']
+                        );
+                        const validSignature = await window.crypto.subtle.verify(
+                            { name: 'Ed25519' },
+                            publicKey,
+                            this.licenseBase64urlToBytes(document.signature),
+                            new TextEncoder().encode(this.licenseStableStringify(document.payload))
+                        );
+                        if (!validSignature) return { valid: false, reason: 'التوقيع غير صحيح أو تم تعديل ملف الترخيص.' };
+                        const expiresAt = new Date(document.payload.expiresAt);
+                        if (Number.isNaN(expiresAt.getTime())) return { valid: false, reason: 'تاريخ انتهاء الترخيص غير صحيح.' };
+                        return { valid: true, expired: Date.now() > expiresAt.getTime(), payload: document.payload };
+                    } catch (error) {
+                        console.warn('تعذر التحقق من الترخيص:', error);
+                        return { valid: false, reason: 'تعذر التحقق من ملف الترخيص في هذا المتصفح.' };
+                    }
+                },
+                async activateLicenseText(text = this.licenseInput) {
+                    try {
+                        const document = typeof text === 'string' ? JSON.parse(text) : text;
+                        const result = await this.verifyLicenseDocument(document);
+                        if (!result.valid) {
+                            this.licenseInfo = null;
+                            this.licenseMessage = result.reason;
+                            this.licenseMessageType = 'error';
+                            return false;
+                        }
+                        localStorage.setItem(this.licenseStorageKey, JSON.stringify(document));
+                        this.licenseInfo = result.payload;
+                        this.licenseMessage = result.expired
+                            ? 'الترخيص منتهي. يمكنك قراءة البيانات وتصدير النسخة الاحتياطية، ويلزم التجديد لإضافة وظائف جديدة.'
+                            : 'تم تفعيل الترخيص بنجاح. يعمل النظام محلياً دون اتصال دائم بالإنترنت.';
+                        this.licenseMessageType = result.expired ? 'warning' : 'success';
+                        this.recordAudit('تفعيل أو تحديث الترخيص', result.payload.licenseId);
+                        return true;
+                    } catch (error) {
+                        this.licenseInfo = null;
+                        this.licenseMessage = 'تعذر قراءة ملف الترخيص. اختر ملف JSON صادر من مولّد Soli Medical.';
+                        this.licenseMessageType = 'error';
+                        return false;
+                    }
+                },
+                async tryDemoLicense() {
+                    const demoLicense = {
+                        payload: {
+                            product: 'soli-medical',
+                            edition: 'clinic',
+                            licenseId: 'SM-2026-BD1C73F1',
+                            clinicName: 'عيادة النسا والتوليد',
+                            doctorName: 'د. أحمد حسني محرم',
+                            features: ['patients', 'prescriptions', 'billing', 'reports', 'appointments'],
+                            deviceLimit: 3,
+                            issuedAt: '2026-08-14T15:03:44.746Z',
+                            expiresAt: '2027-08-14T15:03:44.746Z'
+                        },
+                        signature: 'lM1YsE7AbCYNOkqvugj4G-kNSV8MnzsTol6c_2DOOvmmeSgCt-oWLrDKz8lUSzqIfH8o0o6vAnFi-gdYd2hdAA'
+                    };
+                    this.licenseInput = JSON.stringify(demoLicense, null, 2);
+                    await this.activateLicenseText(demoLicense);
+                    this.licenseMessage = 'تم تفعيل الترخيص التجريبي باسم عيادة النسا والتوليد. يمكنك الآن رؤية بيانات الترخيص في البطاقة.';
+                    this.licenseMessageType = 'success';
+                },
+                async loadStoredLicense() {
+                    try {
+                        const stored = localStorage.getItem(this.licenseStorageKey);
+                        if (!stored) return;
+                        const result = await this.verifyLicenseDocument(JSON.parse(stored));
+                        if (result.valid) {
+                            this.licenseInfo = result.payload;
+                            this.licenseMessage = result.expired
+                                ? 'الترخيص المحفوظ منتهي الصلاحية. البيانات المحلية لم تُحذف.'
+                                : 'الترخيص المحفوظ نشط.';
+                            this.licenseMessageType = result.expired ? 'warning' : 'success';
+                        } else {
+                            this.licenseInfo = null;
+                            this.licenseMessage = result.reason;
+                            this.licenseMessageType = 'error';
+                        }
+                    } catch (error) {
+                        this.licenseInfo = null;
+                    }
+                },
+                handleLicenseFileUpload(event) {
+                    const file = event?.target?.files?.[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = async () => {
+                        this.licenseInput = String(reader.result || '');
+                        await this.activateLicenseText(this.licenseInput);
+                        event.target.value = '';
+                    };
+                    reader.onerror = () => {
+                        this.licenseMessage = 'تعذر قراءة ملف الترخيص.';
+                        this.licenseMessageType = 'error';
+                        event.target.value = '';
+                    };
+                    reader.readAsText(file);
+                },
+                licenseIsExpired() {
+                    return Boolean(this.licenseInfo?.expiresAt && Date.now() > new Date(this.licenseInfo.expiresAt).getTime());
+                },
+                formatLicenseDate(value) {
+                    try { return new Intl.DateTimeFormat('ar-EG', { dateStyle: 'medium' }).format(new Date(value)); } catch (error) { return value || ''; }
+                },
                 // ---- LOCAL DATA PERSISTENCE (localStorage) ----
                 // NOTE: This keeps all clinic data saved on this device/browser only, so nothing
                 // is lost on refresh. When the app is later connected to Supabase (or another
                 // backend), these same read/write points are where the cloud sync calls should go.
                 storageKey: 'soliMedicalData_v1',
-                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts'],
+                    persistentKeys: ['patients', 'waitingQueue', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'quickTemplates', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
 
                 loadPersistedState() {
                     try {
@@ -1426,6 +1715,7 @@
                     newVisit: 'newVisit',
                     followUps: 'followUps',
                     waitingQueue: 'waitingQueue',
+                    appointments: 'waitingQueue',
                     patientsList: 'patients',
                     medicalRecord: 'patients',
                     invoices: 'invoices',
@@ -1491,6 +1781,7 @@
                         newVisit: 'إضافة كشف جديد / متابعة',
                         followUps: 'المتابعة القادمة وتذكيرات المرضى',
                         waitingQueue: 'مرضى في الانتظار',
+                        appointments: 'إدارة المواعيد والتقويم',
                         patientsList: 'سجل إدارات المرضى والملفات الطبية',
                         patientForm: 'تسجيل زيارة / مريض جديد',
                         medicalRecord: 'السجل الطبي الموسع للمريض',
@@ -1517,6 +1808,86 @@
 
                 getWaitingPatientVisitType(item) {
                     return item?.visitType || this.getPatientById(item?.patientId)?.visitType || 'كشف';
+                },
+
+                get appointmentStatusOptions() {
+                    return [
+                        { key: 'scheduled', label: 'مجدول', tone: 'blue' },
+                        { key: 'waiting', label: 'في الانتظار', tone: 'amber' },
+                        { key: 'in_consultation', label: 'داخل الكشف', tone: 'violet' },
+                        { key: 'completed', label: 'اكتمل', tone: 'emerald' },
+                        { key: 'cancelled', label: 'ملغي', tone: 'red' }
+                    ];
+                },
+                appointmentStatusLabel(status) {
+                    return this.appointmentStatusOptions.find(item => item.key === status)?.label || 'مجدول';
+                },
+                get appointmentsForSelectedDay() {
+                    const query = String(this.appointmentSearch || '').trim().toLowerCase();
+                    return (this.appointments || []).filter(item => {
+                        const matchesDate = item.date === this.selectedAppointmentDate;
+                        const haystack = [item.patientName, item.phone, item.visitType, item.notes].filter(Boolean).join(' ').toLowerCase();
+                        const matchesQuery = !query || haystack.includes(query);
+                        const matchesStatus = this.appointmentStatusFilter === 'all' || (item.status || 'scheduled') === this.appointmentStatusFilter;
+                        return matchesDate && matchesQuery && matchesStatus;
+                    }).sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+                },
+                get reportAppointments() {
+                    return (this.appointments || []).filter(item => this.isDateInReportPeriod(item.date));
+                },
+                get reportCompletedAppointments() {
+                    return this.reportAppointments.filter(item => item.status === 'completed');
+                },
+                openAppointmentsPage(date = null) {
+                    this.selectedAppointmentDate = date || this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
+                    this.appointmentForm.date = this.selectedAppointmentDate;
+                    this.navigateTo('appointments');
+                    this.renderIcons();
+                },
+                resetAppointmentForm() {
+                    this.appointmentForm = { patientName: '', phone: '', date: this.selectedAppointmentDate || new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '' };
+                },
+                addAppointment() {
+                    const form = this.appointmentForm || {};
+                    const patientName = String(form.patientName || '').trim();
+                    if (!patientName || !form.date || !form.time) { alert('اكتب اسم المريض والتاريخ والوقت أولاً.'); return; }
+                    const patient = (this.patients || []).find(item => String(item.fullName || '').trim() === patientName || (form.phone && String(item.phone || '').trim() === String(form.phone).trim()));
+                    const appointment = { id: 'APT-' + Date.now(), patientId: patient?.id || null, patientName, phone: String(form.phone || patient?.phone || '').trim(), date: form.date, time: form.time, visitType: form.visitType || 'كشف', notes: String(form.notes || '').trim(), status: 'scheduled', createdAt: new Date().toISOString() };
+                    this.appointments = [appointment, ...(this.appointments || [])];
+                    this.selectedAppointmentDate = appointment.date;
+                    this.resetAppointmentForm();
+                    this.recordAudit('إضافة موعد', patientName + ' - ' + appointment.date + ' ' + appointment.time);
+                    alert('تم حفظ الموعد بنجاح.');
+                },
+                updateAppointmentStatus(id, status) {
+                    const appointment = (this.appointments || []).find(item => item.id === id);
+                    if (!appointment) return;
+                    appointment.status = status;
+                    if (status === 'waiting') {
+                        const exists = (this.waitingQueue || []).some(item => item.appointmentId === id);
+                        if (!exists) this.waitingQueue.unshift({ id: Date.now(), appointmentId: id, patientId: appointment.patientId, patientName: appointment.patientName, phone: appointment.phone, symptom: appointment.visitType, clinic: 'عيادة الطبيب', status: 'waiting', createdAt: new Date().toISOString() });
+                    }
+                    if (status === 'in_consultation') {
+                        const queueItem = (this.waitingQueue || []).find(item => item.appointmentId === id);
+                        if (queueItem) queueItem.status = 'in_consultation';
+                    }
+                    if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(item => item.appointmentId !== id);
+                    this.recordAudit('تغيير حالة موعد', appointment.patientName + ': ' + this.appointmentStatusLabel(status));
+                },
+                setWaitingStatus(item, status) {
+                    if (!item) return;
+                    item.status = status;
+                    const appointment = (this.appointments || []).find(appt => appt.id === item.appointmentId);
+                    if (appointment) appointment.status = status;
+                    if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(entry => entry.id !== item.id);
+                    this.recordAudit('تغيير حالة قائمة الانتظار', item.patientName + ': ' + this.appointmentStatusLabel(status));
+                },
+                deleteAppointment(id) {
+                    const appointment = (this.appointments || []).find(item => item.id === id);
+                    if (!appointment || !confirm('حذف موعد ' + appointment.patientName + '؟')) return;
+                    this.appointments = this.appointments.filter(item => item.id !== id);
+                    this.waitingQueue = (this.waitingQueue || []).filter(item => item.appointmentId !== id);
+                    this.recordAudit('حذف موعد', appointment.patientName);
                 },
 
                 get waitingClinics() {
@@ -1998,6 +2369,7 @@
 
                         this.waitingQueue.unshift({
                             id: Date.now(),
+                            status: 'waiting',
                             patientId: p.id,
                             patientName: p.fullName,
                             symptom: (p.selectedSymptoms && p.selectedSymptoms[0]) ? p.selectedSymptoms[0] : ('زيارة ' + p.visitType),
@@ -2028,6 +2400,7 @@
                         this.patients.unshift(newP);
                         this.waitingQueue.unshift({
                             id: Date.now(),
+                            status: 'waiting',
                             patientId: newP.id,
                             patientName: newP.fullName,
                             symptom: (newP.selectedSymptoms && newP.selectedSymptoms[0]) ? newP.selectedSymptoms[0] : ('زيارة ' + newP.visitType),
@@ -2479,6 +2852,7 @@
                     this.patients = this.patients.filter(p => p.id !== id);
                     this.prescriptions = (this.prescriptions || []).filter(rx => rx.patientId !== id && String(rx.patientName || '').trim() !== patientName);
                     this.waitingQueue = (this.waitingQueue || []).filter(item => item.patientId !== id && String(item.patientName || '').trim() !== patientName);
+                    this.appointments = (this.appointments || []).filter(item => item.patientId !== id && String(item.patientName || '').trim() !== patientName);
                     this.invoices = (this.invoices || []).filter(invoice => invoice.patientId !== id && String(invoice.patientName || '').trim() !== patientName);
                     if (this.selectedPatientForRecord?.id === id) this.selectedPatientForRecord = null;
                     if (this.openPrescriptionPatientId === String(id)) this.openPrescriptionPatientId = null;
@@ -2489,6 +2863,9 @@
 
                 openWaitingPatient(item) {
                     const patient = this.patients.find(p => p.id === item.patientId) || this.patients.find(p => p.fullName === item.patientName);
+                    item.status = 'in_consultation';
+                    const linkedAppointment = (this.appointments || []).find(appt => appt.id === item.appointmentId);
+                    if (linkedAppointment) linkedAppointment.status = 'in_consultation';
                     if (!patient) {
                         alert('لم يتم العثور على ملف هذا المريض. يمكنك حذف البطاقة من قائمة الانتظار.');
                         return;
@@ -2843,6 +3220,10 @@
                             <i data-lucide="user-plus" class="w-5 h-5"></i>
                             <span>إضافة زيارة / كشف</span>
                         </a>
+                        <a x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'appointments'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
+                            <i data-lucide="calendar-days" class="w-5 h-5"></i>
+                            <span>المواعيد والتقويم</span>
+                        </a>
                         <a x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" :class="{'bg-amber-500 text-white font-semibold': currentView === 'waitingQueue'}" class="flex items-center justify-between px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <span class="flex items-center space-x-3 space-x-reverse">
                                 <i data-lucide="clock-3" class="w-5 h-5"></i>
@@ -2940,6 +3321,11 @@
                                     <p class="text-xs text-blue-700 dark:text-blue-300 font-bold">إضافة زيارة / كشف</p>
                                     <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تسجيل مريض أو زيارة جديدة</p>
                                 </button>
+                                <button x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" class="dashboard-action-card text-right bg-sky-50 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                    <span class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center mb-3"><i data-lucide="calendar-days" class="w-5 h-5"></i></span>
+                                    <p class="text-xs text-sky-700 dark:text-sky-300 font-bold">مواعيد اليوم</p>
+                                    <p class="text-2xl font-bold text-sky-700 dark:text-sky-300 mt-1" x-text="appointmentsForSelectedDay.length"></p>
+                                </button>
                                 <button x-show="currentUser?.permissions?.waitingQueue" @click="navigateTo('waitingQueue')" class="dashboard-action-card text-right bg-amber-50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-amber-500 text-white flex items-center justify-center mb-3"><i data-lucide="clock-3" class="w-5 h-5"></i></span>
                                     <p class="text-xs text-amber-700 dark:text-amber-300 font-bold">مرضى في الانتظار</p>
@@ -2980,6 +3366,29 @@
                                     <p class="text-xs text-slate-700 dark:text-slate-200 font-bold">إعدادات القوائم والأدلة</p>
                                     <p class="text-sm font-bold text-slate-500 mt-2">إدارة بيانات النظام والصلاحيات</p>
                                 </button>
+                            </div>
+                        </div>
+
+                        <!-- APPOINTMENTS AND CALENDAR PAGE -->
+                        <div x-show="currentView === 'appointments'" class="max-w-6xl mx-auto space-y-6">
+                            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                                <div><h3 class="font-bold text-slate-800 dark:text-white text-xl">إدارة المواعيد والتقويم</h3><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">نظّم مواعيد اليوم وحوّل الموعد إلى قائمة الانتظار عند حضور المريض.</p></div>
+                                <input type="date" x-model="selectedAppointmentDate" @change="appointmentForm.date = selectedAppointmentDate" class="px-3 py-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm">
+                            </div>
+                            <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                                <div class="lg:col-span-1 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-3">
+                                    <h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4>
+                                    <input type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
+                                    <input type="tel" inputmode="tel" x-model="appointmentForm.phone" placeholder="رقم الهاتف" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
+                                    <div class="grid grid-cols-2 gap-2"><input type="date" x-model="appointmentForm.date" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><input type="time" x-model="appointmentForm.time" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
+                                    <select x-model="appointmentForm.visitType" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select>
+                                    <textarea x-model="appointmentForm.notes" rows="2" placeholder="ملاحظات الموعد" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></textarea>
+                                    <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold">حفظ الموعد</button>
+                                </div>
+                                <div class="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-4">
+                                    <div class="flex flex-col sm:flex-row gap-2"><input type="search" x-model="appointmentSearch" placeholder="ابحث في مواعيد اليوم..." class="flex-1 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
+                                    <div class="space-y-2"><template x-for="appointment in appointmentsForSelectedDay" :key="appointment.id"><article class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40"><div class="min-w-0"><div class="flex items-center gap-2"><span class="font-mono font-bold text-blue-600" x-text="appointment.time"></span><h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="appointment.patientName"></h4></div><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appointment.visitType + (appointment.phone ? ' • ' + appointment.phone : '')"></p><p x-show="appointment.notes" class="text-xs text-slate-400 mt-1" x-text="appointment.notes"></p></div><div class="flex items-center gap-2"><select :value="appointment.status" @change="updateAppointmentStatus(appointment.id, $event.target.value)" class="px-2 py-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs"><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select><button type="button" @click="deleteAppointment(appointment.id)" class="p-2 text-slate-400 hover:text-red-600" title="حذف الموعد"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></article></template><p x-show="appointmentsForSelectedDay.length === 0" class="text-center py-10 text-sm text-slate-400">لا توجد مواعيد مطابقة لهذا اليوم.</p></div>
+                                </div>
                             </div>
                         </div>
 
@@ -3042,6 +3451,7 @@
                                             <div class="min-w-0">
                                                 <h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="item.patientName"></h4>
                                                 <p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="item.symptom || 'زيارة / كشف جديد'"></p>
+                                                <span class="inline-flex mt-2 px-2 py-1 rounded-full text-[10px] font-bold" :class="{'bg-amber-100 text-amber-700': (item.status || 'waiting') === 'waiting', 'bg-violet-100 text-violet-700': item.status === 'in_consultation', 'bg-emerald-100 text-emerald-700': item.status === 'completed'}" x-text="appointmentStatusLabel(item.status || 'waiting')"></span>
                                                 <p class="text-[11px] text-slate-400 mt-1" x-text="(getWaitingPatientPhone(item) || 'بدون هاتف') + ' • ' + (item.clinic || 'عيادة الطبيب')"></p>
                                             </div>
                                         </div>
@@ -3050,6 +3460,7 @@
                                                 <i data-lucide="stethoscope" class="w-4 h-4"></i>
                                                 <span>فتح الكشف وكتابة الروشتة</span>
                                             </button>
+                                            <select @change="setWaitingStatus(item, $event.target.value)" class="bg-slate-100 dark:bg-slate-800 px-3 py-2.5 rounded-xl text-xs font-bold"><option value="waiting" :selected="(item.status || 'waiting') === 'waiting'">في الانتظار</option><option value="in_consultation" :selected="item.status === 'in_consultation'">داخل الكشف</option><option value="completed">اكتمل</option><option value="cancelled">ملغي</option></select>
                                             <button @click="removeFromQueue(item.id)" class="bg-slate-100 hover:bg-red-50 dark:bg-slate-800 dark:hover:bg-red-950/30 text-slate-600 hover:text-red-600 dark:text-slate-300 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
                                                 <i data-lucide="x" class="w-4 h-4"></i>
                                                 <span>إزالة</span>
@@ -3465,7 +3876,7 @@
 
                                 <!-- Multi-select Diagnoses List + Manual Diagnosis -->
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
-                                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التشخيص الطبي (يمكن اختيار أكثر من تشخيص + كتابة يدوية):</label>
+                                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"><label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التشخيص الطبي (يمكن اختيار أكثر من تشخيص + كتابة يدوية):</label><div x-show="quickTemplates.length" class="flex items-center gap-1.5"><span class="text-[11px] text-slate-500">قالب سريع:</span><template x-for="template in quickTemplates" :key="'visit-template-' + template.id"><button type="button" @click="applyQuickTemplate(template)" class="px-2 py-1 rounded-lg bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-300 text-[11px] font-bold hover:bg-blue-100" x-text="template.name"></button></template></div></div>
                                     <input type="text" x-model="diagnosisSearchQuery" placeholder="بحث في قائمة التشخيصات المعتمدة..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     
                                     <div class="max-h-36 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
@@ -3830,7 +4241,11 @@
                                 </select>
                             </div>
 
-                            <div class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div class="grid grid-cols-2 lg:grid-cols-6 gap-4">
+                                <div class="bg-sky-50 dark:bg-sky-900/20 border border-sky-100 dark:border-sky-800 p-4 rounded-2xl">
+                                    <p class="text-[11px] font-bold text-sky-700 dark:text-sky-400">المواعيد</p>
+                                    <h4 class="text-xl font-bold text-sky-700 dark:text-sky-400 mt-1" x-text="reportAppointments.length"></h4>
+                                </div>
                                 <div class="bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-100 dark:border-emerald-800 p-4 rounded-2xl">
                                     <p class="text-[11px] font-bold text-emerald-700 dark:text-emerald-400">إجمالي الوارد</p>
                                     <h4 class="text-xl font-bold text-emerald-700 dark:text-emerald-400 mt-1" x-text="reportIncome.toLocaleString() + ' ج.م'"></h4>
@@ -3842,6 +4257,10 @@
                                 <div class="bg-blue-50 dark:bg-blue-900/20 border border-blue-100 dark:border-blue-800 p-4 rounded-2xl">
                                     <p class="text-[11px] font-bold text-blue-700 dark:text-blue-400">سجلات المرضى (زيارات)</p>
                                     <h4 class="text-xl font-bold text-blue-700 dark:text-blue-400 mt-1" x-text="reportPatientRecords.length"></h4>
+                                </div>
+                                <div class="bg-violet-50 dark:bg-violet-900/20 border border-violet-100 dark:border-violet-800 p-4 rounded-2xl">
+                                    <p class="text-[11px] font-bold text-violet-700 dark:text-violet-400">المواعيد المكتملة</p>
+                                    <h4 class="text-xl font-bold text-violet-700 dark:text-violet-400 mt-1" x-text="reportCompletedAppointments.length"></h4>
                                 </div>
                                 <div class="bg-indigo-50 dark:bg-indigo-900/20 border border-indigo-100 dark:border-indigo-800 p-4 rounded-2xl">
                                     <p class="text-[11px] font-bold text-indigo-700 dark:text-indigo-400">الروشتات المكتوبة</p>
@@ -3963,6 +4382,65 @@
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings' || currentView === 'prescriptionSettings'" class="max-w-4xl space-y-6">
+                            <!-- Local Edition Commercial Tools -->
+                            <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-blue-100 dark:border-blue-900/60 shadow-sm space-y-4">
+                                <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
+                                    <div>
+                                        <h3 class="text-base font-bold text-slate-800 dark:text-white">أدوات النسخة المحلية</h3>
+                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">إعداد سريع للعيادة، قوالب للكشف، وقفل تلقائي يحمي الشاشة عند تركها دون مراقبة.</p>
+                                    </div>
+                                    <i data-lucide="briefcase-medical" class="w-6 h-6 text-blue-600 dark:text-blue-400 flex-shrink-0"></i>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <button type="button" @click="openSetupWizard()" class="rounded-xl border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/25 text-blue-700 dark:text-blue-300 px-4 py-3 text-right hover:border-blue-500 transition-colors">
+                                        <span class="block text-xs font-bold">معالج إعداد العيادة</span><span class="block text-[11px] mt-1 opacity-75">بيانات الطبيب، العنوان، الهاتف وساعات العمل</span>
+                                    </button>
+                                    <button type="button" @click="openQuickTemplateModal()" class="rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 text-right hover:border-blue-400 transition-colors">
+                                        <span class="block text-xs font-bold text-slate-700 dark:text-slate-200">إضافة قالب كشف سريع</span><span class="block text-[11px] mt-1 text-slate-500">احفظ تشخيصاً وملاحظات وأدوية متكررة</span>
+                                    </button>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <div><p class="text-xs font-bold text-slate-700 dark:text-slate-200">القفل التلقائي بعد عدم النشاط</p><p class="text-[11px] text-slate-500 mt-1">يطلب كلمة مرور المستخدم الحالي دون تسجيل الخروج أو فقد البيانات.</p></div>
+                                        <button type="button" @click="idleLockEnabled = !idleLockEnabled; startIdleLockMonitor(); persistState()" class="w-11 h-6 rounded-full transition-colors" :class="idleLockEnabled ? 'bg-blue-600' : 'bg-slate-300 dark:bg-slate-700'"><span class="block w-5 h-5 rounded-full bg-white shadow transition-transform" :class="idleLockEnabled ? 'translate-x-0.5' : '-translate-x-5'"></span></button>
+                                    </div>
+                                    <div class="flex items-center gap-3"><label class="text-xs font-bold text-slate-600 dark:text-slate-300" for="idleLockMinutes">المدة بالدقائق</label><input id="idleLockMinutes" type="number" min="1" max="180" inputmode="numeric" x-model.number="idleLockMinutes" @change="startIdleLockMonitor(); persistState()" class="w-24 px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4 space-y-3">
+                                    <div class="flex items-center justify-between"><h4 class="text-xs font-bold text-slate-700 dark:text-slate-200">قوالب الكشف المحفوظة</h4><span class="text-[11px] text-slate-500" x-text="quickTemplates.length + ' قالب'"></span></div>
+                                    <div class="space-y-2 max-h-40 overflow-y-auto"><template x-for="template in quickTemplates" :key="template.id"><div class="flex items-center justify-between gap-2 rounded-lg bg-slate-50 dark:bg-slate-800 px-3 py-2"><span class="text-xs font-bold truncate" x-text="template.name"></span><div class="flex gap-1"><button type="button" @click="openQuickTemplateModal(template)" class="text-[11px] text-blue-600">تعديل</button><button type="button" @click="deleteQuickTemplate(template.id)" class="text-[11px] text-red-600">حذف</button></div></div></template><p x-show="quickTemplates.length === 0" class="text-[11px] text-slate-400 text-center py-2">لم تُحفظ قوالب بعد.</p></div>
+                                </div>
+                                <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-4"><div class="flex items-center justify-between mb-2"><h4 class="text-xs font-bold text-slate-700 dark:text-slate-200">سجل العمليات الأخير</h4><span class="text-[11px] text-slate-500" x-text="auditLog.length + ' عملية'"></span></div><div class="max-h-36 overflow-y-auto space-y-1"><template x-for="entry in auditLog.slice(0, 12)" :key="entry.id"><div class="text-[11px] flex justify-between gap-3 border-b border-slate-100 dark:border-slate-800 py-1"><span><b x-text="entry.action"></b> — <span x-text="entry.user"></span></span><span class="text-slate-400 whitespace-nowrap" x-text="formatAuditDate(entry.at)"></span></div></template><p x-show="auditLog.length === 0" class="text-[11px] text-slate-400 text-center">لا توجد عمليات مسجلة بعد.</p></div></div>
+                            </div>
+
+
+                            <!-- Local License Activation -->
+                            <div x-show="currentView === 'settings' && currentUser?.permissions?.settings" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-amber-100 dark:border-amber-900/60 shadow-sm space-y-4">
+                                <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
+                                    <div>
+                                        <h3 class="text-base font-bold text-slate-800 dark:text-white">ترخيص النسخة المحلية</h3>
+                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">يتم التفعيل مرة واحدة، ثم يعمل النظام دون اتصال دائم بالإنترنت. لا تُحذف بيانات العيادة عند انتهاء الترخيص.</p>
+                                    </div>
+                                    <i data-lucide="key-round" class="w-6 h-6 text-amber-600 dark:text-amber-400 flex-shrink-0"></i>
+                                </div>
+                                <div class="flex flex-wrap items-center gap-2">
+                                    <span class="rounded-full px-3 py-1 text-xs font-bold" :class="licenseInfo && !licenseIsExpired() ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300' : licenseInfo ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300' : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'" x-text="licenseInfo ? (licenseIsExpired() ? 'منتهي — البيانات محفوظة' : 'نشط') : 'غير مفعل'"></span>
+                                    <span x-show="licenseInfo" class="text-xs text-slate-500" x-text="licenseInfo ? licenseInfo.clinicName + ' • صالح حتى ' + formatLicenseDate(licenseInfo.expiresAt) : ''"></span>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                    <label class="inline-flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white px-3 py-2 rounded-xl text-xs font-bold cursor-pointer">
+                                        <i data-lucide="upload" class="w-4 h-4"></i>
+                                        استيراد ملف الترخيص
+                                        <input type="file" accept="application/json,.json" class="hidden" @change="handleLicenseFileUpload($event)">
+                                    </label>
+                                    <button type="button" @click="licenseInput = ''; licenseMessage = 'ألصق محتوى ملف الترخيص في الحقل ثم اضغط تفعيل.'; licenseMessageType = 'info'" class="rounded-xl border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs font-bold text-slate-700 dark:text-slate-200 hover:border-amber-400">إدخال مفتاح يدوياً</button>
+                                    <button type="button" @click="tryDemoLicense()" class="rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 text-xs font-bold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/30 dark:text-emerald-300">تجربة الترخيص</button>
+                                </div>
+                                <textarea x-model="licenseInput" rows="4" spellcheck="false" class="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 p-3 font-mono text-[11px] text-slate-800 dark:text-slate-200" placeholder="يمكنك لصق محتوى ملف الترخيص JSON هنا"></textarea>
+                                <button type="button" @click="activateLicenseText()" class="w-full rounded-xl bg-slate-800 hover:bg-slate-900 dark:bg-blue-600 dark:hover:bg-blue-700 text-white px-4 py-2.5 text-xs font-bold">تفعيل أو تحديث الترخيص</button>
+                                <p x-show="licenseMessage" class="rounded-xl px-3 py-2 text-xs font-semibold" :class="licenseMessageType === 'success' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-300' : licenseMessageType === 'warning' ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300' : licenseMessageType === 'error' ? 'bg-red-50 text-red-700 dark:bg-red-950/30 dark:text-red-300' : 'bg-slate-50 text-slate-600 dark:bg-slate-800 dark:text-slate-300'" x-text="licenseMessage"></p>
+                            </div>
+
                             <!-- Manual Clinic Backup & Restore -->
                             <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-emerald-100 dark:border-emerald-900/60 shadow-sm space-y-3">
                                 <div class="flex items-start justify-between gap-4 border-b border-slate-100 dark:border-slate-800 pb-4">
@@ -4877,6 +5355,17 @@
         </div>
 
     </div>
+        <div x-show="showSetupWizard" x-cloak class="fixed inset-0 z-[80] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div @click.outside="showSetupWizard = false" class="w-full max-w-xl bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-5 space-y-5">
+                <div class="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3"><div><h3 class="font-bold text-slate-800 dark:text-white">معالج إعداد العيادة</h3><p class="text-xs text-slate-500 mt-1">يمكن تعديل هذه البيانات لاحقاً من إعدادات الروشتة.</p></div><button type="button" @click="showSetupWizard = false" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><i data-lucide="x" class="w-5 h-5"></i></button></div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3"><label class="text-xs font-bold">اسم العيادة<input type="text" x-model="setupForm.clinicName" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold">اسم الطبيب<input type="text" x-model="setupForm.doctorName" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold">التخصص<input type="text" x-model="setupForm.specialty" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold">الهاتف<input type="tel" inputmode="tel" x-model="setupForm.phone" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold sm:col-span-2">العنوان<input type="text" x-model="setupForm.location" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="text-xs font-bold sm:col-span-2">ساعات العمل<input type="text" x-model="setupForm.hours" placeholder="مثال: السبت - الخميس، 5م إلى 10م" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label></div>
+                <div class="flex justify-end gap-2"><button type="button" @click="showSetupWizard = false" class="px-4 py-2 rounded-xl text-sm text-slate-600 bg-slate-100 dark:bg-slate-800 dark:text-slate-300">إلغاء</button><button type="button" @click="saveSetupWizard()" class="px-5 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white">حفظ الإعداد</button></div>
+            </div>
+        </div>
+        <div x-show="showQuickTemplateModal" x-cloak class="fixed inset-0 z-[80] bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4">
+            <div @click.outside="showQuickTemplateModal = false" class="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-5 space-y-4"><div class="flex items-center justify-between"><h3 class="font-bold text-slate-800 dark:text-white" x-text="editingQuickTemplate ? 'تعديل قالب كشف' : 'إضافة قالب كشف سريع'"></h3><button type="button" @click="showQuickTemplateModal = false" class="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800"><i data-lucide="x" class="w-5 h-5"></i></button></div><label class="block text-xs font-bold">اسم القالب<input type="text" x-model="quickTemplateForm.name" placeholder="مثال: متابعة ضغط الدم" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></label><label class="block text-xs font-bold">التشخيص الافتراضي<textarea x-model="quickTemplateForm.diagnosis" rows="2" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></textarea></label><label class="block text-xs font-bold">ملاحظات وتوصيات<textarea x-model="quickTemplateForm.notes" rows="2" class="mt-1 w-full px-3 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 dark:border-slate-700"></textarea></label><p class="text-[11px] text-slate-500">يمكن إضافة الأدوية بعد إنشاء القالب من خلال تعديل بياناته أو تطوير محرر الأدوية في المرحلة التالية.</p><div class="flex justify-end gap-2"><button type="button" @click="showQuickTemplateModal = false" class="px-4 py-2 rounded-xl text-sm text-slate-600 bg-slate-100 dark:bg-slate-800 dark:text-slate-300">إلغاء</button><button type="button" @click="saveQuickTemplate()" class="px-5 py-2 rounded-xl text-sm font-bold bg-blue-600 text-white">حفظ القالب</button></div></div>
+        </div>
+        <div x-show="showIdleLockModal" x-cloak class="fixed inset-0 z-[90] bg-slate-950/90 flex items-center justify-center p-4"><div class="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-6 text-center space-y-4"><i data-lucide="lock-keyhole" class="w-10 h-10 mx-auto text-blue-600"></i><div><h3 class="font-bold text-slate-800 dark:text-white">تم قفل الشاشة تلقائياً</h3><p class="text-xs text-slate-500 mt-1">أدخل كلمة مرور المستخدم الحالي للمتابعة.</p></div><input type="password" x-model="idleUnlockPassword" @keydown.enter.prevent="unlockIdleSession()" autocomplete="current-password" class="w-full px-4 py-3 border rounded-xl text-center bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><button type="button" @click="unlockIdleSession()" class="w-full px-4 py-3 rounded-xl font-bold bg-blue-600 text-white">فتح النظام</button></div></div>
 </body>
     <script>
         if ('serviceWorker' in navigator) {
