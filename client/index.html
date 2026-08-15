@@ -1758,13 +1758,57 @@
                     if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(item => item.appointmentId !== id);
                     this.recordAudit('تغيير حالة موعد', appointment.patientName + ': ' + this.appointmentStatusLabel(status));
                 },
-                setWaitingStatus(item, status) {
+                getRefundableWaitingInvoices(item) {
+                    const queueId = String(item?.id || '');
+                    const patientId = item?.patientId;
+                    const patientName = String(item?.patientName || '').trim();
+                    const queueDate = String(item?.createdAt || new Date().toISOString()).slice(0, 10);
+                    return (this.invoices || []).filter(invoice => {
+                        const status = String(invoice?.status || 'مدفوعة').trim();
+                        const isCollected = !['غير مدفوعة', 'غير مدفوع', 'ملغي'].includes(status);
+                        if (!isCollected) return false;
+                        const explicitlyLinked = (queueId && String(invoice.waitingQueueId || '') === queueId) || (item?.invoiceId && String(invoice.id) === String(item.invoiceId));
+                        if (explicitlyLinked) return true;
+                        const isLegacyVisitCharge = String(invoice.source || '') === 'waiting_checkin' || String(invoice.serviceName || '').startsWith('رسوم ');
+                        const samePatient = (patientId != null && String(invoice.patientId || '') === String(patientId)) || (!!patientName && String(invoice.patientName || '').trim() === patientName);
+                        return isLegacyVisitCharge && samePatient && String(invoice.date || '').slice(0, 10) === queueDate;
+                    });
+                },
+                removeWaitingWithPaymentRefund(item, actionLabel = 'إزالة') {
+                    if (!item) return false;
+                    const refundableInvoices = this.getRefundableWaitingInvoices(item);
+                    const refundedAmount = refundableInvoices.reduce((sum, invoice) => sum + this.invoiceNetTotal(invoice), 0);
+                    const patientName = item.patientName || 'هذا المريض';
+                    const hasRefund = refundableInvoices.length > 0;
+                    const message = hasRefund
+                        ? `سيتم ${actionLabel} ${patientName} من قائمة الانتظار واسترداد مبلغ ${refundedAmount.toLocaleString('ar-EG')} ج.م عبر حذف التحصيل المرتبط فقط. لن يتم حذف ملف المريض أو زياراته. هل تريد المتابعة؟`
+                        : `لا يوجد تحصيل مدفوع مرتبط بهذه البطاقة. سيتم ${actionLabel} ${patientName} من قائمة الانتظار فقط، ولن يتم حذف ملف المريض أو زياراته. هل تريد المتابعة؟`;
+                    if (!confirm(message)) return false;
+                    const refundedInvoiceIds = new Set(refundableInvoices.map(invoice => String(invoice.id)));
+                    if (refundedInvoiceIds.size) this.invoices = (this.invoices || []).filter(invoice => !refundedInvoiceIds.has(String(invoice.id)));
+                    this.waitingQueue = (this.waitingQueue || []).filter(entry => String(entry.id) !== String(item.id));
+                    const appointment = (this.appointments || []).find(entry => entry.id === item.appointmentId);
+                    if (appointment) appointment.status = 'cancelled';
+                    this.recordAudit(`${actionLabel} من قائمة الانتظار`, `${patientName} — ${hasRefund ? `استرداد ${refundedAmount.toLocaleString('ar-EG')} ج.م وحذف ${refundedInvoiceIds.size} تحصيل` : 'لا يوجد تحصيل مرتبط'}`);
+                    this.persistState();
+                    this.queueCloudSync();
+                    alert(hasRefund ? `تم ${actionLabel} المريض واسترداد ${refundedAmount.toLocaleString('ar-EG')} ج.م من سجل التحصيل.` : `تم ${actionLabel} المريض من قائمة الانتظار دون وجود تحصيل مرتبط.`);
+                    return true;
+                },
+                setWaitingStatus(item, status, selectElement = null) {
                     if (!item) return;
+                    if (status === 'cancelled') {
+                        const removed = this.removeWaitingWithPaymentRefund(item, 'إلغاء');
+                        if (!removed && selectElement) selectElement.value = item.status || 'waiting';
+                        return;
+                    }
                     item.status = status;
                     const appointment = (this.appointments || []).find(appt => appt.id === item.appointmentId);
                     if (appointment) appointment.status = status;
-                    if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(entry => entry.id !== item.id);
+                    if (status === 'completed') this.waitingQueue = (this.waitingQueue || []).filter(entry => entry.id !== item.id);
                     this.recordAudit('تغيير حالة قائمة الانتظار', item.patientName + ': ' + this.appointmentStatusLabel(status));
+                    this.persistState();
+                    this.queueCloudSync();
                 },
                 deleteAppointment(id) {
                     const appointment = (this.appointments || []).find(item => item.id === id);
@@ -2429,18 +2473,25 @@
                         Object.assign(p, this.patientForm);
                         if (!p.records) p.records = [];
 
+                        const waitingQueueId = 'WQ-' + Date.now();
+                        const invoiceId = 'INV-' + Math.floor(1000 + Math.random() * 9000);
                         this.waitingQueue.unshift({
-                            id: Date.now(),
+                            id: waitingQueueId,
                             status: 'waiting',
                             patientId: p.id,
                             patientName: p.fullName,
+                            visitType: p.visitType,
+                            invoiceId,
                             symptom: (p.selectedSymptoms && p.selectedSymptoms[0]) ? p.selectedSymptoms[0] : ('زيارة ' + p.visitType),
                             clinic: 'عيادة الطبيب',
                             createdAt: new Date().toISOString()
                         });
 
                         this.invoices.unshift({
-                            id: 'INV-' + Math.floor(1000 + Math.random() * 9000),
+                            id: invoiceId,
+                            patientId: p.id,
+                            waitingQueueId,
+                            source: 'waiting_checkin',
                             patientName: p.fullName,
                             serviceName: `رسوم ${p.visitType} طبي`,
                             amount: visitPrice,
@@ -2460,18 +2511,25 @@
                             records: []
                         };
                         this.patients.unshift(newP);
+                        const waitingQueueId = 'WQ-' + Date.now();
+                        const invoiceId = 'INV-' + Math.floor(1000 + Math.random() * 9000);
                         this.waitingQueue.unshift({
-                            id: Date.now(),
+                            id: waitingQueueId,
                             status: 'waiting',
                             patientId: newP.id,
                             patientName: newP.fullName,
+                            visitType: newP.visitType,
+                            invoiceId,
                             symptom: (newP.selectedSymptoms && newP.selectedSymptoms[0]) ? newP.selectedSymptoms[0] : ('زيارة ' + newP.visitType),
                             clinic: 'عيادة الطبيب',
                             createdAt: new Date().toISOString()
                         });
 
                         this.invoices.unshift({
-                            id: 'INV-' + Math.floor(1000 + Math.random() * 9000),
+                            id: invoiceId,
+                            patientId: newP.id,
+                            waitingQueueId,
+                            source: 'waiting_checkin',
                             patientName: newP.fullName,
                             serviceName: `رسوم ${newP.visitType} طبي`,
                             amount: visitPrice,
@@ -2956,16 +3014,13 @@
                 },
 
                 removeFromQueueForPatient(patientId) {
-                    // The waiting queue is operational only: it must never remove a linked invoice.
+                    // Completion from the medical record is not a cancellation and must keep the collected invoice intact.
                     this.waitingQueue = this.waitingQueue.filter(item => item.patientId !== patientId);
                 },
 
                 removeFromQueue(id) {
                     const item = (this.waitingQueue || []).find(entry => String(entry.id) === String(id));
-                    this.waitingQueue = (this.waitingQueue || []).filter(entry => String(entry.id) !== String(id));
-                    if (item) this.recordAudit('إزالة من قائمة الانتظار', `${item.patientName || 'مريض غير مسجل'} — لم يتم تعديل التحصيل`);
-                    this.persistState();
-                    this.queueCloudSync();
+                    this.removeWaitingWithPaymentRefund(item, 'إزالة');
                 }
             }));
         });
@@ -2979,23 +3034,29 @@
         [x-cloak] { display: none !important; }
 
         /* Soli Medical visual system: clinical navy identity, restrained teal status accents, and high-contrast clinic workflows. */
-        /* Soli Medical login: clinical navy surfaces, blue action hierarchy, teal reserved for trusted status. */
-        .soli-login-shell { background: #edf3f5; }
+        /* Soli Medical login: ownable clinical navy lockup, blue action hierarchy, and teal limited to trust states. */
+        .soli-login-shell { position: relative; overflow: hidden; background: #edf3f5; }
         .dark .soli-login-shell { background: #091827; }
-        .soli-login-card { background: rgba(255,255,255,.985); border: 1px solid #cddce5; box-shadow: 0 28px 68px rgba(15,45,74,.16); }
-        .dark .soli-login-card { background: #142c44; border-color: #385a77; box-shadow: 0 28px 68px rgba(0,0,0,.35); }
-        .soli-login-mark { position: relative; width: 82px; height: 82px; margin: 0 auto 1.35rem; border-radius: 26px; background: #0f2d4a; border: 1px solid rgba(148, 206, 232, .17); box-shadow: 0 14px 30px rgba(6,28,50,.34); overflow: hidden; }
-        .soli-login-cross { position: absolute; width: 32px; height: 32px; top: 11px; right: 25px; color: #fff; stroke-width: 3.15; }
-        .soli-login-pulse { position: absolute; width: 63px; height: 28px; top: 42px; right: 9px; color: #2dd4bf; stroke-width: 2.8; }
-        .soli-login-wordmark { letter-spacing: -.045em; color: #0f2d4a; }
+        .soli-login-shell::before { content: ''; position: absolute; inset: 0; pointer-events: none; opacity: .8; background-image: radial-gradient(circle at 50% 43%, rgba(45,212,191,.08), transparent 23rem), linear-gradient(90deg, rgba(91,139,173,.055) 1px, transparent 1px), linear-gradient(rgba(91,139,173,.045) 1px, transparent 1px); background-size: auto, 3rem 3rem, 3rem 3rem; mask-image: radial-gradient(ellipse 68% 60% at 50% 50%, #000 15%, transparent 78%); }
+        .soli-login-card { position: relative; z-index: 1; background: rgba(255,255,255,.985); border: 1px solid #cddce5; box-shadow: 0 28px 68px rgba(15,45,74,.16); }
+        .dark .soli-login-card { background: #142c44; border-color: #456b8c; box-shadow: 0 28px 68px rgba(0,0,0,.35); }
+        .soli-login-mark { position: relative; width: 98px; height: 98px; margin: 0 auto 1.15rem; border-radius: 31px; background: #0f2d4a; border: 1px solid rgba(148, 206, 232, .28); box-shadow: 0 0 0 8px rgba(45,212,191,.055), 0 18px 34px rgba(6,28,50,.42); overflow: hidden; }
+        .soli-login-mark::after { content: ''; position: absolute; inset: 8px; border: 1px solid rgba(125,211,252,.13); border-radius: 23px; pointer-events: none; }
+        .soli-login-cross { position: absolute; width: 38px; height: 38px; top: 13px; right: 30px; color: #fff; stroke-width: 3.2; }
+        .soli-login-pulse { position: absolute; width: 75px; height: 33px; top: 50px; right: 11px; color: #2dd4bf; stroke-width: 2.9; }
+        .soli-login-kicker { color: #0f766e; letter-spacing: .13em; }
+        .dark .soli-login-kicker { color: #78e4d2; }
+        .soli-login-wordmark { letter-spacing: -.065em; color: #0f2d4a; text-shadow: 0 1px 0 rgba(255,255,255,.35); }
         .dark .soli-login-wordmark { color: #f8fafc; }
         .soli-login-subtitle { color: #4a6476; }
-        .dark .soli-login-subtitle { color: #bfd0dd; }
-        .soli-login-input { border: 1px solid #c8d8e2; background: #f7fafc; transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease; }
+        .dark .soli-login-subtitle { color: #d0dce7; }
+        .soli-login-trust { display: flex; align-items: flex-start; gap: .7rem; background: #e6f6f2; border: 1px solid #bde8dd; color: #115e59; }
+        .dark .soli-login-trust { background: rgba(13,148,136,.16); border-color: rgba(45,212,191,.38); color: #b8f5ea; }
+        .soli-login-input { border: 1px solid #b9cdda; background: #f7fafc; box-shadow: inset 0 1px 0 rgba(255,255,255,.85); transition: border-color .18s ease, box-shadow .18s ease, background-color .18s ease; }
         .soli-login-input:focus { border-color: #2563a8; background: #fff; box-shadow: 0 0 0 3px rgba(37,99,168,.16); }
-        .dark .soli-login-input { border-color: #3b5d79; background: #0c1e31; }
-        .dark .soli-login-input:focus { border-color: #63a6dc; background: #10263b; box-shadow: 0 0 0 3px rgba(99,166,220,.17); }
-        .soli-login-cta { background: #175d9e; box-shadow: 0 11px 20px rgba(8,51,90,.32); transition: transform .16s cubic-bezier(.23,1,.32,1), background-color .16s ease, box-shadow .16s ease; }
+        .dark .soli-login-input { border-color: #4e7494; background: #0a1c2e; }
+        .dark .soli-login-input:focus { border-color: #75b8e8; background: #0d2338; box-shadow: 0 0 0 3px rgba(99,166,220,.2); }
+        .soli-login-cta { background: #175d9e; box-shadow: 0 11px 20px rgba(8,51,90,.32), inset 0 1px 0 rgba(255,255,255,.16); transition: transform .16s cubic-bezier(.23,1,.32,1), background-color .16s ease, box-shadow .16s ease; }
         .soli-login-cta:hover { background: #0f4f8b; box-shadow: 0 14px 26px rgba(8,51,90,.38); }
         .soli-login-cta:active { transform: scale(.985); }
         .soli-login-cta:disabled { opacity: .62; cursor: not-allowed; }
@@ -3348,13 +3409,19 @@
         <template x-if="!isAuthenticated">
             <div class="soli-login-shell min-h-screen flex items-center justify-center p-4 sm:p-6">
                 <div class="soli-login-card w-full max-w-md rounded-[1.75rem] overflow-hidden p-7 sm:p-8">
-                    <div class="text-center mb-8">
+                    <div class="text-center mb-6">
                         <div class="soli-login-mark" aria-hidden="true">
                             <i data-lucide="plus" class="soli-login-cross"></i>
                             <i data-lucide="activity" class="soli-login-pulse"></i>
                         </div>
-                        <h1 class="soli-login-wordmark text-[2rem] font-extrabold tracking-tight">Soli Medical</h1>
-                        <p class="soli-login-subtitle text-sm font-medium mt-2">إدارة العيادة بوضوح، حتى عند انقطاع الاتصال.</p>
+                        <p class="soli-login-kicker text-[10px] font-extrabold uppercase mb-2">Clinic Operations</p>
+                        <h1 class="soli-login-wordmark text-[2.15rem] font-extrabold tracking-tight">Soli Medical</h1>
+                        <p class="soli-login-subtitle text-sm font-semibold mt-2">إدارة العيادة بوضوح، حتى عند انقطاع الاتصال.</p>
+                    </div>
+
+                    <div class="soli-login-trust rounded-xl px-3.5 py-3 text-right mb-5" role="note">
+                        <i data-lucide="shield-check" class="w-5 h-5 shrink-0 mt-0.5"></i>
+                        <span class="min-w-0"><strong class="block text-xs font-extrabold">حسابك محلي وآمن داخل العيادة</strong><small class="block text-[11px] leading-5 mt-0.5">يستمر العمل دون اتصال، ثم يزامن التحديثات عند عودة الشبكة.</small></span>
                     </div>
 
                     <template x-if="loginError">
@@ -3376,7 +3443,7 @@
                         </div>
                         <button type="submit" :disabled="isLoading" class="soli-login-cta w-full py-3 text-white font-semibold rounded-xl transition-all">تسجيل الدخول</button>
                     </form>
-                    <div class="soli-login-status mt-5 rounded-xl px-3 py-2.5 text-[11px] leading-5 text-center font-semibold">حسابات محلية بصلاحيات العيادة · يعمل دون اتصال · يزامن التحديثات عند توفر الشبكة</div>
+                    <div class="soli-login-status mt-5 rounded-xl px-3 py-2.5 text-[11px] leading-5 text-center font-semibold">صلاحيات محلية خاصة بالعيادة · حالة المزامنة تظهر تلقائياً بعد الدخول</div>
                 </div>
             </div>
         </template>
@@ -3643,7 +3710,7 @@
                                                 <i data-lucide="stethoscope" class="w-4 h-4"></i>
                                                 <span>فتح الكشف وكتابة الروشتة</span>
                                             </button>
-                                            <select @change="setWaitingStatus(item, $event.target.value)" class="bg-slate-100 dark:bg-slate-800 px-3 py-2.5 rounded-xl text-xs font-bold"><option value="waiting" :selected="(item.status || 'waiting') === 'waiting'">في الانتظار</option><option value="in_consultation" :selected="item.status === 'in_consultation'">داخل الكشف</option><option value="completed">اكتمل</option><option value="cancelled">ملغي</option></select>
+                                            <select @change="setWaitingStatus(item, $event.target.value, $event.target)" class="bg-slate-100 dark:bg-slate-800 px-3 py-2.5 rounded-xl text-xs font-bold"><option value="waiting" :selected="(item.status || 'waiting') === 'waiting'">في الانتظار</option><option value="in_consultation" :selected="item.status === 'in_consultation'">داخل الكشف</option><option value="completed">اكتمل</option><option value="cancelled">ملغي</option></select>
                                             <button @click="removeFromQueue(item.id)" class="bg-slate-100 hover:bg-red-50 dark:bg-slate-800 dark:hover:bg-red-950/30 text-slate-600 hover:text-red-600 dark:text-slate-300 px-4 py-2.5 rounded-xl text-xs font-bold flex items-center justify-center gap-2">
                                                 <i data-lucide="x" class="w-4 h-4"></i>
                                                 <span>إزالة</span>
@@ -5023,6 +5090,12 @@
                             </details>
 
                             <!-- Master Chronic Diseases Management -->
+                            <details class="settings-accordion settings-accordion-emerald">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="heart-pulse" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>إدارة قائمة الأمراض المزمنة</strong><small>الحالات المزمنة المستخدمة في ملف المريض.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إدارة قائمة الأمراض المزمنة</h3>
                                 <div class="flex gap-2">
@@ -5040,8 +5113,15 @@
                                     </template>
                                 </div>
                             </div>
+                            </details>
 
-                                <!-- Master Diagnoses Management -->
+                            <!-- Master Diagnoses Management -->
+                            <details class="settings-accordion settings-accordion-blue">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="stethoscope" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>إدارة قائمة التشخيصات الطبية الشائعة</strong><small>التشخيصات والملاحظات والأدوية المتكررة.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إدارة قائمة التشخيصات الطبية الشائعة</h3>
                                 <div class="flex gap-2">
@@ -5079,8 +5159,15 @@
                                                                     </div>
                                                                 </div>
 </div>
+                            </details>
 
                             <!-- Master Lab Tests Management -->
+                            <details class="settings-accordion settings-accordion-cyan">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="test-tube-2" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>إدارة قائمة أنواع التحاليل</strong><small>الفحوصات ونتائج المعامل المستخدمة في الروشتة.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إدارة قائمة أنواع التحاليل (نتيجة المعامل)</h3>
                                 <div class="flex gap-2">
@@ -5098,8 +5185,15 @@
                                     </template>
                                 </div>
                             </div>
+                            </details>
 
                             <!-- Master Radiology Management -->
+                            <details class="settings-accordion settings-accordion-violet">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="scan-line" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>إدارة قائمة أنواع الأشعة</strong><small>أنواع الأشعة والنتائج المستخدمة في الروشتة.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إدارة قائمة أنواع الأشعة</h3>
                                 <div class="flex gap-2">
@@ -5117,8 +5211,15 @@
                                     </template>
                                 </div>
                             </div>
+                            </details>
 
                             <!-- Master Vital Signs Management -->
+                            <details class="settings-accordion settings-accordion-red">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="activity" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>إدارة قائمة العلامات الحيوية</strong><small>العلامات القياسية القابلة للإدراج أثناء الكشف.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إدارة قائمة العلامات الحيوية</h3>
                                 <div class="flex gap-2">
@@ -5136,8 +5237,15 @@
                                     </template>
                                 </div>
                             </div>
+                            </details>
 
                             <!-- Show/Hide Optional Sections in the Visit/Prescription Form -->
+                            <details class="settings-accordion settings-accordion-orange">
+                                <summary class="settings-accordion-summary">
+                                    <span class="settings-accordion-icon"><i data-lucide="sliders-horizontal" class="w-5 h-5"></i></span>
+                                    <span class="min-w-0 flex-1"><strong>إظهار / إخفاء الأقسام أثناء كتابة الروشتة</strong><small>التحكم في الحقول الاختيارية داخل نموذج الكشف.</small></span>
+                                    <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
+                                </summary>
                             <div class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-4">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b dark:border-slate-800 pb-3">إظهار / إخفاء الأقسام أثناء كتابة الروشتة</h3>
                                 <p class="text-xs text-slate-400 dark:text-slate-500">عطّل أي قسم غير مستخدم في عيادتك ليختفي من نموذج تسجيل الزيارة، مع بقاء التشخيص والأدوية ظاهرين دائماً.</p>
@@ -5156,6 +5264,7 @@
                                     </label>
                                 </div>
                             </div>
+                            </details>
 
                             <details class="settings-accordion settings-accordion-cyan">
                                 <summary class="settings-accordion-summary">
