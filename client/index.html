@@ -408,6 +408,14 @@
                     email: '',
                     password: ''
                 },
+                showLoginPassword: false,
+                showPasswordByUser: {},
+                showNewUserPassword: false,
+                showRecoveryPassword: false,
+                recoveryForm: { email: '', answer: '', newPassword: '' },
+                recoveryState: { open: false, question: '', userId: null, error: '', success: '' },
+                securityForm: { question: '', answer: '', newPassword: '' },
+                securitySaveFeedback: '',
 
                 // Multi-user Accounts with Admin-defined Permissions
                 currentUser: null,
@@ -456,6 +464,14 @@
                 firebaseMigrationMessage: '',
                 userPermissionDrafts: {},
                 userSaveFeedback: {},
+                securityQuestionOptions: [
+                    'ما اسم أول فرع للعيادة؟',
+                    'ما اسم الطبيب أو العيادة؟',
+                    'ما اسم المدينة التي تقع فيها العيادة؟',
+                    'ما العبارة الخاصة التي اخترتها لاستعادة الحساب؟'
+                ],
+                securityForm: { question: '', answer: '', newPassword: '' },
+                securitySaveFeedback: '',
 
                 // Patient Form
                 patientForm: {
@@ -675,6 +691,7 @@
 
                 init() {
                     this.loadPersistedState();
+                    this.loadAdminSecuritySettings();
 
                     try {
                         this.darkMode = localStorage.getItem('soliMedicalTheme_v1') !== 'light';
@@ -1631,6 +1648,100 @@
                         console.warn('تعذر تشغيل المزامنة الصامتة:', err);
                         this.cloudStatus = 'offline';
                     });
+                },
+
+                async hashSecurityValue(value) {
+                    const normalized = String(value || '').trim().toLocaleLowerCase('ar');
+                    try {
+                        if (window.crypto?.subtle) {
+                            const bytes = new TextEncoder().encode(normalized);
+                            const digest = await window.crypto.subtle.digest('SHA-256', bytes);
+                            return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
+                        }
+                    } catch (error) {
+                        console.warn('تعذر تجزئة إجابة الأمان:', error);
+                    }
+                    return btoa(unescape(encodeURIComponent(normalized)));
+                },
+
+                loadAdminSecuritySettings() {
+                    const admin = this.users.find(user => user.id === 1);
+                    this.securityForm.question = admin?.securityQuestion || '';
+                    this.securityForm.answer = '';
+                    this.securityForm.newPassword = '';
+                    this.securitySaveFeedback = '';
+                },
+
+                async saveAdminSecuritySettings() {
+                    if (this.currentUser?.role !== 'admin') {
+                        alert('هذه الميزة متاحة للمدير فقط.');
+                        return;
+                    }
+                    const question = String(this.securityForm.question || '').trim();
+                    const answer = String(this.securityForm.answer || '').trim();
+                    const newPassword = String(this.securityForm.newPassword || '').trim();
+                    if (!question || answer.length < 3) {
+                        alert('اختر سؤال أمان واكتب إجابته (3 أحرف على الأقل).');
+                        return;
+                    }
+                    if (newPassword && newPassword.length < 4) {
+                        alert('كلمة المرور الجديدة يجب أن تتكون من 4 أحرف أو أرقام على الأقل.');
+                        return;
+                    }
+                    const admin = this.users.find(user => user.id === 1);
+                    if (!admin) return;
+                    admin.securityQuestion = question;
+                    admin.securityAnswerHash = await this.hashSecurityValue(answer);
+                    if (newPassword) admin.password = newPassword;
+                    if (this.currentUser.id === admin.id) this.currentUser = admin;
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.securityForm.answer = '';
+                    this.securityForm.newPassword = '';
+                    this.securitySaveFeedback = 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً.';
+                    setTimeout(() => { this.securitySaveFeedback = ''; }, 3500);
+                },
+
+                beginPasswordRecovery() {
+                    const enteredEmail = String(this.loginForm.email || '').trim().toLowerCase();
+                    const admin = this.users.find(user => user.id === 1 && user.email.trim().toLowerCase() === enteredEmail);
+                    this.recoveryForm = { email: enteredEmail, answer: '', newPassword: '' };
+                    this.recoveryState = { open: true, question: admin?.securityQuestion || '', userId: admin?.id || null, error: '', success: '' };
+                    if (!admin) this.recoveryState.error = 'اكتب اسم مستخدم المدير أولاً، ثم اضغط نسيت كلمة المرور.';
+                    else if (!admin.securityAnswerHash) this.recoveryState.error = 'لم تُضبط أسئلة الأمان لهذا المدير بعد. يجب إعدادها من داخل النظام أولاً.';
+                },
+
+                closePasswordRecovery() {
+                    this.recoveryState = { open: false, question: '', userId: null, error: '', success: '' };
+                    this.recoveryForm = { email: '', answer: '', newPassword: '' };
+                },
+
+                async recoverAdminPassword() {
+                    const admin = this.users.find(user => user.id === 1 && user.email.trim().toLowerCase() === String(this.recoveryForm.email || '').trim().toLowerCase());
+                    const answer = String(this.recoveryForm.answer || '').trim();
+                    const newPassword = String(this.recoveryForm.newPassword || '').trim();
+                    if (!admin || !admin.securityQuestion || !admin.securityAnswerHash) {
+                        this.recoveryState.error = 'لا توجد بيانات استعادة مكتملة لهذا الحساب.';
+                        return;
+                    }
+                    if (answer.length < 3 || newPassword.length < 4) {
+                        this.recoveryState.error = 'اكتب إجابة الأمان وكلمة مرور جديدة صحيحة.';
+                        return;
+                    }
+                    const answerHash = await this.hashSecurityValue(answer);
+                    if (answerHash !== admin.securityAnswerHash) {
+                        this.recoveryState.error = 'إجابة الأمان غير صحيحة.';
+                        return;
+                    }
+                    admin.password = newPassword;
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.loginForm.email = admin.email;
+                    this.loginForm.password = '';
+                    this.loginError = '';
+                    this.recoveryState.success = 'تم تغيير كلمة مرور المدير. أغلق النافذة وسجّل الدخول بالكلمة الجديدة.';
+                    this.recoveryForm.answer = '';
+                    this.recoveryForm.newPassword = '';
                 },
 
                 handleLogin() {
@@ -3817,11 +3928,28 @@
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">كلمة المرور</label>
                             <div class="relative">
-                                <input type="text" x-model="loginForm.password" required autocomplete="off" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل كلمة المرور">
+                                <input :type="showLoginPassword ? 'text' : 'password'" x-model="loginForm.password" required autocomplete="current-password" class="soli-login-input w-full px-12 px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل كلمة المرور">
+                                <button type="button" @click="showLoginPassword = !showLoginPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-blue-600" :aria-label="showLoginPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'" :title="showLoginPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showLoginPassword ? 'eye-off' : 'eye'" class="w-5 h-5"></i></button>
                             </div>
                         </div>
                         <button type="submit" :disabled="isLoading" class="soli-login-cta w-full py-3 text-white font-semibold rounded-xl transition-all">تسجيل الدخول</button>
                     </form>
+                    <button type="button" @click="beginPasswordRecovery()" class="mt-4 text-xs font-bold text-blue-600 hover:text-blue-800 dark:text-blue-300">نسيت كلمة مرور المدير؟ استعادة محلية</button>
+                    <template x-if="recoveryState.open">
+                        <div class="mt-4 rounded-2xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/80 dark:bg-blue-950/30 p-4 text-right space-y-3">
+                            <div class="flex items-center justify-between gap-3"><strong class="text-sm text-blue-900 dark:text-blue-200">استعادة كلمة مرور المدير</strong><button type="button" @click="closePasswordRecovery()" class="text-slate-500 hover:text-red-600" aria-label="إغلاق"><i data-lucide="x" class="w-4 h-4"></i></button></div>
+                            <p class="text-[11px] leading-5 text-blue-800 dark:text-blue-300">تعمل هذه الاستعادة محلياً على هذا الجهاز، ولا ترسل رابطاً عبر الإنترنت.</p>
+                            <p x-show="recoveryState.error" x-text="recoveryState.error" class="text-xs text-red-700 dark:text-red-300"></p>
+                            <template x-if="recoveryState.question">
+                                <div class="space-y-2">
+                                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-300" x-text="recoveryState.question"></label>
+                                    <input type="text" x-model="recoveryForm.answer" autocomplete="off" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm" placeholder="إجابة الأمان">
+                                    <div class="relative"><input :type="showRecoveryPassword ? 'text' : 'password'" x-model="recoveryForm.newPassword" autocomplete="new-password" class="w-full px-3 py-2 pl-11 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm" placeholder="كلمة المرور الجديدة"><button type="button" @click="showRecoveryPassword = !showRecoveryPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showRecoveryPassword ? 'إخفاء كلمة المرور الجديدة' : 'إظهار كلمة المرور الجديدة'"><i :data-lucide="showRecoveryPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
+                                    <button type="button" @click="recoverAdminPassword()" class="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">تغيير كلمة المرور</button>
+                                </div>
+                            </template>
+                        </div>
+                    </template>
                     <div class="soli-login-status mt-5 rounded-xl px-3 py-2.5 text-[11px] leading-5 text-center font-semibold">صلاحيات محلية خاصة بالعيادة · حالة المزامنة تظهر تلقائياً بعد الدخول</div>
                 </div>
             </div>
@@ -5298,7 +5426,7 @@
                                     <i data-lucide="chevron-down" class="settings-accordion-chevron w-5 h-5"></i>
                                 </summary>
                                 <!-- User Accounts & Permissions Management (Admin Only) -->
-                            <div x-show="currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-5">
+                            <div x-show="currentUser?.role === 'admin'" x-init="loadAdminSecuritySettings()" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-5">
                                 <div class="flex items-center justify-between border-b dark:border-slate-800 pb-3">
                                     <h3 class="text-lg font-bold text-slate-800 dark:text-white">حسابات الدخول والصلاحيات</h3>
                                     <span class="text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5"
@@ -5312,9 +5440,16 @@
                                     </span>
                                 </div>
 	                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
-	                        <div class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
-	                            <strong>في حال نسيان كلمة المرور:</strong> يسجّل أي مدير دخولاً إلى هذه البطاقة، ثم يرى كلمة المرور الحالية مكتوبة بوضوح أو يغيّرها مباشرةً ويضغط «حفظ التعديلات». إذا لم تعد تتذكر كلمة مرور أي حساب مدير، لا توجد استعادة آلية آمنة في نظام محلي بلا إنترنت؛ احتفظ ببيانات المدير في مكان ورقي آمن أو بنسخة احتياطية موثوقة خارج الجهاز.
-	                        </div>
+                        <div class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+                            <strong>حماية كلمات المرور:</strong> كلمات المرور مخفية افتراضياً. استخدم زر العين لإظهارها مؤقتاً عند الحاجة. لا تعتمد على هذه الحماية إذا كان شخص آخر يملك وصولاً تقنياً كاملاً إلى الجهاز.
+                        </div>
+                        <div class="rounded-2xl border border-violet-200 dark:border-violet-900/60 bg-violet-50/70 dark:bg-violet-950/20 p-4 space-y-3">
+                            <div class="flex items-center justify-between gap-3"><div><h4 class="font-extrabold text-sm text-violet-900 dark:text-violet-200">استعادة كلمة مرور المدير دون إنترنت</h4><p class="text-[11px] mt-1 text-violet-800/80 dark:text-violet-300">احفظ سؤالاً وإجابة لا يعرفهما غير المدير. تُحفظ الإجابة كتجزئة محلية.</p></div><i data-lucide="key-round" class="w-5 h-5 text-violet-600"></i></div>
+                            <select x-model="securityForm.question" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm"><option value="">اختر سؤال الأمان</option><option value="ما اسم أول مدرسة درست فيها؟">ما اسم أول مدرسة درست فيها؟</option><option value="ما اسم أول عيادة عملت بها؟">ما اسم أول عيادة عملت بها؟</option><option value="ما اسم مدينتك الأولى؟">ما اسم مدينتك الأولى؟</option><option value="ما إجابتك الخاصة؟">ما إجابتك الخاصة؟</option></select>
+                            <input type="text" x-model="securityForm.answer" autocomplete="off" placeholder="إجابة سؤال الأمان" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm">
+                            <div class="relative"><input :type="showRecoveryPassword ? 'text' : 'password'" x-model="securityForm.newPassword" autocomplete="new-password" placeholder="كلمة مرور جديدة اختيارية" class="w-full px-3 py-2 pl-11 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm"><button type="button" @click="showRecoveryPassword = !showRecoveryPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showRecoveryPassword ? 'إخفاء كلمة المرور الجديدة' : 'إظهار كلمة المرور الجديدة'"><i :data-lucide="showRecoveryPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
+                            <div class="flex items-center gap-3 flex-wrap"><button type="button" @click="saveAdminSecuritySettings()" class="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-xl text-xs font-bold">حفظ إعدادات الاستعادة</button><span x-show="securitySaveFeedback" x-text="securitySaveFeedback" class="text-emerald-700 dark:text-emerald-300 text-xs font-semibold"></span></div>
+                        </div>
                         <div class="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20 px-4 py-3">
                             <p class="text-xs font-bold text-amber-800 dark:text-amber-300"><i data-lucide="triangle-alert" class="w-4 h-4 inline-block align-middle ml-1"></i><span x-show="syncConflicts.length > 0">تم تسجيل <span x-text="syncConflicts.length"></span> تعارضات مزامنة للمراجعة.</span><span x-show="syncConflicts.length === 0">لا توجد تعارضات مزامنة مسجلة حالياً.</span></p>
                             <button type="button" @click="showSyncConflictsModal = true" class="text-xs font-bold text-amber-800 dark:text-amber-300 underline underline-offset-4">فتح السجل</button>
@@ -5354,7 +5489,7 @@
                                                 </div>
                                                 <div>
                                                     <label class="block text-[11px] font-semibold text-slate-500 mb-1">كلمة المرور</label>
-                                                    <input type="text" x-model="u.password" autocomplete="off" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
+                                                    <div class="relative"><input :type="showPasswordByUser[u.id] ? 'text' : 'password'" x-model="u.password" autocomplete="new-password" class="w-full pl-9 pr-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showPasswordByUser[u.id] = !showPasswordByUser[u.id]" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showPasswordByUser[u.id] ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showPasswordByUser[u.id] ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
                                                 </div>
                                             </div>
                                             <div class="flex flex-wrap gap-x-4 gap-y-2 pt-2 border-t dark:border-slate-700 text-xs">
@@ -5379,7 +5514,7 @@
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <input type="text" x-model="newUserForm.fullName" placeholder="اسم الموظف الكامل" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                         <input type="text" x-model="newUserForm.email" placeholder="اسم المستخدم / البريد (لتسجيل الدخول)" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <input type="text" x-model="newUserForm.password" autocomplete="off" placeholder="كلمة المرور" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <div class="relative"><input :type="showNewUserPassword ? 'text' : 'password'" x-model="newUserForm.password" autocomplete="new-password" placeholder="كلمة المرور" class="w-full px-3 py-2 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showNewUserPassword = !showNewUserPassword" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showNewUserPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showNewUserPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
                                     </div>
                                     <input type="text" x-model="newUserForm.role" placeholder="المسمى الوظيفي (مثال: موظف استقبال، ممرضة...)" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs">

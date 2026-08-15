@@ -81,8 +81,9 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يبقي طريقة كلمة المرور المحلية واضحة للمدير دون تحويل حقل الدخول إلى حقل بحث", () => {
-    expect(page).toContain('في حال نسيان كلمة المرور:');
-    expect(page).toContain('يرى كلمة المرور الحالية مكتوبة بوضوح أو يغيّرها مباشرةً');
+    expect(page).toContain('استعادة كلمة مرور المدير دون إنترنت');
+    expect(page).toContain('كلمات المرور مخفية افتراضياً');
+    expect(page).toContain('احفظ سؤالاً وإجابة لا يعرفهما غير المدير');
     expect(page).toContain('x-model="u.password"');
     expect(page).toContain('x-model="loginForm.password"');
   });
