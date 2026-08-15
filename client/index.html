@@ -38,6 +38,10 @@
     <!-- Google Fonts Cairo -->
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <link href="https://fonts.googleapis.com/css2?family=Amiri:wght@400;700&display=swap" rel="stylesheet">
+    <!-- Arabic date picker: prevents browser-native locale and direction differences on mobile and desktop. -->
+    <link href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr/dist/l10n/ar.js"></script>
     <!-- Lucide Icons -->
     <script src="https://unpkg.com/lucide@latest"></script>
     <!-- Lightweight QR Code generator used only inside the prescription preview/print layout. -->
@@ -92,6 +96,56 @@
                 console.warn('تعذر تفعيل التخزين المؤقت لـ Firestore:', err.code);
             });
         }
+
+        const initializeArabicDatePickers = (root = document) => {
+            if (!window.flatpickr || !window.flatpickr.l10ns?.ar) return;
+            const dateInputs = root.querySelectorAll ? root.querySelectorAll('input.soli-date-input[type="date"], input.soli-date-input[type="month"]') : [];
+            dateInputs.forEach(input => {
+                if (input._flatpickr) return;
+                const isMonthPicker = input.type === 'month';
+                try {
+                    window.flatpickr(input, {
+                        locale: window.flatpickr.l10ns.ar,
+                        disableMobile: true,
+                        allowInput: false,
+                        dateFormat: isMonthPicker ? 'Y-m' : 'Y-m-d',
+                        altInput: true,
+                        altFormat: isMonthPicker ? 'F Y' : 'j F Y',
+                        monthSelectorType: 'static',
+                        onReady: (_selectedDates, _dateString, instance) => {
+                            instance.calendarContainer.classList.add('soli-arabic-calendar');
+                            instance.altInput.setAttribute('aria-label', input.getAttribute('aria-label') || 'اختيار التاريخ');
+                            instance.altInput.setAttribute('dir', 'rtl');
+                            instance.altInput.setAttribute('lang', 'ar-EG');
+                        },
+                        onChange: (_selectedDates, dateString, instance) => {
+                            // يبقى x-model مرتبطاً بالحقل الأصلي بصيغة ISO، مع عرض عربي واضح في الحقل البديل.
+                            instance.input.value = dateString;
+                            instance.input.dispatchEvent(new Event('input', { bubbles: true }));
+                            instance.input.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    });
+                } catch (error) {
+                    console.warn('تعذر تهيئة منتقي التاريخ العربي:', error);
+                }
+            });
+        };
+
+        document.addEventListener('alpine:initialized', () => {
+            window.setTimeout(() => {
+                initializeArabicDatePickers();
+                let initializationQueued = false;
+                const datePickerObserver = new MutationObserver(() => {
+                    if (initializationQueued) return;
+                    initializationQueued = true;
+                    window.setTimeout(() => {
+                        initializationQueued = false;
+                        initializeArabicDatePickers();
+                    }, 0);
+                });
+                datePickerObserver.observe(document.body, { childList: true, subtree: true });
+            }, 0);
+        });
 
         document.addEventListener('alpine:init', () => {
             Alpine.data('publicRouter', () => ({
@@ -3228,6 +3282,44 @@
         body { font-family: 'Cairo', sans-serif; }
         [x-cloak] { display: none !important; }
 
+        /* حقول البحث ليست حقول اعتماد: منع مديري كلمات المرور من اقتراح أو تعبئة اسم المستخدم فيها. */
+        input.soli-search-input { direction: rtl; text-align: right; }
+
+        /* حقول التاريخ الأصلية ترث ترتيبها من المتصفح؛ نفرض العربية واتجاه RTL لعرض يوم/شهر/سنة بصورة سليمة. */
+        input.soli-date-input[type="date"],
+        input.soli-date-input[type="month"] {
+            direction: rtl !important;
+            text-align: right;
+            unicode-bidi: plaintext;
+        }
+        input.soli-date-input::-webkit-datetime-edit,
+        input.soli-date-input::-webkit-datetime-edit-fields-wrapper {
+            direction: rtl;
+            text-align: right;
+        }
+        input.soli-date-input::-webkit-calendar-picker-indicator {
+            margin-left: 0;
+            margin-right: .35rem;
+        }
+        .flatpickr-calendar.soli-arabic-calendar {
+            direction: rtl;
+            font-family: 'Cairo', sans-serif;
+        }
+        .flatpickr-calendar.soli-arabic-calendar .flatpickr-months,
+        .flatpickr-calendar.soli-arabic-calendar .flatpickr-weekdays,
+        .flatpickr-calendar.soli-arabic-calendar .flatpickr-days {
+            direction: rtl;
+        }
+        .flatpickr-calendar.soli-arabic-calendar .flatpickr-current-month,
+        .flatpickr-calendar.soli-arabic-calendar .flatpickr-weekday,
+        .flatpickr-calendar.soli-arabic-calendar .flatpickr-day {
+            font-family: 'Cairo', sans-serif;
+        }
+        input.flatpickr-input[aria-hidden="true"] + input.form-control.input {
+            direction: rtl;
+            text-align: right;
+        }
+
         /* Soli Medical visual system: clinical navy identity, restrained teal status accents, and high-contrast clinic workflows. */
         /* Soli Medical login: ownable clinical navy lockup, blue action hierarchy, and teal limited to trust states. */
         .soli-login-shell { position: relative; overflow: hidden; background: #edf3f5; }
@@ -3627,7 +3719,7 @@
                                     <div class="grid sm:grid-cols-2 gap-4">
                                         <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">الاسم الكامل</span><input type="text" x-model.trim="bookingForm.name" required autocomplete="name" placeholder="اكتب الاسم كما سيظهر في الموعد" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
                                         <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">رقم الهاتف</span><input type="tel" inputmode="numeric" x-model.trim="bookingForm.phone" required autocomplete="tel-national" pattern="(?:01(?:0|1|2|5)[0-9]{8}|(?:\\+20|0020|20)1(?:0|1|2|5)[0-9]{8})" title="أدخل رقم محمول مصري صحيحاً، مثل: 01012345678" placeholder="مثال: 01012345678" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
-                                        <label class="block"><span class="block text-sm font-bold text-slate-700 mb-2">التاريخ المطلوب</span><input type="date" x-model="bookingForm.date" :min="new Date().toISOString().slice(0, 10)" required class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
+                                        <label class="block"><span class="block text-sm font-bold text-slate-700 mb-2">التاريخ المطلوب</span><input type="date" lang="ar-EG" dir="rtl" x-model="bookingForm.date" :min="new Date().toISOString().slice(0, 10)" required class="soli-date-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
                                         <label class="block"><span class="block text-sm font-bold text-slate-700 mb-2">الوقت المفضل</span><input type="time" x-model="bookingForm.time" required class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
                                         <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">نوع الزيارة</span><select x-model="bookingForm.visitType" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select></label>
                                         <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">ملاحظة اختيارية</span><textarea x-model.trim="bookingForm.notes" rows="3" placeholder="مثال: أفضل الفترة المسائية" class="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></textarea></label>
@@ -3912,7 +4004,7 @@
                                     <div x-show="appointmentForm.status === 'pending_confirmation'" class="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-900/50 px-3 py-2 text-xs font-bold text-amber-700 dark:text-amber-300"><i data-lucide="clock-3" class="w-4 h-4"></i>سيُحفظ هذا الموعد بحالة «بانتظار التأكيد»</div>
                                     <input id="appointmentPatientNameInput" type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
                                     <input id="appointmentPhoneInput" name="appointment-phone" type="tel" inputmode="numeric" autocomplete="tel-national" autocapitalize="off" spellcheck="false" x-model="appointmentForm.phone" pattern="(?:01(?:0|1|2|5)[0-9]{8}|(?:\\+20|0020|20)1(?:0|1|2|5)[0-9]{8})" title="أدخل رقم محمول مصري صحيحاً، مثل: 01012345678" placeholder="مثال: 01012345678" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
-                                    <div class="grid grid-cols-2 gap-2"><input type="date" x-model="appointmentForm.date" @change="selectedAppointmentDate = appointmentForm.date" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><input type="time" x-model="appointmentForm.time" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
+                                    <div class="grid grid-cols-2 gap-2"><input type="date" lang="ar-EG" dir="rtl" x-model="appointmentForm.date" @change="selectedAppointmentDate = appointmentForm.date" class="soli-date-input px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><input type="time" x-model="appointmentForm.time" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
                                     <select x-model="appointmentForm.visitType" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select>
                                     <textarea x-model="appointmentForm.notes" rows="2" placeholder="ملاحظات الموعد" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></textarea>
                                     <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold" x-text="appointmentForm.status === 'pending_confirmation' ? 'حفظ طلب بانتظار التأكيد' : 'حفظ الموعد'"></button>
@@ -4026,11 +4118,11 @@
                                 <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 min-w-0">
                                     <div class="relative w-full sm:w-72">
                                     <i data-lucide="search" class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i>
-                                        <input type="search" x-model="patientSearch" placeholder="ابحث بالاسم أو الهاتف أو التشخيص..." class="w-full pr-10 pl-3 py-2 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-xl text-xs">
+                                        <input type="search" name="patient-records-search" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="patientSearch" placeholder="ابحث بالاسم أو الهاتف أو التشخيص..." aria-label="بحث في المرضى والملفات" class="soli-search-input w-full pr-10 pl-3 py-2 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-xl text-xs">
                                     </div>
                                     <div class="relative shrink-0">
                                         <i data-lucide="calendar-days" class="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"></i>
-                                        <input type="date" aria-label="تصفية بتاريخ الزيارة" :value="patientsYearFilter !== 'all' && patientsMonthFilter !== 'all' && patientsDayFilter !== 'all' ? patientsYearFilter + '-' + patientsMonthFilter + '-' + patientsDayFilter : ''" @input="patientsYearFilter = $event.target.value ? $event.target.value.slice(0,4) : 'all'; patientsMonthFilter = $event.target.value ? $event.target.value.slice(5,7) : 'all'; patientsDayFilter = $event.target.value ? $event.target.value.slice(8,10) : 'all'" class="w-full sm:w-40 pr-8 pl-2 py-2 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-xl text-xs">
+                                        <input type="date" lang="ar-EG" dir="rtl" aria-label="تصفية بتاريخ الزيارة" :value="patientsYearFilter !== 'all' && patientsMonthFilter !== 'all' && patientsDayFilter !== 'all' ? patientsYearFilter + '-' + patientsMonthFilter + '-' + patientsDayFilter : ''" @input="patientsYearFilter = $event.target.value ? $event.target.value.slice(0,4) : 'all'; patientsMonthFilter = $event.target.value ? $event.target.value.slice(5,7) : 'all'; patientsDayFilter = $event.target.value ? $event.target.value.slice(8,10) : 'all'" class="soli-date-input w-full sm:w-40 pr-8 pl-2 py-2 bg-white dark:bg-slate-900 border dark:border-slate-800 rounded-xl text-xs">
                                     </div>
                                     <details class="relative shrink-0 group">
                                         <summary class="list-none cursor-pointer select-none inline-flex items-center justify-between gap-2 px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border dark:border-slate-800 text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800">
@@ -4171,7 +4263,7 @@
                                     <!-- Symptoms Multi-select -->
                                     <div class="space-y-2">
                                         <label class="block text-xs font-semibold">الأعراض المشكو منها (اختر متعدد):</label>
-                                        <input type="text" x-model="symptomSearchQuery" placeholder="بحث في الأعراض..." class="w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
+                                        <input type="search" name="symptoms-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="symptomSearchQuery" placeholder="بحث في الأعراض..." class="soli-search-input w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
                                         <div class="max-h-48 overflow-y-auto border rounded-xl p-2 bg-slate-50 dark:bg-slate-800/50 space-y-1 text-xs">
                                             <template x-for="s in filteredSymptomsMaster" :key="s">
                                                 <label class="flex items-center space-x-2 space-x-reverse cursor-pointer p-1">
@@ -4189,7 +4281,7 @@
                                     <!-- Chronic Multi-select -->
                                     <div class="space-y-2">
                                         <label class="block text-xs font-semibold">الأمراض المزمنة (اختر متعدد):</label>
-                                        <input type="text" x-model="chronicSearchQuery" placeholder="بحث في الأمراض المزمنة..." class="w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
+                                        <input type="search" name="chronic-diseases-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="chronicSearchQuery" placeholder="بحث في الأمراض المزمنة..." class="soli-search-input w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
                                         <div class="max-h-48 overflow-y-auto border rounded-xl p-2 bg-slate-50 dark:bg-slate-800/50 space-y-1 text-xs">
                                             <template x-for="c in filteredChronicMaster" :key="c">
                                                 <label class="flex items-center space-x-2 space-x-reverse cursor-pointer p-1">
@@ -4322,7 +4414,7 @@
                                 <!-- Vital Signs (العلامات الحيوية) -->
                                 <div x-show="recordFormSections.vitals" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">العلامات الحيوية (اختياري):</label>
-                                    <input type="text" x-model="vitalSearchQuery" placeholder="بحث في العلامات الحيوية..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
+                                    <input type="search" name="vital-signs-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="vitalSearchQuery" placeholder="بحث في العلامات الحيوية..." class="soli-search-input w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="max-h-44 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
                                         <template x-for="v in filteredVitalsMaster" :key="v">
                                             <div class="flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded">
@@ -4360,7 +4452,7 @@
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2"><label class="block text-xs font-bold text-slate-700 dark:text-slate-300">التشخيص الطبي (يمكن اختيار أكثر من تشخيص + كتابة يدوية):</label></div>
                                     <div class="relative">
-                                        <input type="search" x-model="diagnosisSearchQuery" @focus="diagnosisSuggestionsOpen = true" @input="diagnosisSuggestionsOpen = true" @keydown.enter.prevent="diagnosisAutocompleteSuggestions.length && selectDiagnosisSuggestion(diagnosisAutocompleteSuggestions[0])" @keydown.escape="diagnosisSuggestionsOpen = false" placeholder="اكتب التشخيص لتظهر الاقتراحات فوراً..." class="w-full px-3 py-2.5 pr-9 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white" autocomplete="off" spellcheck="false" aria-label="بحث وإكمال تلقائي للتشخيصات">
+                                        <input type="search" name="diagnosis-search" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="diagnosisSearchQuery" @focus="diagnosisSuggestionsOpen = true" @input="diagnosisSuggestionsOpen = true" @keydown.enter.prevent="diagnosisAutocompleteSuggestions.length && selectDiagnosisSuggestion(diagnosisAutocompleteSuggestions[0])" @keydown.escape="diagnosisSuggestionsOpen = false" placeholder="اكتب التشخيص لتظهر الاقتراحات فوراً..." class="soli-search-input w-full px-3 py-2.5 pr-9 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white" aria-label="بحث وإكمال تلقائي للتشخيصات">
                                         <i data-lucide="sparkles" class="w-4 h-4 text-blue-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
                                         <div x-show="diagnosisSuggestionsOpen && diagnosisAutocompleteSuggestions.length" x-cloak class="absolute z-30 top-full mt-1 inset-x-0 overflow-hidden rounded-xl border border-blue-100 dark:border-blue-800 bg-white dark:bg-slate-900 shadow-xl" role="listbox" aria-label="اقتراحات التشخيص">
                                             <div class="px-3 py-2 bg-blue-50 dark:bg-blue-950/50 text-[10px] font-bold text-blue-700 dark:text-blue-300">إكمال تلقائي — اختر أو اضغط Enter لاختيار أول اقتراح</div>
@@ -4394,7 +4486,7 @@
                                 <!-- Lab Test Results (نتيجة المعامل) -->
                                 <div x-show="recordFormSections.labTests" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">نتيجة المعامل (اختياري):</label>
-                                    <input type="text" x-model="labTestSearchQuery" placeholder="بحث في أنواع التحاليل المعتمدة..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
+                                    <input type="search" name="lab-tests-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="labTestSearchQuery" placeholder="بحث في أنواع التحاليل المعتمدة..." class="soli-search-input w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="max-h-44 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
                                         <template x-for="t in filteredLabTestsMaster" :key="t">
                                             <div class="flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded">
@@ -4431,7 +4523,7 @@
                                 <!-- Radiology (الأشعة) -->
                                 <div x-show="recordFormSections.radiology" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الأشعة (اختياري):</label>
-                                    <input type="text" x-model="radiologySearchQuery" placeholder="بحث في أنواع الأشعة المعتمدة..." class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
+                                    <input type="search" name="radiology-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="radiologySearchQuery" placeholder="بحث في أنواع الأشعة المعتمدة..." class="soli-search-input w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="max-h-44 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
                                         <template x-for="r in filteredRadiologyMaster" :key="r">
                                             <div class="flex items-center gap-2 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded">
@@ -4469,7 +4561,7 @@
                                 <div class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">أصناف الأدوية المصرية (بحث ذكي بالاسم وجرعة مخصصة لكل دواء):</label>
                                     <div class="relative">
-                                        <input type="search" name="medicineArchiveSearch" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" x-model="medicineSearchQuery" @focus="medicineSuggestionsOpen = true" @input="medicineSuggestionsOpen = true" @keydown.enter.prevent="medicineAutocompleteSuggestions.length ? selectMedicineSuggestion(medicineAutocompleteSuggestions[0]) : addCustomMedicineToRecord()" @keydown.escape="medicineSuggestionsOpen = false" placeholder="اكتب اسم الدواء أو التركيز لتظهر الاقتراحات فوراً..." class="w-full px-3 py-2.5 pr-9 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white" aria-label="بحث وإكمال تلقائي للأدوية">
+                                        <input type="search" name="medicine-archive-search" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="medicineSearchQuery" @focus="medicineSuggestionsOpen = true" @input="medicineSuggestionsOpen = true" @keydown.enter.prevent="medicineAutocompleteSuggestions.length ? selectMedicineSuggestion(medicineAutocompleteSuggestions[0]) : addCustomMedicineToRecord()" @keydown.escape="medicineSuggestionsOpen = false" placeholder="اكتب اسم الدواء أو التركيز لتظهر الاقتراحات فوراً..." class="soli-search-input w-full px-3 py-2.5 pr-9 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white" aria-label="بحث وإكمال تلقائي للأدوية">
                                         <i data-lucide="search-check" class="w-4 h-4 text-blue-500 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none"></i>
                                         <div x-show="medicineSuggestionsOpen && medicineAutocompleteSuggestions.length" x-cloak class="absolute z-30 top-full mt-1 inset-x-0 overflow-hidden rounded-xl border border-blue-100 dark:border-blue-800 bg-white dark:bg-slate-900 shadow-xl" role="listbox" aria-label="اقتراحات الدواء">
                                             <div class="px-3 py-2 bg-blue-50 dark:bg-blue-950/50 text-[10px] font-bold text-blue-700 dark:text-blue-300">إكمال تلقائي — تضيف القائمة المتكررة الجرعة المحفوظة تلقائياً</div>
@@ -4525,7 +4617,7 @@
                                 <div class="grid grid-cols-1 md:grid-cols-2 gap-4 border-t dark:border-slate-700 pt-4">
                                     <div>
                                         <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">موعد المتابعة القادمة (تظهر في أسفل الروشتة):</label>
-                                        <input type="date" x-model="newRecordForm.nextFollowUpDate" class="w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <input type="date" lang="ar-EG" dir="rtl" x-model="newRecordForm.nextFollowUpDate" class="soli-date-input w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     </div>
                                     <div>
                                         <label class="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">ملاحظات وتوصيات عامة:</label>
@@ -4705,7 +4797,7 @@
                                         </template>
                                     </select>
                                             <input type="number" inputmode="decimal" x-model.number="newExpenseForm.amount" placeholder="المبلغ (ج.م)" class="px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
-                                    <input type="date" x-model="newExpenseForm.date" class="px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
+                                    <input type="date" lang="ar-EG" dir="rtl" x-model="newExpenseForm.date" class="soli-date-input px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <button type="button" @click="addExpense" class="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-xl text-xs font-bold">إضافة مصروف</button>
                                 </div>
 
@@ -4752,7 +4844,7 @@
                                     <option value="monthly">شهري (اختر شهراً)</option>
                                     <option value="yearly">سنوي (اختر سنة)</option>
                                 </select>
-                                <input x-show="reportsPeriodType === 'monthly'" x-cloak type="month" x-model="reportsSelectedMonth" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                <input x-show="reportsPeriodType === 'monthly'" x-cloak type="month" lang="ar-EG" dir="rtl" x-model="reportsSelectedMonth" class="soli-date-input px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                 <select x-show="reportsPeriodType === 'yearly'" x-cloak x-model="reportsSelectedYear" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <template x-for="y in reportsYearOptions" :key="y">
                                         <option :value="y" x-text="y"></option>
@@ -4839,8 +4931,8 @@
 
                             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3 shadow-sm">
                                 <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 min-w-0">
-                                    <div class="relative w-full sm:w-72"><i data-lucide="search" class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i><input type="search" x-model="pharmacySearch" placeholder="ابحث باسم المريض أو التشخيص أو الدواء..." class="w-full pr-10 pl-3 py-2 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-xs"></div>
-                                    <div class="relative shrink-0"><i data-lucide="calendar-days" class="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"></i><input type="date" aria-label="تصفية الروشتات بتاريخ" :value="pharmacyYearFilter !== 'all' && pharmacyMonthFilter !== 'all' && pharmacyDayFilter !== 'all' ? pharmacyYearFilter + '-' + pharmacyMonthFilter + '-' + pharmacyDayFilter : ''" @input="pharmacyYearFilter = $event.target.value ? $event.target.value.slice(0,4) : 'all'; pharmacyMonthFilter = $event.target.value ? $event.target.value.slice(5,7) : 'all'; pharmacyDayFilter = $event.target.value ? $event.target.value.slice(8,10) : 'all'" class="w-full sm:w-40 pr-8 pl-2 py-2 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-xs"></div>
+                                    <div class="relative w-full sm:w-72"><i data-lucide="search" class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i><input type="search" name="prescription-archive-search" role="searchbox" inputmode="search" enterkeyhint="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="pharmacySearch" placeholder="ابحث باسم المريض أو التشخيص أو الدواء..." aria-label="بحث في أرشيف الروشتات" class="soli-search-input w-full pr-10 pl-3 py-2 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-xs"></div>
+                                    <div class="relative shrink-0"><i data-lucide="calendar-days" class="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none"></i><input type="date" lang="ar-EG" dir="rtl" aria-label="تصفية الروشتات بتاريخ" :value="pharmacyYearFilter !== 'all' && pharmacyMonthFilter !== 'all' && pharmacyDayFilter !== 'all' ? pharmacyYearFilter + '-' + pharmacyMonthFilter + '-' + pharmacyDayFilter : ''" @input="pharmacyYearFilter = $event.target.value ? $event.target.value.slice(0,4) : 'all'; pharmacyMonthFilter = $event.target.value ? $event.target.value.slice(5,7) : 'all'; pharmacyDayFilter = $event.target.value ? $event.target.value.slice(8,10) : 'all'" class="soli-date-input w-full sm:w-40 pr-8 pl-2 py-2 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-xs"></div>
                                 </div>
                                 <div class="flex items-center justify-between sm:justify-end gap-3 text-xs"><span class="text-slate-400" x-text="prescriptionGroups.length + ' ملف' "></span><button type="button" @click="pharmacySearch = ''; resetArchiveDateFilters('pharmacy')" class="text-blue-600 hover:text-blue-700 font-bold whitespace-nowrap">مسح البحث</button></div>
                             </div>
@@ -5610,7 +5702,7 @@
                         <!-- Symptoms Multi-select -->
                         <div class="space-y-2">
                             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">الأعراض المشكو منها (اختر متعدد):</label>
-                            <input type="text" x-model="symptomSearchQuery" placeholder="بحث في الأعراض..." class="w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
+                            <input type="search" name="symptoms-settings-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="symptomSearchQuery" placeholder="بحث في الأعراض..." class="soli-search-input w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
                             <div class="max-h-48 overflow-y-auto border rounded-xl p-2 bg-slate-50 dark:bg-slate-800/50 space-y-1 text-xs">
                                 <template x-for="s in filteredSymptomsMaster" :key="s">
                                     <label class="flex items-center space-x-2 space-x-reverse cursor-pointer p-1">
@@ -5628,7 +5720,7 @@
                         <!-- Chronic Multi-select -->
                         <div class="space-y-2">
                             <label class="block text-xs font-semibold text-slate-600 dark:text-slate-300">الأمراض المزمنة (اختر متعدد):</label>
-                            <input type="text" x-model="chronicSearchQuery" placeholder="بحث في الأمراض المزمنة..." class="w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
+                            <input type="search" name="chronic-diseases-settings-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="chronicSearchQuery" placeholder="بحث في الأمراض المزمنة..." class="soli-search-input w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-800 dark:text-white">
                             <div class="max-h-48 overflow-y-auto border rounded-xl p-2 bg-slate-50 dark:bg-slate-800/50 space-y-1 text-xs">
                                 <template x-for="c in filteredChronicMaster" :key="c">
                                     <label class="flex items-center space-x-2 space-x-reverse cursor-pointer p-1">

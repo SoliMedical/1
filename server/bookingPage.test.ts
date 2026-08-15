@@ -59,4 +59,35 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('id="appointmentPhoneInput"');
     expect(page).toContain('autocomplete="tel-national"');
   });
+
+  it("يعرّف كل حقول البحث كحقول مستقلة لا يقترح مدير كلمات المرور تعبئتها", () => {
+    const searchInputs = [...page.matchAll(/<input\b(?=[^>]*x-model="[^"]*[Ss]earch[^"]*")[^>]*>/g)].map(match => match[0]);
+
+    expect(searchInputs.length).toBeGreaterThanOrEqual(9);
+    for (const input of searchInputs) {
+      expect(input).toContain('type="search"');
+      expect(input).toContain('autocomplete="off"');
+      expect(input).toContain('data-form-type="other"');
+      expect(input).toContain('data-lpignore="true"');
+      expect(input).toContain('data-1p-ignore="true"');
+      expect(input).toContain('data-bwignore="true"');
+    }
+  });
+
+  it("يعرض كل حقول اليوم والشهر باتجاه عربي صحيح", () => {
+    const dateInputs = page.match(/<input\b[^>]*type="(?:date|month)"[^>]*>/g) || [];
+
+    expect(dateInputs.length).toBeGreaterThanOrEqual(7);
+    for (const input of dateInputs) {
+      expect(input).toContain('lang="ar-EG"');
+      expect(input).toContain('dir="rtl"');
+      expect(input).toContain('soli-date-input');
+    }
+    expect(page).toContain('input.soli-date-input[type="date"]');
+    expect(page).toContain('input.soli-date-input[type="month"]');
+    expect(page).toContain('flatpickr/dist/l10n/ar.js');
+    expect(page).toContain('const initializeArabicDatePickers');
+    expect(page).toContain('locale: window.flatpickr.l10ns.ar');
+    expect(page).toContain("disableMobile: true");
+  });
 });
