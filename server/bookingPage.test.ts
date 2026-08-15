@@ -107,6 +107,21 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('printHeaderEnabled = false; doctorInfo.printFooterEnabled = false');
   });
 
+  it("يطبق اعتماد الجهاز بعد أول دخول متصل ويسمح بالعمل المحلي لاحقاً", () => {
+    expect(page).toContain("deviceTrustKey: 'soliMedicalDeviceTrust_v1'");
+    expect(page).toContain('restoreDeviceTrust()');
+    expect(page).toContain('enrollDevice(user)');
+    expect(page).toContain('deviceTrustDurationMs: 30 * 24 * 60 * 60 * 1000');
+    expect(page).toContain('isDeviceTrustValid(userId)');
+    expect(page).toContain('revokeDeviceTrust()');
+    expect(page).toContain("mode: 'online-first-local-afterward'");
+    expect(page).toContain('هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول');
+    expect(page).toContain('if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser)');
+    expect(page).toContain('async prepareUsersForOnlineLogin()');
+    expect(page).toContain('await firestoreDB.doc(this.cloudDocPath).get()');
+    expect(page).toContain('await this.prepareUsersForOnlineLogin()');
+  });
+
   it("يعرض كل حقول اليوم والشهر باتجاه عربي صحيح", () => {
     const dateInputs = page.match(/<input\b[^>]*type="(?:date|month)"[^>]*>/g) || [];
 

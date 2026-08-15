@@ -766,6 +766,7 @@
                             u.permissions.prescriptionSettings = u.role === 'admin' || !!u.permissions.settings;
                         }
                     });
+                    this.restoreDeviceTrust();
                     this.restoreSession();
                     // Restore the last section only after local login is restored, and never
                     // bypass the current account's page permissions.
@@ -1263,6 +1264,54 @@
                 // Keeps the doctor/staff logged in across page reloads or when switching between
                 // desktop/mobile view on the same browser, instead of being signed out unexpectedly.
                 sessionKey: 'soliMedicalSession_v1',
+                deviceTrustKey: 'soliMedicalDeviceTrust_v1',
+                deviceTrustDurationMs: 30 * 24 * 60 * 60 * 1000,
+                deviceTrust: null,
+
+                restoreDeviceTrust() {
+                    try {
+                        const raw = localStorage.getItem(this.deviceTrustKey);
+                        const trust = raw ? JSON.parse(raw) : null;
+                        if (trust?.expiresAt && Date.parse(trust.expiresAt) <= Date.now()) {
+                            localStorage.removeItem(this.deviceTrustKey);
+                            this.deviceTrust = null;
+                            return;
+                        }
+                        this.deviceTrust = trust;
+                    } catch (error) {
+                        console.warn('تعذر استعادة اعتماد هذا الجهاز:', error);
+                        this.deviceTrust = null;
+                    }
+                },
+
+                enrollDevice(user) {
+                    const trust = {
+                        userId: user.id,
+                        enrolledAt: new Date().toISOString(),
+                        lastVerifiedAt: new Date().toISOString(),
+                        expiresAt: new Date(Date.now() + this.deviceTrustDurationMs).toISOString(),
+                        mode: 'online-first-local-afterward'
+                    };
+                    this.deviceTrust = trust;
+                    try {
+                        localStorage.setItem(this.deviceTrustKey, JSON.stringify(trust));
+                    } catch (error) {
+                        console.warn('تعذر حفظ اعتماد هذا الجهاز:', error);
+                    }
+                },
+
+                isDeviceTrustValid(userId) {
+                    return Boolean(
+                        this.deviceTrust &&
+                        String(this.deviceTrust.userId) === String(userId) &&
+                        (!this.deviceTrust.expiresAt || Date.parse(this.deviceTrust.expiresAt) > Date.now())
+                    );
+                },
+
+                revokeDeviceTrust() {
+                    this.deviceTrust = null;
+                    try { localStorage.removeItem(this.deviceTrustKey); } catch (error) { console.warn('تعذر إبطال اعتماد الجهاز:', error); }
+                },
 
                 restoreSession() {
                     try {
@@ -1650,6 +1699,27 @@
                     });
                 },
 
+                async prepareUsersForOnlineLogin() {
+                    // في المتصفح الجديد لا توجد قائمة users محلية بعد. نقرأ نسخة الحسابات
+                    // من مستند المزامنة بعد إنشاء جلسة Firebase المجهولة، ثم تبقى المقارنة
+                    // محلية ولا تُرسل كلمة المرور إلى أي خادم.
+                    if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine) return false;
+                    try {
+                        if (!firebaseAuth.currentUser) await firebaseAuth.signInAnonymously();
+                        const snapshot = await firestoreDB.doc(this.cloudDocPath).get();
+                        const remoteUsers = snapshot.exists ? snapshot.data()?.users : null;
+                        if (!Array.isArray(remoteUsers) || !remoteUsers.length) return false;
+                        const validUsers = remoteUsers.filter(user => user && user.email && user.password);
+                        if (!validUsers.length) return false;
+                        this.users = validUsers;
+                        this.persistState();
+                        return true;
+                    } catch (error) {
+                        console.warn('تعذر تحميل حسابات العيادة قبل الدخول:', error);
+                        return false;
+                    }
+                },
+
                 async hashSecurityValue(value) {
                     const normalized = String(value || '').trim().toLocaleLowerCase('ar');
                     try {
@@ -1744,15 +1814,26 @@
                     this.recoveryForm.newPassword = '';
                 },
 
-                handleLogin() {
+                async handleLogin() {
                     this.isLoading = true;
                     this.loginError = '';
+                    if (navigator.onLine && this.cloudSyncEnabled) {
+                        await this.prepareUsersForOnlineLogin();
+                    }
                     const enteredEmail = (this.loginForm.email || '').trim().toLowerCase();
                     const enteredPassword = (this.loginForm.password || '').trim();
                     const matchedUser = this.users.find(u => u.email.trim().toLowerCase() === enteredEmail);
 
                     if (!matchedUser || matchedUser.password !== enteredPassword) {
-                        this.loginError = 'اسم المستخدم أو كلمة المرور غير صحيحة';
+                        this.loginError = navigator.onLine
+                            ? 'اسم المستخدم أو كلمة المرور غير صحيحة. إذا غيّرت الحساب من جهاز آخر، تأكد من اتصال الإنترنت ثم أعد المحاولة.'
+                            : 'اسم المستخدم أو كلمة المرور غير صحيحة، كما أن هذا الجهاز يحتاج إلى أول دخول متصل بالإنترنت.';
+                        this.isLoading = false;
+                        return;
+                    }
+                    const trustedForThisUser = this.isDeviceTrustValid(matchedUser.id);
+                    if (this.cloudSyncEnabled && !trustedForThisUser && !navigator.onLine) {
+                        this.loginError = 'هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول، ثم سيعمل النظام دون اتصال على هذا الجهاز.';
                         this.isLoading = false;
                         return;
                     }
@@ -1767,6 +1848,12 @@
                     // clinic remains usable even when the internet or Firebase is unavailable.
                     this.currentUser = matchedUser;
                     this.isAuthenticated = true;
+                    if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser);
+                    if (trustedForThisUser) {
+                        this.deviceTrust.lastVerifiedAt = new Date().toISOString();
+                        this.deviceTrust.expiresAt = new Date(Date.now() + this.deviceTrustDurationMs).toISOString();
+                        try { localStorage.setItem(this.deviceTrustKey, JSON.stringify(this.deviceTrust)); } catch (error) { console.warn('تعذر تحديث اعتماد الجهاز:', error); }
+                    }
                     this.saveSession(matchedUser.id);
                     this.landOnAllowedPage(matchedUser);
                     this.isLoading = false;
