@@ -118,7 +118,9 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول');
     expect(page).toContain('if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser)');
     expect(page).toContain('async prepareUsersForOnlineLogin()');
-    expect(page).toContain('await firestoreDB.doc(this.cloudDocPath).get()');
+    expect(page).toContain("get({ source: 'server' })");
+    expect(page).toContain('waitForCloudAuthReady');
+    expect(page).toContain('persistUsersToCloudNow');
     expect(page).toContain('await this.prepareUsersForOnlineLogin()');
   });
 
@@ -139,6 +141,14 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('box-shadow: none !important;');
     expect(page).toContain('border: 0 !important;');
     expect(page).toContain('print-color-adjust: exact;');
+  });
+
+  it("يحفظ تغييرات الحسابات مباشرة قبل تأكيدها عند توفر الإنترنت", () => {
+    expect(page).toContain('async addUser()');
+    expect(page).toContain('async removeUser(userId)');
+    expect(page).toContain('async saveUserPermissions(userId)');
+    expect(page).toContain('const cloudResult = await this.persistUsersToCloudNow()');
+    expect(page).toContain('تم حفظ الحساب محلياً، لكن لم يؤكَّد حفظه في السحابة');
   });
 
   it("يغطي مسارات المزامنة الأساسية للأجهزة الجديدة والانقطاع والتعارض", () => {

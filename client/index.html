@@ -1052,6 +1052,71 @@
                     }, delay);
                 },
 
+                async waitForCloudAuthReady(timeoutMs = 10000) {
+                    if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine || !firebaseAuth) return false;
+                    if (!this.cloudAuthListenerStarted) {
+                        this.cloudAuthListenerStarted = true;
+                        this.observeFirebaseAuth();
+                    }
+                    try {
+                        if (!firebaseAuth.currentUser) await firebaseAuth.signInAnonymously();
+                    } catch (error) {
+                        console.warn('تعذر إنشاء جلسة المزامنة قبل حفظ الحسابات:', error);
+                        return false;
+                    }
+                    const startedAt = Date.now();
+                    while (!this.cloudAuthReady && Date.now() - startedAt < timeoutMs) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                    if (this.cloudAuthReady) this.startCloudSync();
+                    return !!this.cloudAuthReady;
+                },
+
+                async persistUsersToCloudNow() {
+                    if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine) {
+                        return { ok: false, deferred: true };
+                    }
+                    if (!(await this.waitForCloudAuthReady())) return { ok: false, deferred: false };
+                    clearTimeout(this.cloudSyncTimer);
+                    const docRef = firestoreDB.doc(this.cloudDocPath);
+                    const writeSequence = Number(this.syncChangeSequence || 0);
+                    const localUsers = JSON.parse(JSON.stringify(this.users || []));
+                    this.cloudStatus = 'syncing';
+                    try {
+                        const result = await firestoreDB.runTransaction(async transaction => {
+                            const snap = await transaction.get(docRef);
+                            const remoteData = snap.exists ? snap.data() : {};
+                            const remoteMeta = remoteData._syncMeta || {};
+                            const revision = Number(remoteMeta.revision || 0) + 1;
+                            transaction.set(docRef, {
+                                users: localUsers,
+                                _syncMeta: {
+                                    ...remoteMeta,
+                                    revision,
+                                    writerId: this.syncDeviceId,
+                                    writerName: this.currentUser?.fullName || 'مدير النظام',
+                                    updatedAt: new Date().toISOString()
+                                }
+                            }, { merge: true });
+                            return { revision };
+                        });
+                        this.syncRevision = result.revision;
+                        this.localEditBaseRevision = result.revision;
+                        const changedDuringWrite = Number(this.syncChangeSequence || 0) !== writeSequence;
+                        this.localChangesPending = changedDuringWrite;
+                        this.cloudStatus = 'online';
+                        this.cloudRetryAttempts = 0;
+                        if (this.localChangesPending) this.queueCloudSync();
+                        return { ok: true, deferred: false };
+                    } catch (error) {
+                        console.error('تعذر حفظ قائمة الحسابات مباشرة في Firestore:', error);
+                        this.cloudStatus = 'offline';
+                        this.localChangesPending = true;
+                        this.scheduleCloudRetry();
+                        return { ok: false, deferred: false, error };
+                    }
+                },
+
                 // Debounced push so rapid local edits (typing, checkbox toggles) don't spam Firestore.
                 queueCloudSync() {
                     if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate || !firestoreDB) return;
@@ -1713,21 +1778,28 @@
 
                 async prepareUsersForOnlineLogin() {
                     // في المتصفح الجديد لا توجد قائمة users محلية بعد. نقرأ نسخة الحسابات
-                    // من مستند المزامنة بعد إنشاء جلسة Firebase المجهولة، ثم تبقى المقارنة
-                    // محلية ولا تُرسل كلمة المرور إلى أي خادم.
+                    // من الخادم مباشرة، وليس من Firestore cache، ثم تبقى المقارنة محلية
+                    // ولا تُرسل كلمة المرور إلى أي خادم آخر.
                     if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine) return false;
                     try {
-                        if (!firebaseAuth.currentUser) await firebaseAuth.signInAnonymously();
-                        const snapshot = await firestoreDB.doc(this.cloudDocPath).get();
-                        const remoteUsers = snapshot.exists ? snapshot.data()?.users : null;
-                        if (!Array.isArray(remoteUsers) || !remoteUsers.length) return false;
-                        const validUsers = remoteUsers.filter(user => user && user.email && user.password);
-                        if (!validUsers.length) return false;
-                        this.users = validUsers;
-                        this.persistState();
-                        return true;
+                        if (!(await this.waitForCloudAuthReady())) return false;
+                        let remoteUsers = null;
+                        for (let attempt = 0; attempt < 3; attempt += 1) {
+                            const snapshot = await firestoreDB.doc(this.cloudDocPath).get({ source: 'server' });
+                            remoteUsers = snapshot.exists ? snapshot.data()?.users : null;
+                            const validUsers = Array.isArray(remoteUsers)
+                                ? remoteUsers.filter(user => user && user.email && user.password)
+                                : [];
+                            if (validUsers.length) {
+                                this.users = validUsers;
+                                this.persistState();
+                                return true;
+                            }
+                            if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+                        }
+                        return false;
                     } catch (error) {
-                        console.warn('تعذر تحميل حسابات العيادة قبل الدخول:', error);
+                        console.warn('تعذر تحميل أحدث حسابات العيادة من خادم Firestore قبل الدخول:', error);
                         return false;
                     }
                 },
@@ -1777,7 +1849,10 @@
                     if (newPassword) admin.password = newPassword;
                     if (this.currentUser.id === admin.id) this.currentUser = admin;
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم حفظ التغيير محلياً فقط ولم يؤكَّد في السحابة. تحقق من الاتصال قبل الاعتماد على كلمة المرور الجديدة من جهاز آخر.');
+                    }
                     this.securityForm.answer = '';
                     this.securityForm.newPassword = '';
                     this.securitySaveFeedback = 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً.';
@@ -1817,7 +1892,11 @@
                     }
                     admin.password = newPassword;
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        this.recoveryState.error = 'تم التغيير محلياً، لكن لم يُؤكَّد في السحابة. تحقق من الاتصال ثم أعد المحاولة.';
+                        return;
+                    }
                     this.loginForm.email = admin.email;
                     this.loginForm.password = '';
                     this.loginError = '';
@@ -1892,7 +1971,7 @@
                     }
                 },
 
-                addUser() {
+                async addUser() {
                     if (!this.newUserForm.fullName.trim() || !this.newUserForm.email.trim() || !this.newUserForm.password.trim()) {
                         alert('يرجى إدخال الاسم والبريد/اسم المستخدم وكلمة المرور');
                         return;
@@ -1913,7 +1992,11 @@
                     this.users.push(newUser);
                     this.userPermissionDrafts[newUser.id] = { ...newUser.permissions };
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم حفظ الحساب محلياً، لكن لم يؤكَّد حفظه في السحابة. لا تغلق الصفحة حتى يعود الاتصال وتظهر حالة «متصل»، ثم أعد المحاولة.');
+                        return;
+                    }
 
                     this.newUserForm = {
                         fullName: '',
@@ -1925,7 +2008,7 @@
                     this.renderIcons();
                 },
 
-                removeUser(userId) {
+                async removeUser(userId) {
                     if (userId === 1) {
                         alert('لا يمكن حذف حساب المدير الأساسي');
                         return;
@@ -1934,10 +2017,13 @@
                     this.users = this.users.filter(u => u.id !== userId);
                     delete this.userPermissionDrafts[userId];
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم حذف الحساب محلياً فقط ولم يؤكَّد الحذف في السحابة. تحقق من الاتصال ثم أعد المحاولة.');
+                    }
                 },
 
-                toggleUserActive(userId) {
+                async toggleUserActive(userId) {
                     if (userId === 1) {
                         alert('لا يمكن إيقاف حساب المدير الأساسي');
                         return;
@@ -1950,10 +2036,13 @@
                         this.logout();
                     }
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم تعديل حالة الحساب محلياً فقط ولم يؤكَّد التعديل في السحابة.');
+                    }
                 },
 
-                promoteToAdmin(userId) {
+                async promoteToAdmin(userId) {
                     const user = this.users.find(u => u.id === userId);
                     if (!user) return;
                     if (!confirm(`هل تريد منح "${user.fullName}" صلاحيات إدارة كاملة (مدير آخر)؟`)) return;
@@ -1963,10 +2052,13 @@
                     user.permissions = fullPermissions;
                     this.userPermissionDrafts[userId] = { ...fullPermissions };
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم تعديل الصلاحيات محلياً فقط ولم يؤكَّد حفظها في السحابة.');
+                    }
                 },
 
-                saveUserPermissions(userId) {
+                async saveUserPermissions(userId) {
                     const user = this.users.find(u => u.id === userId);
                     if (!user) return;
                     const fullPermissions = {};
@@ -1981,7 +2073,10 @@
                     this.userSaveFeedback[userId] = true;
                     setTimeout(() => { this.userSaveFeedback[userId] = false; }, 2000);
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم تعديل الصلاحيات محلياً فقط ولم يؤكَّد حفظها في السحابة.');
+                    }
                 },
 
                 // Maps each page to the permission required to view it, so navigation can never
