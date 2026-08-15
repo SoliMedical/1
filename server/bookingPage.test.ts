@@ -112,7 +112,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('restoreDeviceTrust()');
     expect(page).toContain('enrollDevice(user)');
     expect(page).toContain('deviceTrustDurationMs: 30 * 24 * 60 * 60 * 1000');
-    expect(page).toContain('isDeviceTrustValid(userId)');
+    expect(page).toContain('isDeviceTrustValid(user)');
     expect(page).toContain('revokeDeviceTrust()');
     expect(page).toContain("mode: 'online-first-local-afterward'");
     expect(page).toContain('هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول');
@@ -120,6 +120,15 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('async prepareUsersForOnlineLogin()');
     expect(page).toContain('await firestoreDB.doc(this.cloudDocPath).get()');
     expect(page).toContain('await this.prepareUsersForOnlineLogin()');
+  });
+
+  it("يفرض أحدث نسخة للحساب عند كل دخول متصل ولا يستعيد جلسة قديمة أثناء الاتصال", () => {
+    expect(page).toContain('const latestUsersLoaded = await this.prepareUsersForOnlineLogin()');
+    expect(page).toContain("تعذر التحقق من أحدث بيانات الحسابات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.");
+    expect(page).toContain("وفق أحدث نسخة للحسابات. استخدم البيانات الجديدة بعد أي تعديل من المدير.");
+    expect(page).toContain('&& !navigator.onLine)');
+    expect(page).toContain('this.clearSession();');
+    expect(page).toContain('this.revokeDeviceTrust();');
   });
 
   it("يعرض كل حقول اليوم والشهر باتجاه عربي صحيح", () => {

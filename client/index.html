@@ -1266,8 +1266,16 @@
                 sessionKey: 'soliMedicalSession_v1',
                 deviceTrustKey: 'soliMedicalDeviceTrust_v1',
                 deviceTrustDurationMs: 30 * 24 * 60 * 60 * 1000,
-                deviceTrust: null,
-
+                                deviceTrust: null,
+                getUserCredentialVersion(user) {
+                    const source = `${String(user?.email || '').trim().toLowerCase()}|${String(user?.password || '')}`;
+                    let hash = 2166136261;
+                    for (let index = 0; index < source.length; index += 1) {
+                        hash ^= source.charCodeAt(index);
+                        hash = Math.imul(hash, 16777619);
+                    }
+                    return `${user?.id || ''}:${hash >>> 0}`;
+                },
                 restoreDeviceTrust() {
                     try {
                         const raw = localStorage.getItem(this.deviceTrustKey);
@@ -1287,6 +1295,7 @@
                 enrollDevice(user) {
                     const trust = {
                         userId: user.id,
+                        credentialVersion: this.getUserCredentialVersion(user),
                         enrolledAt: new Date().toISOString(),
                         lastVerifiedAt: new Date().toISOString(),
                         expiresAt: new Date(Date.now() + this.deviceTrustDurationMs).toISOString(),
@@ -1300,10 +1309,11 @@
                     }
                 },
 
-                isDeviceTrustValid(userId) {
+                isDeviceTrustValid(user) {
                     return Boolean(
                         this.deviceTrust &&
-                        String(this.deviceTrust.userId) === String(userId) &&
+                        String(this.deviceTrust.userId) === String(user?.id) &&
+                        this.deviceTrust.credentialVersion === this.getUserCredentialVersion(user) &&
                         (!this.deviceTrust.expiresAt || Date.parse(this.deviceTrust.expiresAt) > Date.now())
                     );
                 },
@@ -1319,12 +1329,14 @@
                         if (!raw) return;
                         const session = JSON.parse(raw);
                         const user = this.users.find(u => u.id === session.userId);
-                        if (user && user.active !== false) {
+                        if (user && user.active !== false && this.isDeviceTrustValid(user) && !navigator.onLine) {
                             this.currentUser = user;
                             this.isAuthenticated = true;
                             this.landOnAllowedPage(user);
-                        } else if (user && user.active === false) {
+                        } else if (user) {
                             this.clearSession();
+                            this.revokeDeviceTrust();
+                            this.loginError = 'تم تغيير كلمة مرور هذا الحساب أو انتهاء اعتماد الجهاز. سجّل الدخول من جديد بالكلمة الحالية.';
                         }
                     } catch (e) {
                         console.error('تعذر استرجاع جلسة الدخول:', e);
@@ -1818,7 +1830,12 @@
                     this.isLoading = true;
                     this.loginError = '';
                     if (navigator.onLine && this.cloudSyncEnabled) {
-                        await this.prepareUsersForOnlineLogin();
+                        const latestUsersLoaded = await this.prepareUsersForOnlineLogin();
+                        if (!latestUsersLoaded) {
+                            this.loginError = 'تعذر التحقق من أحدث بيانات الحسابات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.';
+                            this.isLoading = false;
+                            return;
+                        }
                     }
                     const enteredEmail = (this.loginForm.email || '').trim().toLowerCase();
                     const enteredPassword = (this.loginForm.password || '').trim();
@@ -1826,12 +1843,12 @@
 
                     if (!matchedUser || matchedUser.password !== enteredPassword) {
                         this.loginError = navigator.onLine
-                            ? 'اسم المستخدم أو كلمة المرور غير صحيحة. إذا غيّرت الحساب من جهاز آخر، تأكد من اتصال الإنترنت ثم أعد المحاولة.'
+                            ? 'اسم المستخدم أو كلمة المرور غير صحيحة وفق أحدث نسخة للحسابات. استخدم البيانات الجديدة بعد أي تعديل من المدير.'
                             : 'اسم المستخدم أو كلمة المرور غير صحيحة، كما أن هذا الجهاز يحتاج إلى أول دخول متصل بالإنترنت.';
                         this.isLoading = false;
                         return;
                     }
-                    const trustedForThisUser = this.isDeviceTrustValid(matchedUser.id);
+                    const trustedForThisUser = this.isDeviceTrustValid(matchedUser);
                     if (this.cloudSyncEnabled && !trustedForThisUser && !navigator.onLine) {
                         this.loginError = 'هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول، ثم سيعمل النظام دون اتصال على هذا الجهاز.';
                         this.isLoading = false;
@@ -1850,6 +1867,7 @@
                     this.isAuthenticated = true;
                     if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser);
                     if (trustedForThisUser) {
+                        this.deviceTrust.credentialVersion = this.getUserCredentialVersion(matchedUser);
                         this.deviceTrust.lastVerifiedAt = new Date().toISOString();
                         this.deviceTrust.expiresAt = new Date(Date.now() + this.deviceTrustDurationMs).toISOString();
                         try { localStorage.setItem(this.deviceTrustKey, JSON.stringify(this.deviceTrust)); } catch (error) { console.warn('تعذر تحديث اعتماد الجهاز:', error); }
