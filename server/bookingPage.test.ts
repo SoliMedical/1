@@ -72,6 +72,19 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
       expect(input).toContain('data-1p-ignore="true"');
       expect(input).toContain('data-bwignore="true"');
     }
+
+    expect(page).toContain("const initializeSearchFieldProtections");
+    expect(page).toContain("input.setAttribute('data-protonpass-ignore', 'true')");
+    expect(page).toContain("input.setAttribute('data-soli-search', 'true')");
+    expect(page).toContain("initializeSearchFieldProtections();");
+    expect(page).toContain("document.addEventListener('focusin'");
+  });
+
+  it("يبقي طريقة كلمة المرور المحلية واضحة للمدير دون تحويل حقل الدخول إلى حقل بحث", () => {
+    expect(page).toContain('في حال نسيان كلمة المرور:');
+    expect(page).toContain('يرى كلمة المرور الحالية مكتوبة بوضوح أو يغيّرها مباشرةً');
+    expect(page).toContain('x-model="u.password"');
+    expect(page).toContain('x-model="loginForm.password"');
   });
 
   it("يعرض كل حقول اليوم والشهر باتجاه عربي صحيح", () => {

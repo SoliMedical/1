@@ -131,19 +131,50 @@
             });
         };
 
+        // حقول البحث ليست بيانات اعتماد. نعيد تثبيت هذه الخصائص عند التحميل وكلما
+        // أضاف Alpine حقولاً جديدة، حتى لا يعاملها المتصفح أو مدير كلمات المرور كحقول دخول.
+        const initializeSearchFieldProtections = (root = document) => {
+            const searchInputs = root.querySelectorAll
+                ? root.querySelectorAll('input.soli-search-input, input[type="search"]')
+                : [];
+            searchInputs.forEach((input, index) => {
+                input.type = 'search';
+                input.setAttribute('autocomplete', 'off');
+                input.setAttribute('autocapitalize', 'none');
+                input.setAttribute('autocorrect', 'off');
+                input.setAttribute('spellcheck', 'false');
+                input.setAttribute('data-form-type', 'other');
+                input.setAttribute('data-lpignore', 'true');
+                input.setAttribute('data-1p-ignore', 'true');
+                input.setAttribute('data-bwignore', 'true');
+                input.setAttribute('data-protonpass-ignore', 'true');
+                input.setAttribute('data-soli-search', 'true');
+                if (!input.name) input.name = `soli-search-${index + 1}`;
+                const form = input.closest('form');
+                if (form) form.setAttribute('autocomplete', 'off');
+            });
+        };
+
         document.addEventListener('alpine:initialized', () => {
             window.setTimeout(() => {
                 initializeArabicDatePickers();
+                initializeSearchFieldProtections();
                 let initializationQueued = false;
-                const datePickerObserver = new MutationObserver(() => {
+                const interfaceObserver = new MutationObserver(() => {
                     if (initializationQueued) return;
                     initializationQueued = true;
                     window.setTimeout(() => {
                         initializationQueued = false;
                         initializeArabicDatePickers();
+                        initializeSearchFieldProtections();
                     }, 0);
                 });
-                datePickerObserver.observe(document.body, { childList: true, subtree: true });
+                interfaceObserver.observe(document.body, { childList: true, subtree: true });
+                document.addEventListener('focusin', event => {
+                    if (event.target instanceof HTMLInputElement && (event.target.matches('input.soli-search-input') || event.target.type === 'search')) {
+                        initializeSearchFieldProtections(document);
+                    }
+                });
             }, 0);
         });
 
@@ -3284,6 +3315,10 @@
 
         /* حقول البحث ليست حقول اعتماد: منع مديري كلمات المرور من اقتراح أو تعبئة اسم المستخدم فيها. */
         input.soli-search-input { direction: rtl; text-align: right; }
+        input.soli-search-input:-webkit-autofill {
+            -webkit-box-shadow: 0 0 0 1000px var(--soli-search-background, #fff) inset;
+            -webkit-text-fill-color: currentColor;
+        }
 
         /* حقول التاريخ الأصلية ترث ترتيبها من المتصفح؛ نفرض العربية واتجاه RTL لعرض يوم/شهر/سنة بصورة سليمة. */
         input.soli-date-input[type="date"],
@@ -5276,7 +5311,10 @@
                                         <span x-text="cloudSyncEnabled ? (cloudStatus === 'online' ? '🟢 متصل بالسحابة (Firebase)' : (cloudStatus === 'syncing' ? '🔵 جارٍ المزامنة' : '🟡 وضع محلي - بانتظار الاتصال')) : '⚪ المزامنة السحابية غير مفعّلة'"></span>
                                     </span>
                                 </div>
-                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
+	                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
+	                        <div class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+	                            <strong>في حال نسيان كلمة المرور:</strong> يسجّل أي مدير دخولاً إلى هذه البطاقة، ثم يرى كلمة المرور الحالية مكتوبة بوضوح أو يغيّرها مباشرةً ويضغط «حفظ التعديلات». إذا لم تعد تتذكر كلمة مرور أي حساب مدير، لا توجد استعادة آلية آمنة في نظام محلي بلا إنترنت؛ احتفظ ببيانات المدير في مكان ورقي آمن أو بنسخة احتياطية موثوقة خارج الجهاز.
+	                        </div>
                         <div class="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20 px-4 py-3">
                             <p class="text-xs font-bold text-amber-800 dark:text-amber-300"><i data-lucide="triangle-alert" class="w-4 h-4 inline-block align-middle ml-1"></i><span x-show="syncConflicts.length > 0">تم تسجيل <span x-text="syncConflicts.length"></span> تعارضات مزامنة للمراجعة.</span><span x-show="syncConflicts.length === 0">لا توجد تعارضات مزامنة مسجلة حالياً.</span></p>
                             <button type="button" @click="showSyncConflictsModal = true" class="text-xs font-bold text-amber-800 dark:text-amber-300 underline underline-offset-4">فتح السجل</button>
