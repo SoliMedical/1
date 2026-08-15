@@ -466,6 +466,7 @@
                 newExpenseForm: { category: '', amount: '', date: new Date().toISOString().slice(0, 10), notes: '' },
                 newExpenseCategoryInput: '',
                 incomePeriodFilter: 'all',
+                dashboardRevenueChartPeriod: 'weekly',
                 expensePeriodFilter: 'all',
                 reportsPeriodType: 'monthly',
                 reportsSelectedMonth: new Date().toISOString().slice(0, 7),
@@ -2011,6 +2012,48 @@
                     return (this.invoices || []).filter(invoice => invoice.status === 'مدفوعة' && String(invoice.date || '').slice(0, 4) === yearKey)
                         .reduce((sum, invoice) => sum + this.invoiceNetTotal(invoice), 0);
                 },
+                get dashboardRevenueChart() {
+                    const today = new Date();
+                    today.setHours(0, 0, 0, 0);
+                    const paidInvoices = (this.invoices || []).filter(invoice => invoice.status === 'مدفوعة' && invoice.date);
+                    const amountFor = key => paidInvoices
+                        .filter(invoice => String(invoice.date || '').slice(0, key.length) === key)
+                        .reduce((sum, invoice) => sum + this.invoiceNetTotal(invoice), 0);
+                    let bars = [];
+                    let label = 'آخر 7 أيام';
+                    if (this.dashboardRevenueChartPeriod === 'weekly') {
+                        bars = Array.from({ length: 7 }, (_, index) => {
+                            const date = new Date(today);
+                            date.setDate(today.getDate() - 6 + index);
+                            const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+                            return { key, label: date.toLocaleDateString('ar-EG', { weekday: 'short' }), value: amountFor(key), hint: date.toLocaleDateString('ar-EG', { day: 'numeric', month: 'short' }) };
+                        });
+                    } else if (this.dashboardRevenueChartPeriod === 'monthly') {
+                        label = 'الشهر الحالي بحسب الأسابيع';
+                        const start = new Date(today.getFullYear(), today.getMonth(), 1);
+                        bars = Array.from({ length: 5 }, (_, index) => {
+                            const weekStart = new Date(start);
+                            weekStart.setDate(start.getDate() + (index * 7));
+                            const weekEnd = new Date(weekStart);
+                            weekEnd.setDate(weekStart.getDate() + 6);
+                            const value = paidInvoices.filter(invoice => {
+                                const d = new Date(`${String(invoice.date).slice(0, 10)}T00:00:00`);
+                                return d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d >= weekStart && d <= weekEnd;
+                            }).reduce((sum, invoice) => sum + this.invoiceNetTotal(invoice), 0);
+                            return { key: `week-${index + 1}`, label: `أ${index + 1}`, value, hint: `الأسبوع ${index + 1}` };
+                        });
+                    } else {
+                        label = 'السنة الحالية بحسب الأشهر';
+                        bars = Array.from({ length: 12 }, (_, index) => {
+                            const date = new Date(today.getFullYear(), index, 1);
+                            const key = `${today.getFullYear()}-${String(index + 1).padStart(2, '0')}`;
+                            return { key, label: date.toLocaleDateString('ar-EG', { month: 'short' }), value: amountFor(key), hint: date.toLocaleDateString('ar-EG', { month: 'long' }) };
+                        });
+                    }
+                    const maxValue = Math.max(...bars.map(bar => bar.value), 1);
+                    const total = bars.reduce((sum, bar) => sum + bar.value, 0);
+                    return { label, total, bars: bars.map(bar => ({ ...bar, height: Math.max(8, Math.round((bar.value / maxValue) * 100)) })) };
+                },
 
                 // Settings Management
                 addMasterSymptom() {
@@ -3398,15 +3441,6 @@
                                 </div>
                             </div>
 
-                            <section x-show="currentUser?.permissions?.invoices" class="space-y-3" aria-label="ملخص الإيرادات">
-                                <div class="flex items-center justify-between gap-3 px-1"><div><h3 class="font-bold text-slate-800 dark:text-slate-100">ملخص الإيرادات</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">صافي الفواتير المدفوعة بعد الخصومات</p></div><button @click="navigateTo('invoices')" class="text-xs font-bold text-blue-600 dark:text-blue-300 hover:underline">عرض الفواتير</button></div>
-                                <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                                    <button @click="incomePeriodFilter = 'daily'; navigateTo('invoices')" class="dashboard-revenue-card text-right rounded-2xl border border-emerald-100 dark:border-emerald-900/60 bg-white p-4 shadow-sm hover:-translate-y-0.5 transition-all"><span class="flex items-center justify-between gap-3"><span class="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300 flex items-center justify-center"><i data-lucide="sun" class="w-5 h-5"></i></span><span class="text-[10px] text-slate-400 dark:text-slate-500">اليوم</span></span><p class="mt-3 text-xl font-black text-emerald-700 dark:text-emerald-300" x-text="dashboardRevenueToday.toLocaleString('ar-EG') + ' ج.م'"></p><p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تحصيلات اليوم</p></button>
-                                    <button @click="incomePeriodFilter = 'monthly'; navigateTo('invoices')" class="dashboard-revenue-card text-right rounded-2xl border border-blue-100 dark:border-blue-900/60 bg-white p-4 shadow-sm hover:-translate-y-0.5 transition-all"><span class="flex items-center justify-between gap-3"><span class="w-9 h-9 rounded-xl bg-blue-100 dark:bg-blue-900/40 text-blue-600 dark:text-blue-300 flex items-center justify-center"><i data-lucide="calendar-range" class="w-5 h-5"></i></span><span class="text-[10px] text-slate-400 dark:text-slate-500">الشهر الحالي</span></span><p class="mt-3 text-xl font-black text-blue-700 dark:text-blue-300" x-text="dashboardRevenueMonth.toLocaleString('ar-EG') + ' ج.م'"></p><p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تحصيلات هذا الشهر</p></button>
-                                    <button @click="reportsPeriodType = 'yearly'; navigateTo('reports')" class="dashboard-revenue-card text-right rounded-2xl border border-violet-100 dark:border-violet-900/60 bg-white p-4 shadow-sm hover:-translate-y-0.5 transition-all"><span class="flex items-center justify-between gap-3"><span class="w-9 h-9 rounded-xl bg-violet-100 dark:bg-violet-900/40 text-violet-600 dark:text-violet-300 flex items-center justify-center"><i data-lucide="landmark" class="w-5 h-5"></i></span><span class="text-[10px] text-slate-400 dark:text-slate-500">السنة الحالية</span></span><p class="mt-3 text-xl font-black text-violet-700 dark:text-violet-300" x-text="dashboardRevenueYear.toLocaleString('ar-EG') + ' ج.م'"></p><p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تحصيلات هذا العام</p></button>
-                                </div>
-                            </section>
-
                             <div class="grid grid-cols-2 sm:grid-cols-2 xl:grid-cols-3 gap-3 sm:gap-4">
                                 <button x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" class="dashboard-action-card col-span-2 xl:col-span-3 text-right bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 p-5 sm:p-6 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="flex items-center justify-between gap-4"><span class="flex items-center gap-4"><span class="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-600/20"><i data-lucide="user-plus" class="w-6 h-6"></i></span><span><span class="block text-sm text-blue-800 dark:text-blue-200 font-black">إضافة زيارة / كشف جديد</span><span class="block text-xs text-slate-500 dark:text-slate-400 mt-1">ابدأ ملف مريض جديد أو أضف زيارة إلى ملف قائم.</span></span></span><i data-lucide="arrow-left" class="w-5 h-5 shrink-0 text-blue-600 dark:text-blue-300"></i></span>
@@ -3457,26 +3491,34 @@
                                     <p class="text-sm font-bold text-slate-500 mt-2">إدارة بيانات النظام والصلاحيات</p>
                                 </button>
                             </div>
+
+                            <section x-show="currentUser?.permissions?.invoices" class="rounded-2xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-[#0e1b2d] shadow-sm p-4 sm:p-5" aria-label="رسم بياني للإيراد">
+                                <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-5">
+                                    <div><div class="flex items-center gap-2"><span class="w-9 h-9 rounded-xl bg-emerald-100 dark:bg-emerald-900/40 text-emerald-600 dark:text-emerald-300 flex items-center justify-center"><i data-lucide="chart-no-axes-combined" class="w-5 h-5"></i></span><div><h3 class="font-bold text-slate-800 dark:text-slate-100">اتجاه الإيرادات</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5" x-text="dashboardRevenueChart.label"></p></div></div></div>
+                                    <div class="flex items-center gap-2"><select x-model="dashboardRevenueChartPeriod" class="px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900 text-sm font-bold text-slate-700 dark:text-slate-200"><option value="weekly">الأسبوع</option><option value="monthly">الشهر</option><option value="yearly">السنة</option></select><button @click="reportsPeriodType = dashboardRevenueChartPeriod; navigateTo('reports')" class="px-3 py-2 text-xs font-bold text-blue-700 dark:text-blue-300 bg-blue-50 dark:bg-blue-950/40 rounded-xl hover:bg-blue-100 dark:hover:bg-blue-900/40">التفاصيل</button></div>
+                                </div>
+                                <div class="flex items-end gap-2 sm:gap-3 h-40 sm:h-48 px-1" dir="rtl">
+                                    <template x-for="bar in dashboardRevenueChart.bars" :key="bar.key"><div class="h-full flex-1 min-w-0 flex flex-col justify-end items-center gap-1 group" :title="bar.hint + ': ' + bar.value.toLocaleString('ar-EG') + ' ج.م'"><span class="text-[10px] sm:text-xs font-bold text-slate-600 dark:text-slate-300 opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap" x-text="bar.value ? bar.value.toLocaleString('ar-EG') : ''"></span><div class="w-full max-w-10 rounded-t-lg bg-gradient-to-t from-emerald-600 to-teal-400 dark:from-emerald-500 dark:to-teal-300 transition-all duration-300 hover:from-blue-600 hover:to-cyan-400" :style="'height:' + bar.height + '%'" role="img" :aria-label="bar.hint + ': ' + bar.value.toLocaleString('ar-EG') + ' جنيه'"></div><span class="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 truncate w-full text-center" x-text="bar.label"></span></div></template>
+                                </div>
+                                <div class="mt-4 pt-3 border-t border-slate-100 dark:border-slate-700 flex items-center justify-between gap-3"><span class="text-xs text-slate-500 dark:text-slate-400">إجمالي الفترة</span><strong class="text-lg text-emerald-700 dark:text-emerald-300" x-text="dashboardRevenueChart.total.toLocaleString('ar-EG') + ' ج.م'"></strong></div>
+                            </section>
                         </div>
 
                         <!-- APPOINTMENTS AND CALENDAR PAGE -->
                         <div x-show="currentView === 'appointments'" class="max-w-6xl mx-auto space-y-6">
-                            <div class="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-                                <div><h3 class="font-bold text-slate-800 dark:text-white text-xl">إدارة المواعيد والتقويم</h3><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">نظّم مواعيد اليوم وحوّل الموعد إلى قائمة الانتظار عند حضور المريض.</p></div>
-                                <input type="date" x-model="selectedAppointmentDate" @change="appointmentForm.date = selectedAppointmentDate" class="px-3 py-2.5 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm">
-                            </div>
+                            <div><h3 class="font-bold text-slate-800 dark:text-white text-xl">إدارة المواعيد والتقويم</h3><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">نظّم المواعيد وحوّل الموعد إلى قائمة الانتظار عند حضور المريض.</p></div>
                             <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
                                 <div class="lg:col-span-1 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-3">
                                     <h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4>
                                     <input type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
                                     <input type="tel" inputmode="tel" x-model="appointmentForm.phone" placeholder="رقم الهاتف" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
-                                    <div class="grid grid-cols-2 gap-2"><input type="date" x-model="appointmentForm.date" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><input type="time" x-model="appointmentForm.time" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
+                                    <div class="grid grid-cols-2 gap-2"><input type="date" x-model="appointmentForm.date" @change="selectedAppointmentDate = appointmentForm.date" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><input type="time" x-model="appointmentForm.time" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
                                     <select x-model="appointmentForm.visitType" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select>
                                     <textarea x-model="appointmentForm.notes" rows="2" placeholder="ملاحظات الموعد" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></textarea>
                                     <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold">حفظ الموعد</button>
                                 </div>
                                 <div class="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-4">
-                                    <div class="flex flex-col sm:flex-row gap-2"><input type="search" x-model="appointmentSearch" placeholder="ابحث في مواعيد اليوم..." class="flex-1 px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
+                                    <div class="flex justify-end"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
                                     <div class="space-y-2"><template x-for="appointment in appointmentsForSelectedDay" :key="appointment.id"><article class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40"><div class="min-w-0"><div class="flex items-center gap-2"><span class="font-mono font-bold text-blue-600" x-text="appointment.time"></span><h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="appointment.patientName"></h4></div><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appointment.visitType + (appointment.phone ? ' • ' + appointment.phone : '')"></p><p x-show="appointment.notes" class="text-xs text-slate-400 mt-1" x-text="appointment.notes"></p></div><div class="flex items-center gap-2"><select :value="appointment.status" @change="updateAppointmentStatus(appointment.id, $event.target.value)" class="px-2 py-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs"><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select><button type="button" @click="deleteAppointment(appointment.id)" class="p-2 text-slate-400 hover:text-red-600" title="حذف الموعد"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></article></template><p x-show="appointmentsForSelectedDay.length === 0" class="text-center py-10 text-sm text-slate-400">لا توجد مواعيد مطابقة لهذا اليوم.</p></div>
                                 </div>
                             </div>
@@ -3495,44 +3537,15 @@
                                 </button>
                             </div>
 
-                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div class="grid grid-cols-1 gap-3">
                                 <div class="bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-4 shadow-sm">
                                     <p class="text-xs text-slate-400 font-semibold">إجمالي المنتظرين</p>
                                     <p class="text-3xl font-bold text-amber-600 mt-1" x-text="waitingQueue.length"></p>
                                 </div>
-                                <div class="bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-4 shadow-sm sm:col-span-2">
-                                    <p class="text-xs text-slate-400 font-semibold">طريقة الاستخدام</p>
-                                    <p class="text-sm text-slate-600 dark:text-slate-300 mt-1">اضغط «فتح الكشف»، أضف التشخيص والروشتة، ثم احفظ. سيُنقل المريض إلى إدارة المرضى والملفات الطبية.</p>
-                                </div>
-                            </div>
-
-                            <div class="bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-4 shadow-sm space-y-3">
-                                <div class="flex flex-col lg:flex-row gap-3">
-                                    <div class="relative flex-1">
-                                        <i data-lucide="search" class="absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400"></i>
-                                        <input type="search" x-model="waitingSearch" placeholder="ابحث بالاسم أو رقم الهاتف أو العرض أو الفرع..." class="w-full pr-10 pl-4 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
-                                    </div>
-                                    <select x-model="waitingClinicFilter" class="lg:w-56 px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
-                                        <option value="all">كل الفروع</option>
-                                        <template x-for="clinic in waitingClinics" :key="clinic">
-                                            <option :value="clinic" x-text="clinic"></option>
-                                        </template>
-                                    </select>
-                                    <select x-model="waitingSort" class="lg:w-48 px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border dark:border-slate-700 rounded-xl text-sm">
-                                        <option value="oldest">الأقدم أولاً</option>
-                                        <option value="newest">الأحدث أولاً</option>
-                                        <option value="name">ترتيب بالاسم</option>
-                                    </select>
-                                    <button type="button" @click="resetWaitingFilters()" class="px-4 py-2.5 rounded-xl text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 whitespace-nowrap">مسح التصفية</button>
-                                </div>
-                                <div class="flex items-center justify-between text-xs text-slate-400">
-                                    <span x-text="'نتائج البحث: ' + filteredWaitingQueue.length + ' من ' + waitingQueue.length"></span>
-                                    <span x-show="waitingSearch || waitingClinicFilter !== 'all'" class="text-amber-600 font-semibold">تم تطبيق تصفية</span>
-                                </div>
                             </div>
 
                             <div class="space-y-3">
-                                <template x-for="item in filteredWaitingQueue" :key="item.id">
+                                <template x-for="item in waitingQueue" :key="item.id">
                                     <article class="bg-white dark:bg-slate-900 rounded-2xl border border-amber-100 dark:border-slate-800 shadow-sm p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
                                         <div class="flex items-start gap-3 min-w-0">
                                             <div class="w-11 h-11 rounded-2xl bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300 flex items-center justify-center flex-shrink-0">
@@ -3558,10 +3571,10 @@
                                         </div>
                                     </article>
                                 </template>
-                                <div x-show="filteredWaitingQueue.length === 0" class="bg-white dark:bg-slate-900 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-800 p-10 text-center">
+                                <div x-show="waitingQueue.length === 0" class="bg-white dark:bg-slate-900 rounded-2xl border-2 border-dashed border-slate-200 dark:border-slate-800 p-10 text-center">
                                     <i data-lucide="clipboard-check" class="w-10 h-10 mx-auto text-emerald-500 mb-3"></i>
-                                    <p class="font-bold text-slate-700 dark:text-slate-200" x-text="waitingQueue.length === 0 ? 'لا يوجد مرضى في الانتظار حالياً' : 'لا توجد نتائج مطابقة للتصفية'"></p>
-                                    <p class="text-sm text-slate-400 mt-1" x-text="waitingQueue.length === 0 ? 'عند تسجيل زيارة جديدة ستظهر هنا تلقائياً.' : 'جرّب تعديل كلمة البحث أو مسح خيارات التصفية.'"></p>
+                                    <p class="font-bold text-slate-700 dark:text-slate-200">لا يوجد مرضى في الانتظار حالياً</p>
+                                    <p class="text-sm text-slate-400 mt-1">عند تسجيل زيارة جديدة ستظهر هنا تلقائياً.</p>
                                 </div>
                             </div>
                         </div>
