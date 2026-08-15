@@ -131,6 +131,23 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('this.revokeDeviceTrust();');
   });
 
+  it("يثبت أن طباعة A5 تستخدم ورقة بيضاء بلا حواف أو ظلال داكنة", () => {
+    expect(page).toContain('size: A5 portrait;');
+    expect(page).toContain('margin: 0;');
+    expect(page).toContain('background: #fff !important;');
+    expect(page).toContain('background: white !important;');
+    expect(page).toContain('box-shadow: none !important;');
+    expect(page).toContain('border: 0 !important;');
+    expect(page).toContain('print-color-adjust: exact;');
+  });
+
+  it("يغطي مسارات المزامنة الأساسية للأجهزة الجديدة والانقطاع والتعارض", () => {
+    expect(page).toContain('offline');
+    expect(page).toContain('syncConflicts');
+    expect(page).toContain('deviceTrust');
+    expect(page).toContain('conflictKey');
+  });
+
   it("يعرض كل حقول اليوم والشهر باتجاه عربي صحيح", () => {
     const dateInputs = page.match(/<input\b[^>]*type="(?:date|month)"[^>]*>/g) || [];
 

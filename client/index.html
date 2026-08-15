@@ -3800,6 +3800,14 @@
                 margin: 0 !important;
                 padding: 0 !important;
                 background: #fff !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            /* A5 paper must never inherit the dark application canvas, frame, or shadow. */
+            #printablePrescriptionArea,
+            #printablePrescriptionArea * {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
             }
             body * {
                 visibility: hidden;
@@ -3823,6 +3831,7 @@
                 border: 0 !important;
                 border-radius: 0 !important;
                 box-shadow: none !important;
+                outline: 0 !important;
                 border: none !important;
                 page-break-after: auto;
                 page-break-inside: auto;
