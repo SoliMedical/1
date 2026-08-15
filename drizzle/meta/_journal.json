@@ -1,5 +1,13 @@
 {
   "version": "7",
   "dialect": "mysql",
-  "entries": []
+  "entries": [
+    {
+      "idx": 0,
+      "version": "5",
+      "when": 1786803962082,
+      "tag": "0000_sour_beyonder",
+      "breakpoints": true
+    }
+  ]
 }
