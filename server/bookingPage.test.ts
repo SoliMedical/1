@@ -27,17 +27,13 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain("{ key: 'pending_confirmation', label: 'بانتظار التأكيد'");
   });
 
-  it("يوفر رابط حجز ورمز QR قابلين للنسخ والمشاركة والطباعة", () => {
-    const printMethod = page.slice(page.indexOf("printBookingQr()"), page.indexOf("updateAppointmentStatus", page.indexOf("printBookingQr()")));
+  it("يوفر رابط الحجز داخل إعدادات الروشتة ويدعم رابط QR بديلاً", () => {
     expect(page).toContain("getBookingShareUrl()");
-    expect(page).toContain("renderBookingShareQr()");
-    expect(page).toContain("copyBookingLink()");
-    expect(page).toContain("shareBookingViaWhatsApp()");
-    expect(page).toContain("printBookingQr()");
-    expect(page).toContain('id="appointmentBookingQrCode"');
-    expect(page).not.toContain("<script>window.onload=()=>{window.focus();window.print()}");
-    expect(printMethod).toContain("printWindow.document.open()");
-    expect(printMethod).not.toContain("</head>");
-    expect(printMethod).not.toContain("<body");
+    expect(page).toContain("bookingLink: ''");
+    expect(page).toContain("alternateQrLink: ''");
+    expect(page).toContain('<option value="custom">رابط بديل مستقبلي</option>');
+    expect(page).not.toContain('id="appointmentBookingQrCode"');
+    expect(page).toContain('id="appointmentPhoneInput"');
+    expect(page).toContain('autocomplete="tel-national"');
   });
 });
