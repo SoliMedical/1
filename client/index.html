@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="ar" dir="rtl" class="h-full" x-data="{ darkMode: true, init() { try { this.darkMode = localStorage.getItem('soliMedicalTheme_v1') !== 'light'; localStorage.setItem('soliMedicalTheme_v1', this.darkMode ? 'dark' : 'light'); } catch (e) { this.darkMode = true; } this.$watch('darkMode', value => { try { localStorage.setItem('soliMedicalTheme_v1', value ? 'dark' : 'light'); } catch (e) {} }); } }" :class="{ 'dark': darkMode }">
+<html lang="ar" dir="rtl" class="h-full">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -56,11 +56,20 @@
 
         // لا تبدأ المزامنة إلا مع إعداد Firebase فعلي؛ وإلا يعمل النظام بالبيانات المحلية فقط.
         const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'YOUR_API_KEY');
+        const isPublicBookingUrl = () => {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                return params.has('book') || window.location.hash.replace(/^#/, '') === 'book';
+            } catch (error) {
+                return false;
+            }
+        };
+        const publicBookingMode = isPublicBookingUrl();
 
         let firebaseAuth = null;
         let firestoreDB = null;
 
-        if (isFirebaseConfigured) {
+        if (isFirebaseConfigured && !publicBookingMode) {
             firebase.initializeApp(firebaseConfig);
             firebaseAuth = firebase.auth();
             firestoreDB = firebase.firestore();
@@ -72,7 +81,80 @@
         }
 
         document.addEventListener('alpine:init', () => {
+            Alpine.data('publicRouter', () => ({
+                isPublicBooking: publicBookingMode
+            }));
+
+            Alpine.data('bookingApp', () => ({
+                doctorName: '',
+                specialty: '',
+                clinicName: '',
+                receptionPhone: '',
+                sent: false,
+                sendError: '',
+                whatsappUrl: '',
+                bookingForm: {
+                    name: '',
+                    phone: '',
+                    date: new Date().toISOString().slice(0, 10),
+                    time: '',
+                    visitType: 'كشف',
+                    notes: ''
+                },
+
+                init() {
+                    const params = new URLSearchParams(window.location.search);
+                    this.doctorName = String(params.get('doctor') || 'فريق Soli Medical').trim();
+                    this.specialty = String(params.get('specialty') || 'حجز موعد طبي').trim();
+                    this.clinicName = String(params.get('clinic') || 'العيادة').trim();
+                    this.receptionPhone = this.normalizePhone(params.get('reception') || params.get('phone') || '');
+                    document.title = `حجز موعد | ${this.clinicName}`;
+                    this.$nextTick(() => window.lucide?.createIcons());
+                },
+
+                normalizePhone(value) {
+                    let digits = String(value || '').replace(/\D/g, '');
+                    if (digits.startsWith('00')) digits = digits.slice(2);
+                    if (digits.startsWith('0') && digits.length >= 10) digits = '20' + digits.slice(1);
+                    if (digits.startsWith('1') && digits.length === 10) digits = '20' + digits;
+                    return digits;
+                },
+
+                buildWhatsAppMessage() {
+                    const form = this.bookingForm;
+                    return [
+                        'طلب حجز موعد جديد',
+                        `الاسم: ${String(form.name || '').trim()}`,
+                        `الهاتف: ${String(form.phone || '').trim()}`,
+                        `التاريخ المطلوب: ${form.date || ''}`,
+                        `الوقت المفضل: ${form.time || ''}`,
+                        `نوع الزيارة: ${form.visitType || 'كشف'}`,
+                        `ملاحظات: ${String(form.notes || '').trim() || 'لا توجد'}`,
+                        'الحالة المطلوبة: بانتظار التأكيد'
+                    ].join('\n');
+                },
+
+                submitBooking() {
+                    const form = this.bookingForm;
+                    const phone = this.normalizePhone(form.phone);
+                    if (!String(form.name || '').trim() || !phone || !form.date || !form.time) {
+                        this.sendError = 'يرجى كتابة الاسم ورقم الهاتف والتاريخ والوقت قبل المتابعة.';
+                        return;
+                    }
+                    if (!this.receptionPhone) {
+                        this.sendError = 'رقم استقبال العيادة غير متاح في هذا الرابط. يرجى طلب رابط الحجز من الاستقبال.';
+                        return;
+                    }
+                    form.phone = phone;
+                    this.sendError = '';
+                    this.whatsappUrl = `https://wa.me/${this.receptionPhone}?text=${encodeURIComponent(this.buildWhatsAppMessage())}`;
+                    window.open(this.whatsappUrl, '_blank', 'noopener');
+                    this.sent = true;
+                }
+            }));
+
             Alpine.data('appData', () => ({
+                darkMode: true,
                 isAuthenticated: false,
                 isLoading: false,
                 cloudSyncEnabled: isFirebaseConfigured,
@@ -457,7 +539,7 @@
                     selectedAppointmentDate: new Date().toISOString().slice(0, 10),
                     appointmentSearch: '',
                     appointmentStatusFilter: 'all',
-                    appointmentForm: { patientName: '', phone: '', date: new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '' },
+                    appointmentForm: { patientName: '', phone: '', date: new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '', status: 'scheduled', source: 'manual' },
 
                 invoices: [
                     { id: 'INV-1001', patientName: 'دينا رمضان', serviceName: 'كشف طبي (كشف)', amount: 300, discount: 0, tax: 0, total: 300, date: '2026-08-10', status: 'مدفوعة' }
@@ -493,6 +575,18 @@
                 init() {
                     this.loadPersistedState();
 
+                    try {
+                        this.darkMode = localStorage.getItem('soliMedicalTheme_v1') !== 'light';
+                        document.documentElement.classList.toggle('dark', this.darkMode);
+                    } catch (error) {
+                        this.darkMode = true;
+                        document.documentElement.classList.add('dark');
+                    }
+                    this.$watch('darkMode', value => {
+                        try { localStorage.setItem('soliMedicalTheme_v1', value ? 'dark' : 'light'); } catch (error) {}
+                        document.documentElement.classList.toggle('dark', value);
+                    });
+
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
                     if (!Array.isArray(this.syncConflicts)) this.syncConflicts = [];
                     if (!Array.isArray(this.egyptianMedicineArchive)) this.egyptianMedicineArchive = [];
@@ -513,6 +607,12 @@
                         if ((value || '').trim().length >= 2 && !this.egyptianMedicineArchiveLoaded) {
                             this.loadEgyptianMedicineArchive();
                         }
+                    });
+                    this.$watch('currentView', (view) => {
+                        if (view === 'appointments') this.$nextTick(() => {
+                            this.renderBookingShareQr();
+                            this.renderIcons();
+                        });
                     });
                     this.syncDeviceId = this.getOrCreateSyncDeviceId();
                     this.doctorInfo = {
@@ -1696,6 +1796,7 @@
 
                 get appointmentStatusOptions() {
                     return [
+                        { key: 'pending_confirmation', label: 'بانتظار التأكيد', tone: 'amber' },
                         { key: 'scheduled', label: 'مجدول', tone: 'blue' },
                         { key: 'waiting', label: 'في الانتظار', tone: 'amber' },
                         { key: 'in_consultation', label: 'داخل الكشف', tone: 'violet' },
@@ -1726,22 +1827,115 @@
                     this.selectedAppointmentDate = date || this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
                     this.appointmentForm.date = this.selectedAppointmentDate;
                     this.navigateTo('appointments');
-                    this.renderIcons();
+                    this.$nextTick(() => {
+                        this.renderBookingShareQr();
+                        this.renderIcons();
+                    });
                 },
                 resetAppointmentForm() {
-                    this.appointmentForm = { patientName: '', phone: '', date: this.selectedAppointmentDate || new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '' };
+                    this.appointmentForm = { patientName: '', phone: '', date: this.selectedAppointmentDate || new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '', status: 'scheduled', source: 'manual' };
+                },
+                prepareWhatsAppAppointment() {
+                    const selectedDate = this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
+                    this.appointmentForm = {
+                        patientName: '',
+                        phone: '',
+                        date: selectedDate,
+                        time: '09:00',
+                        visitType: 'كشف',
+                        notes: '',
+                        status: 'pending_confirmation',
+                        source: 'whatsapp'
+                    };
+                    this.$nextTick(() => document.getElementById('appointmentPatientNameInput')?.focus());
                 },
                 addAppointment() {
                     const form = this.appointmentForm || {};
                     const patientName = String(form.patientName || '').trim();
                     if (!patientName || !form.date || !form.time) { alert('اكتب اسم المريض والتاريخ والوقت أولاً.'); return; }
                     const patient = (this.patients || []).find(item => String(item.fullName || '').trim() === patientName || (form.phone && String(item.phone || '').trim() === String(form.phone).trim()));
-                    const appointment = { id: 'APT-' + Date.now(), patientId: patient?.id || null, patientName, phone: String(form.phone || patient?.phone || '').trim(), date: form.date, time: form.time, visitType: form.visitType || 'كشف', notes: String(form.notes || '').trim(), status: 'scheduled', createdAt: new Date().toISOString() };
+                    const status = form.status === 'pending_confirmation' ? 'pending_confirmation' : 'scheduled';
+                    const appointment = { id: 'APT-' + Date.now(), patientId: patient?.id || null, patientName, phone: String(form.phone || patient?.phone || '').trim(), date: form.date, time: form.time, visitType: form.visitType || 'كشف', notes: String(form.notes || '').trim(), status, source: form.source === 'whatsapp' ? 'whatsapp' : 'manual', createdAt: new Date().toISOString() };
                     this.appointments = [appointment, ...(this.appointments || [])];
                     this.selectedAppointmentDate = appointment.date;
                     this.resetAppointmentForm();
                     this.recordAudit('إضافة موعد', patientName + ' - ' + appointment.date + ' ' + appointment.time);
-                    alert('تم حفظ الموعد بنجاح.');
+                    alert(status === 'pending_confirmation' ? 'تم حفظ الطلب بحالة «بانتظار التأكيد».': 'تم حفظ الموعد بنجاح.');
+                },
+                appointmentStatusBadgeClass(status) {
+                    return ({
+                        pending_confirmation: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+                        scheduled: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+                        waiting: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+                        in_consultation: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300',
+                        completed: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
+                        cancelled: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
+                    })[status] || 'bg-slate-100 text-slate-600';
+                },
+                getBookingShareUrl() {
+                    const base = new URL(window.location.href);
+                    base.search = '';
+                    base.hash = '';
+                    base.searchParams.set('book', '');
+                    const clinic = this.clinics?.[0] || {};
+                    const doctor = this.doctorInfo || {};
+                    const reception = clinic.phone || doctor.phone || '';
+                    if (doctor.fullName) base.searchParams.set('doctor', doctor.fullName);
+                    if (doctor.specialty) base.searchParams.set('specialty', doctor.specialty);
+                    if (clinic.name) base.searchParams.set('clinic', clinic.name);
+                    if (reception) base.searchParams.set('reception', this.formatPhoneForWhatsApp(reception));
+                    return base.toString();
+                },
+                renderBookingShareQr() {
+                    this.$nextTick(() => {
+                        const target = document.getElementById('appointmentBookingQrCode');
+                        if (!target) return;
+                        target.innerHTML = '';
+                        const bookingUrl = this.getBookingShareUrl();
+                        if (!window.QRCode) {
+                            target.textContent = 'تعذر تحميل رمز QR';
+                            target.classList.add('text-xs', 'text-slate-400');
+                            return;
+                        }
+                        target.classList.remove('text-xs', 'text-slate-400');
+                        new QRCode(target, { text: bookingUrl, width: 132, height: 132, colorDark: '#0f2d4a', colorLight: '#ffffff', correctLevel: QRCode.CorrectLevel.M });
+                    });
+                },
+                copyBookingLink() {
+                    const link = this.getBookingShareUrl();
+                    if (navigator.clipboard?.writeText) {
+                        navigator.clipboard.writeText(link).then(() => alert('تم نسخ رابط الحجز.')).catch(() => window.prompt('انسخ رابط الحجز:', link));
+                    } else {
+                        window.prompt('انسخ رابط الحجز:', link);
+                    }
+                },
+                shareBookingViaWhatsApp() {
+                    const clinic = this.clinics?.[0]?.name || 'العيادة';
+                    const doctor = this.doctorInfo?.fullName || '';
+                    const text = `لحجز موعد في ${clinic}${doctor ? ' مع ' + doctor : ''}، استخدم الرابط التالي:\n${this.getBookingShareUrl()}`;
+                    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, '_blank', 'noopener');
+                },
+                escapePrintHtml(value) {
+                    return String(value || '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]);
+                },
+                printBookingQr() {
+                    this.renderBookingShareQr();
+                    window.setTimeout(() => {
+                        const target = document.getElementById('appointmentBookingQrCode');
+                        const image = target?.querySelector('img');
+                        const canvas = target?.querySelector('canvas');
+                        const source = image?.src || (canvas?.toDataURL ? canvas.toDataURL('image/png') : '');
+                        if (!source) { alert('يتم تجهيز رمز QR، حاول مرة أخرى بعد لحظة.'); return; }
+                        const clinic = this.escapePrintHtml(this.clinics?.[0]?.name || 'العيادة');
+                        const doctor = this.escapePrintHtml(this.doctorInfo?.fullName || 'Soli Medical');
+                        const printWindow = window.open('', '_blank');
+                        if (!printWindow) { alert('يرجى السماح بالنوافذ المنبثقة لطباعة رمز الحجز.'); return; }
+                        printWindow.document.open();
+                        printWindow.document.title = 'رمز حجز الموعد';
+                        printWindow.document.write(`<style>body{font-family:Arial,sans-serif;text-align:center;padding:35px;color:#0f2d4a}img{width:240px;height:240px;image-rendering:auto}.sub{color:#64748b;font-size:13px;line-height:1.7}</style><main><h2>${clinic}</h2><p>${doctor}</p><img src="${source}" alt="رمز QR لحجز موعد"><p class="sub">امسح الرمز لفتح صفحة طلب موعد عبر واتساب</p></main>`);
+                        printWindow.document.close();
+                        window.setTimeout(() => { printWindow.focus(); printWindow.print(); }, 150);
+                    }, 80);
                 },
                 updateAppointmentStatus(id, status) {
                     const appointment = (this.appointments || []).find(item => item.id === id);
@@ -3400,7 +3594,64 @@
 </style>
 
 </head>
-<body class="h-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 antialiased transition-colors duration-200" x-data="appData">
+<body class="h-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 antialiased transition-colors duration-200" x-data="publicRouter">
+
+    <template x-if="isPublicBooking">
+        <main x-data="bookingApp" x-cloak class="min-h-screen bg-[#eef5f7] text-slate-800">
+            <section class="relative overflow-hidden min-h-screen px-4 py-7 sm:py-12">
+                <div class="absolute inset-x-0 top-0 h-72 bg-[#0f2d4a]"></div>
+                <div class="absolute -top-20 -right-16 h-64 w-64 rounded-full bg-teal-400/20 blur-3xl"></div>
+                <div class="relative mx-auto max-w-5xl">
+                    <header class="flex items-center justify-between gap-4 text-white mb-8 sm:mb-12">
+                        <div class="flex items-center gap-3">
+                            <div class="w-11 h-11 rounded-2xl bg-white/10 border border-white/20 flex items-center justify-center shadow-lg"><i data-lucide="heart-pulse" class="w-6 h-6 text-teal-200"></i></div>
+                            <div><p class="text-lg font-extrabold leading-none">Soli Medical</p><p class="text-[11px] text-sky-100 mt-1">طلب حجز آمن عبر واتساب</p></div>
+                        </div>
+                        <span class="hidden sm:inline-flex items-center gap-2 rounded-full bg-white/10 border border-white/15 px-3 py-1.5 text-xs font-semibold"><i data-lucide="shield-check" class="w-4 h-4 text-teal-200"></i>لا تُعرض بيانات المرضى</span>
+                    </header>
+
+                    <div class="grid lg:grid-cols-[.92fr_1.08fr] gap-6 lg:gap-10 items-start">
+                        <aside class="text-white pt-2 lg:pt-12 px-1 sm:px-5">
+                            <p class="inline-flex items-center gap-2 text-xs font-bold text-teal-100 bg-white/10 border border-white/10 rounded-full px-3 py-1.5"><i data-lucide="calendar-check-2" class="w-4 h-4"></i>طلب موعد جديد</p>
+                            <h1 class="text-3xl sm:text-4xl font-extrabold leading-tight mt-5" x-text="clinicName"></h1>
+                            <p class="text-sky-100 font-semibold mt-3" x-text="doctorName + ' · ' + specialty"></p>
+                            <p class="text-sm text-sky-100/85 leading-7 mt-6 max-w-md">اكتب البيانات المناسبة لك، ثم ستُفتح رسالة واتساب منظمة لتصل إلى الاستقبال. لا يصبح الحجز مؤكداً إلا بعد رد العيادة.</p>
+                            <div class="mt-7 flex gap-3 items-start text-xs text-sky-100/90"><i data-lucide="info" class="w-4 h-4 shrink-0 mt-0.5 text-teal-200"></i><span>هذه الصفحة مخصصة لطلب الموعد فقط، ولا تعرض أي مواعيد أو ملفات طبية.</span></div>
+                        </aside>
+
+                        <div class="bg-white rounded-[1.75rem] shadow-2xl shadow-slate-950/20 border border-white/70 p-5 sm:p-7 lg:p-8">
+                            <template x-if="!sent">
+                                <form @submit.prevent="submitBooking" class="space-y-5" aria-label="نموذج طلب موعد جديد">
+                                    <div><h2 class="text-xl font-extrabold text-slate-900">بيانات طلب الموعد</h2><p class="text-xs text-slate-500 mt-1.5">سيصل الطلب للاستقبال بحالة «بانتظار التأكيد».</p></div>
+                                    <div class="grid sm:grid-cols-2 gap-4">
+                                        <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">الاسم الكامل</span><input type="text" x-model.trim="bookingForm.name" required autocomplete="name" placeholder="اكتب الاسم كما سيظهر في الموعد" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
+                                        <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">رقم الهاتف</span><input type="tel" inputmode="tel" x-model.trim="bookingForm.phone" required autocomplete="tel" placeholder="مثال: 01001234567" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
+                                        <label class="block"><span class="block text-sm font-bold text-slate-700 mb-2">التاريخ المطلوب</span><input type="date" x-model="bookingForm.date" :min="new Date().toISOString().slice(0, 10)" required class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
+                                        <label class="block"><span class="block text-sm font-bold text-slate-700 mb-2">الوقت المفضل</span><input type="time" x-model="bookingForm.time" required class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
+                                        <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">نوع الزيارة</span><select x-model="bookingForm.visitType" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select></label>
+                                        <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">ملاحظة اختيارية</span><textarea x-model.trim="bookingForm.notes" rows="3" placeholder="مثال: أفضل الفترة المسائية" class="w-full resize-none rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></textarea></label>
+                                    </div>
+                                    <p x-show="sendError" x-text="sendError" class="rounded-xl bg-red-50 border border-red-100 px-3 py-2.5 text-xs font-semibold text-red-700"></p>
+                                    <button type="submit" class="w-full flex items-center justify-center gap-2 rounded-xl bg-[#1479b8] hover:bg-[#0f659d] active:scale-[.98] transition px-5 py-3.5 text-sm font-extrabold text-white shadow-lg shadow-blue-200"><i data-lucide="message-circle" class="w-5 h-5"></i>إرسال طلب الحجز عبر واتساب</button>
+                                    <p class="text-[11px] text-center leading-5 text-slate-400">بالضغط على الزر ستنتقل إلى واتساب لإرسال الطلب. يرجى انتظار تأكيد الاستقبال.</p>
+                                </form>
+                            </template>
+                            <template x-if="sent">
+                                <div class="py-6 text-center space-y-5">
+                                    <div class="w-16 h-16 mx-auto rounded-full bg-emerald-100 text-emerald-600 flex items-center justify-center"><i data-lucide="check" class="w-8 h-8"></i></div>
+                                    <div><h2 class="text-xl font-extrabold text-slate-900">فُتحت رسالة واتساب</h2><p class="text-sm leading-7 text-slate-500 mt-2">راجِع الرسالة واضغط إرسال داخل واتساب. سيتواصل معك الاستقبال لتأكيد الموعد.</p></div>
+                                    <a :href="whatsappUrl" target="_blank" rel="noopener" class="inline-flex items-center justify-center gap-2 rounded-xl bg-[#1479b8] px-5 py-3 text-sm font-extrabold text-white"><i data-lucide="message-circle" class="w-5 h-5"></i>فتح واتساب مرة أخرى</a>
+                                </div>
+                            </template>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </template>
+
+    <template x-if="!isPublicBooking">
+        <div x-data="appData">
 
     <!-- Application Root -->
     <div class="min-h-screen flex flex-col">
@@ -3654,19 +3905,30 @@
                         <!-- APPOINTMENTS AND CALENDAR PAGE -->
                         <div x-show="currentView === 'appointments'" class="max-w-6xl mx-auto space-y-6">
                             <div><h3 class="font-bold text-slate-800 dark:text-white text-xl">إدارة المواعيد والتقويم</h3><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">نظّم المواعيد وحوّل الموعد إلى قائمة الانتظار عند حضور المريض.</p></div>
+                            <section class="rounded-2xl border border-teal-100 dark:border-teal-900/60 bg-gradient-to-l from-teal-50 to-white dark:from-teal-950/20 dark:to-slate-900 p-4 sm:p-5 shadow-sm">
+                                <div class="grid lg:grid-cols-[1fr_auto] gap-5 items-center">
+                                    <div class="min-w-0">
+                                        <div class="flex items-center gap-2"><span class="w-9 h-9 rounded-xl bg-teal-100 dark:bg-teal-900/30 text-teal-700 dark:text-teal-300 flex items-center justify-center"><i data-lucide="share-2" class="w-5 h-5"></i></span><div><h4 class="font-extrabold text-slate-800 dark:text-white">رابط الحجز الذاتي للمرضى</h4><p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">لا يعرض الرابط بيانات العيادة الداخلية؛ يحوّل الطلب فقط إلى واتساب الاستقبال.</p></div></div>
+                                        <div class="flex flex-col sm:flex-row gap-2 mt-4"><input :value="getBookingShareUrl()" readonly dir="ltr" class="flex-1 min-w-0 px-3 py-2.5 rounded-xl border border-teal-100 dark:border-teal-900 bg-white/90 dark:bg-slate-950/40 text-xs text-slate-600 dark:text-slate-300 outline-none"><button type="button" @click="copyBookingLink" class="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-white dark:bg-slate-800 border border-teal-100 dark:border-teal-900 text-teal-700 dark:text-teal-300 text-xs font-bold hover:bg-teal-50"><i data-lucide="copy" class="w-4 h-4"></i>نسخ الرابط</button><button type="button" @click="shareBookingViaWhatsApp" class="inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold"><i data-lucide="message-circle" class="w-4 h-4"></i>مشاركة واتساب</button></div>
+                                        <p class="text-[11px] text-slate-400 mt-3">تأكد من وجود رقم الهاتف في بيانات الطبيب أو أول فرع كي تصل رسالة طلب الحجز إلى الاستقبال.</p>
+                                    </div>
+                                    <div class="justify-self-center lg:justify-self-end bg-white p-3 rounded-2xl border border-teal-100 dark:border-teal-900/60 text-center shadow-sm"><div id="appointmentBookingQrCode" class="w-[132px] h-[132px] flex items-center justify-center mx-auto" aria-label="رمز QR لرابط الحجز الذاتي"></div><button type="button" @click="printBookingQr" class="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-teal-700 dark:text-teal-300 hover:underline"><i data-lucide="printer" class="w-3.5 h-3.5"></i>طباعة الرمز</button></div>
+                                </div>
+                            </section>
                             <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
                                 <div class="lg:col-span-1 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-3">
-                                    <h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4>
-                                    <input type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
+                                    <div class="flex items-center justify-between gap-2"><h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4><button type="button" @click="prepareWhatsAppAppointment" class="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline">إضافة من طلب واتساب</button></div>
+                                    <div x-show="appointmentForm.status === 'pending_confirmation'" class="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-900/50 px-3 py-2 text-xs font-bold text-amber-700 dark:text-amber-300"><i data-lucide="clock-3" class="w-4 h-4"></i>سيُحفظ هذا الموعد بحالة «بانتظار التأكيد»</div>
+                                    <input id="appointmentPatientNameInput" type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
                                     <input type="tel" inputmode="tel" x-model="appointmentForm.phone" placeholder="رقم الهاتف" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
                                     <div class="grid grid-cols-2 gap-2"><input type="date" x-model="appointmentForm.date" @change="selectedAppointmentDate = appointmentForm.date" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><input type="time" x-model="appointmentForm.time" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></div>
                                     <select x-model="appointmentForm.visitType" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select>
                                     <textarea x-model="appointmentForm.notes" rows="2" placeholder="ملاحظات الموعد" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></textarea>
-                                    <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold">حفظ الموعد</button>
+                                    <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold" x-text="appointmentForm.status === 'pending_confirmation' ? 'حفظ طلب بانتظار التأكيد' : 'حفظ الموعد'"></button>
                                 </div>
                                 <div class="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-4">
                                     <div class="flex justify-end"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
-                                    <div class="space-y-2"><template x-for="appointment in appointmentsForSelectedDay" :key="appointment.id"><article class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40"><div class="min-w-0"><div class="flex items-center gap-2"><span class="font-mono font-bold text-blue-600" x-text="appointment.time"></span><h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="appointment.patientName"></h4></div><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appointment.visitType + (appointment.phone ? ' • ' + appointment.phone : '')"></p><p x-show="appointment.notes" class="text-xs text-slate-400 mt-1" x-text="appointment.notes"></p></div><div class="flex items-center gap-2"><select :value="appointment.status" @change="updateAppointmentStatus(appointment.id, $event.target.value)" class="px-2 py-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs"><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select><button type="button" @click="deleteAppointment(appointment.id)" class="p-2 text-slate-400 hover:text-red-600" title="حذف الموعد"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></article></template><p x-show="appointmentsForSelectedDay.length === 0" class="text-center py-10 text-sm text-slate-400">لا توجد مواعيد مطابقة لهذا اليوم.</p></div>
+                                    <div class="space-y-2"><template x-for="appointment in appointmentsForSelectedDay" :key="appointment.id"><article class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40"><div class="min-w-0"><div class="flex items-center gap-2 flex-wrap"><span class="font-mono font-bold text-blue-600" x-text="appointment.time"></span><h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="appointment.patientName"></h4><span class="inline-flex px-2 py-1 rounded-full text-[10px] font-bold" :class="appointmentStatusBadgeClass(appointment.status || 'scheduled')" x-text="appointmentStatusLabel(appointment.status || 'scheduled')"></span></div><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appointment.visitType + (appointment.phone ? ' • ' + appointment.phone : '')"></p><p x-show="appointment.notes" class="text-xs text-slate-400 mt-1" x-text="appointment.notes"></p></div><div class="flex items-center gap-2"><select :value="appointment.status" @change="updateAppointmentStatus(appointment.id, $event.target.value)" class="px-2 py-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs"><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select><button type="button" @click="deleteAppointment(appointment.id)" class="p-2 text-slate-400 hover:text-red-600" title="حذف الموعد"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></article></template><p x-show="appointmentsForSelectedDay.length === 0" class="text-center py-10 text-sm text-slate-400">لا توجد مواعيد مطابقة لهذا اليوم.</p></div>
                                 </div>
                             </div>
                         </div>
@@ -5678,9 +5940,11 @@
 
     </div>
     <div x-show="showIdleLockModal" x-cloak class="fixed inset-0 z-[90] bg-slate-950/90 flex items-center justify-center p-4"><div class="w-full max-w-sm bg-white dark:bg-slate-900 rounded-2xl shadow-2xl p-6 text-center space-y-4"><i data-lucide="lock-keyhole" class="w-10 h-10 mx-auto text-blue-600"></i><div><h3 class="font-bold text-slate-800 dark:text-white">تم قفل الشاشة تلقائياً</h3><p class="text-xs text-slate-500 mt-1">أدخل كلمة مرور المستخدم الحالي للمتابعة.</p></div><input type="password" x-model="idleUnlockPassword" @keydown.enter.prevent="unlockIdleSession()" autocomplete="current-password" class="w-full px-4 py-3 border rounded-xl text-center bg-slate-50 dark:bg-slate-800 dark:border-slate-700"><button type="button" @click="unlockIdleSession()" class="w-full px-4 py-3 rounded-xl font-bold bg-blue-600 text-white">فتح النظام</button></div></div>
+        </div>
+    </template>
 </body>
     <script>
-        if ('serviceWorker' in navigator) {
+        if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('./sw.js').catch(error => console.warn('Soli Medical Service Worker:', error));
             });
