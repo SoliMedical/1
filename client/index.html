@@ -2748,21 +2748,21 @@
                     }
                 },
 
-                // Lab tests, radiology, and vital signs each carry an editable "result" value
-                // alongside the selected name — so toggling adds/removes a {name, result} object.
+                // Lab tests, radiology, and vital signs each carry an editable result and content type.
+                // Legacy records without a type are treated as requests unless they already contain a result.
                 toggleLabTestSelection(test) {
                     const idx = this.newRecordForm.selectedLabTests.findIndex(i => i.name === test);
                     if (idx > -1) {
                         this.newRecordForm.selectedLabTests.splice(idx, 1);
                     } else {
-                        this.newRecordForm.selectedLabTests.push({ name: test, result: '' });
+                        this.newRecordForm.selectedLabTests.push({ name: test, result: '', type: 'request' });
                     }
                 },
                 addCustomLabTestToRecord() {
                     const val = this.newRecordForm.customLabTest.trim();
                     if (!val) return;
                     if (!this.newRecordForm.selectedLabTests.some(i => i.name === val)) {
-                        this.newRecordForm.selectedLabTests.push({ name: val, result: '' });
+                        this.newRecordForm.selectedLabTests.push({ name: val, result: '', type: 'request' });
                     }
                     this.newRecordForm.customLabTest = '';
                 },
@@ -2772,14 +2772,14 @@
                     if (idx > -1) {
                         this.newRecordForm.selectedRadiology.splice(idx, 1);
                     } else {
-                        this.newRecordForm.selectedRadiology.push({ name: item, result: '' });
+                        this.newRecordForm.selectedRadiology.push({ name: item, result: '', type: 'request' });
                     }
                 },
                 addCustomRadiologyToRecord() {
                     const val = this.newRecordForm.customRadiology.trim();
                     if (!val) return;
                     if (!this.newRecordForm.selectedRadiology.some(i => i.name === val)) {
-                        this.newRecordForm.selectedRadiology.push({ name: val, result: '' });
+                        this.newRecordForm.selectedRadiology.push({ name: val, result: '', type: 'request' });
                     }
                     this.newRecordForm.customRadiology = '';
                 },
@@ -3205,9 +3205,17 @@
                 // into full international format required by wa.me (e.g. 201021434947).
                 // Formats an array of {name, result} items into a readable "Name: Result" list,
                 // used for both the printed prescription and the WhatsApp message.
+                formatClinicalItem(item) {
+                    const typeLabels = { request: 'طلب', result: 'نتيجة', report: 'تقرير' };
+                    const type = typeLabels[item?.type] || (item?.result ? 'نتيجة' : 'طلب');
+                    const name = String(item?.name || '').trim();
+                    const result = String(item?.result || '').trim();
+                    return `${type}: ${name}${result ? ` — ${result}` : ''}`;
+                },
+
                 formatResultItems(items) {
                     if (!items || items.length === 0) return '';
-                    return items.map(i => i.result ? `${i.name}: ${i.result}` : i.name).join(' ، ');
+                    return items.map(item => this.formatClinicalItem(item)).join(' ، ');
                 },
 
                 formatPhoneForWhatsApp(phone) {
@@ -3654,6 +3662,22 @@
         #printablePrescriptionArea .print-doctor-contact { font-size: calc(.6875rem * var(--print-scale)) !important; }
         #printablePrescriptionArea .print-clinic-footer { font-size: var(--footer-font) !important; }
         #printablePrescriptionArea .print-clinic-footer p { font-size: inherit !important; line-height: 1.45 !important; }
+        #printablePrescriptionArea .print-medical-row {
+            display: flex;
+            align-items: flex-start;
+            gap: .45rem;
+            direction: rtl;
+            min-width: 0;
+            line-height: var(--section-line-height) !important;
+        }
+        #printablePrescriptionArea .print-medical-row > span:first-child {
+            flex: 0 0 auto;
+            white-space: nowrap;
+        }
+        #printablePrescriptionArea .print-medical-row > span:last-child {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
         .print-density-tight .print-section { padding: 2.5mm !important; margin-top: 2.2mm !important; }
         .print-density-compact .print-section { padding: 2mm !important; margin-top: 1.8mm !important; }
         .print-density-tight .print-section p, .print-density-tight .print-medicines-block ol { line-height: 1.3 !important; }
@@ -3699,6 +3723,9 @@
                 page-break-inside: auto;
                 overflow: visible !important;
             }
+            #printablePrescriptionArea.print-no-header { padding-top: 0 !important; }
+            #printablePrescriptionArea.print-no-footer { padding-bottom: 0 !important; }
+            #printablePrescriptionArea.print-no-header.print-no-footer { padding-top: 0 !important; padding-bottom: 0 !important; }
             #printablePrescriptionArea.print-one-page {
                 min-height: 196mm !important;
                 height: auto !important;
@@ -4643,9 +4670,10 @@
                                     </div>
                                 </div>
 
-                                <!-- Lab Test Results (نتيجة المعامل) -->
+                                <!-- Lab content: request, result, or report -->
                                 <div x-show="recordFormSections.labTests" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
-                                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">نتيجة المعامل (اختياري):</label>
+                                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">المعمل (اختياري):</label>
+                                    <p class="text-[11px] text-slate-500 dark:text-slate-400">حدد نوع كل عنصر: طلب فحص، نتيجة مكتوبة، أو تقرير.</p>
                                     <input type="search" name="lab-tests-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="labTestSearchQuery" placeholder="بحث في أنواع التحاليل المعتمدة..." class="soli-search-input w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="max-h-44 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
                                         <template x-for="t in filteredLabTestsMaster" :key="t">
@@ -4655,10 +4683,16 @@
                                                     <span class="text-slate-800 dark:text-slate-200 font-semibold truncate" x-text="t"></span>
                                                 </label>
                                                 <!-- Result box appears right beside the item the moment it's checked -->
-                                                <input x-show="newRecordForm.selectedLabTests.some(i => i.name === t)" x-cloak type="text"
+                                                    <select x-show="newRecordForm.selectedLabTests.some(i => i.name === t)" x-cloak
+                                                            :value="newRecordForm.selectedLabTests.find(i => i.name === t)?.type || 'request'"
+                                                            @change="const it = newRecordForm.selectedLabTests.find(i => i.name === t); if (it) it.type = $event.target.value"
+                                                            class="w-20 flex-shrink-0 px-1.5 py-1 border rounded-lg text-[10px] bg-teal-50 dark:bg-teal-900/30 border-teal-200 dark:border-teal-700 dark:text-white">
+                                                        <option value="request">طلب</option><option value="result">نتيجة</option><option value="report">تقرير</option>
+                                                    </select>
+                                                    <input x-show="newRecordForm.selectedLabTests.some(i => i.name === t)" x-cloak type="text"
                                                        :value="newRecordForm.selectedLabTests.find(i => i.name === t)?.result"
                                                        @input="const it = newRecordForm.selectedLabTests.find(i => i.name === t); if (it) it.result = $event.target.value"
-                                                       placeholder="النتيجة..." class="w-24 flex-shrink-0 px-2 py-1 border rounded-lg text-xs bg-teal-50 dark:bg-teal-900/30 border-teal-200 dark:border-teal-700 dark:text-white">
+                                                       placeholder="البيان أو النتيجة..." class="w-28 flex-shrink-0 px-2 py-1 border rounded-lg text-xs bg-teal-50 dark:bg-teal-900/30 border-teal-200 dark:border-teal-700 dark:text-white">
                                             </div>
                                         </template>
                                     </div>
@@ -4671,7 +4705,8 @@
                                         <template x-for="item in newRecordForm.selectedLabTests.filter(i => !labTestsMasterList.includes(i.name))" :key="item.name">
                                             <div class="flex items-center gap-2 bg-teal-50 dark:bg-teal-900/20 p-2 rounded-lg border border-teal-100 dark:border-teal-800">
                                                 <span class="text-xs font-bold text-teal-800 dark:text-teal-300 flex-1" x-text="item.name"></span>
-                                                <input type="text" x-model="item.result" placeholder="النتيجة..." class="w-28 px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 dark:text-white">
+                                                <select x-model="item.type" class="w-20 px-1.5 py-1.5 border rounded-lg text-[10px] bg-white dark:bg-slate-900 dark:border-slate-700 dark:text-white"><option value="request">طلب</option><option value="result">نتيجة</option><option value="report">تقرير</option></select>
+                                                <input type="text" x-model="item.result" placeholder="البيان أو النتيجة..." class="w-28 px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 dark:text-white">
                                                 <button type="button" @click="toggleLabTestSelection(item.name)" class="text-slate-400 hover:text-red-600">
                                                     <i data-lucide="x" class="w-3.5 h-3.5"></i>
                                                 </button>
@@ -4680,9 +4715,10 @@
                                     </div>
                                 </div>
 
-                                <!-- Radiology (الأشعة) -->
+                                <!-- Radiology content: request, result, or report -->
                                 <div x-show="recordFormSections.radiology" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">الأشعة (اختياري):</label>
+                                    <p class="text-[11px] text-slate-500 dark:text-slate-400">حدد نوع كل عنصر: طلب فحص، نتيجة مكتوبة، أو تقرير.</p>
                                     <input type="search" name="radiology-search" role="searchbox" inputmode="search" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" x-model="radiologySearchQuery" placeholder="بحث في أنواع الأشعة المعتمدة..." class="soli-search-input w-full px-3 py-2 border rounded-xl text-xs bg-white dark:bg-slate-900 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="max-h-44 overflow-y-auto border rounded-xl p-3 bg-white dark:bg-slate-900 space-y-1.5 text-xs">
                                         <template x-for="r in filteredRadiologyMaster" :key="r">
@@ -4692,10 +4728,16 @@
                                                     <span class="text-slate-800 dark:text-slate-200 font-semibold truncate" x-text="r"></span>
                                                 </label>
                                                 <!-- Result box appears right beside the item the moment it's checked -->
-                                                <input x-show="newRecordForm.selectedRadiology.some(i => i.name === r)" x-cloak type="text"
+                                                    <select x-show="newRecordForm.selectedRadiology.some(i => i.name === r)" x-cloak
+                                                            :value="newRecordForm.selectedRadiology.find(i => i.name === r)?.type || 'request'"
+                                                            @change="const it = newRecordForm.selectedRadiology.find(i => i.name === r); if (it) it.type = $event.target.value"
+                                                            class="w-20 flex-shrink-0 px-1.5 py-1 border rounded-lg text-[10px] bg-purple-50 dark:bg-purple-900/30 border-purple-200 dark:border-purple-700 dark:text-white">
+                                                        <option value="request">طلب</option><option value="result">نتيجة</option><option value="report">تقرير</option>
+                                                    </select>
+                                                    <input x-show="newRecordForm.selectedRadiology.some(i => i.name === r)" x-cloak type="text"
                                                        :value="newRecordForm.selectedRadiology.find(i => i.name === r)?.result"
                                                        @input="const it = newRecordForm.selectedRadiology.find(i => i.name === r); if (it) it.result = $event.target.value"
-                                                       placeholder="النتيجة..." class="w-24 flex-shrink-0 px-2 py-1 border rounded-lg text-xs bg-purple-50 dark:bg-purple-900/30 border-purple-200 dark:border-purple-700 dark:text-white">
+                                                       placeholder="البيان أو النتيجة..." class="w-28 flex-shrink-0 px-2 py-1 border rounded-lg text-xs bg-purple-50 dark:bg-purple-900/30 border-purple-200 dark:border-purple-700 dark:text-white">
                                             </div>
                                         </template>
                                     </div>
@@ -4708,7 +4750,8 @@
                                         <template x-for="item in newRecordForm.selectedRadiology.filter(i => !radiologyMasterList.includes(i.name))" :key="item.name">
                                             <div class="flex items-center gap-2 bg-purple-50 dark:bg-purple-900/20 p-2 rounded-lg border border-purple-100 dark:border-purple-800">
                                                 <span class="text-xs font-bold text-purple-800 dark:text-purple-300 flex-1" x-text="item.name"></span>
-                                                <input type="text" x-model="item.result" placeholder="النتيجة..." class="w-28 px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 dark:text-white">
+                                                <select x-model="item.type" class="w-20 px-1.5 py-1.5 border rounded-lg text-[10px] bg-white dark:bg-slate-900 dark:border-slate-700 dark:text-white"><option value="request">طلب</option><option value="result">نتيجة</option><option value="report">تقرير</option></select>
+                                                <input type="text" x-model="item.result" placeholder="البيان أو النتيجة..." class="w-28 px-2 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 dark:text-white">
                                                 <button type="button" @click="toggleRadiologySelection(item.name)" class="text-slate-400 hover:text-red-600">
                                                     <i data-lucide="x" class="w-3.5 h-3.5"></i>
                                                 </button>
@@ -6080,33 +6123,36 @@
                             <p class="print-text-wrap"><span class="font-bold text-slate-500">السن:</span> <span x-text="selectedPrescriptionForPrint?.patientAge || '-'" ></span></p>
                         </div>
 
-                        <template x-if="selectedPrescriptionForPrint?.symptomText || selectedPrescriptionForPrint?.symptom">
-                            <div class="print-section bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 mt-3">
-                                <p class="print-text-wrap"><span class="font-bold text-slate-600">الأعراض: </span><span class="text-sm font-bold" x-text="selectedPrescriptionForPrint.symptomText || selectedPrescriptionForPrint.symptom"></span></p>
+                        <div class="print-section print-medical-summary mt-3 rounded-xl border border-slate-200 bg-slate-50 p-2.5 text-xs font-semibold text-slate-700">
+                            <template x-if="selectedPrescriptionForPrint?.symptomText || selectedPrescriptionForPrint?.symptom">
+                                <div class="print-medical-row border-b border-slate-200 py-1.5">
+                                    <span class="font-bold text-slate-600">الأعراض:</span>
+                                    <span class="print-text-wrap text-sm font-bold" x-text="selectedPrescriptionForPrint.symptomText || selectedPrescriptionForPrint.symptom"></span>
+                                </div>
+                            </template>
+                            <template x-if="selectedPrescriptionForPrint?.vitals && selectedPrescriptionForPrint.vitals.length > 0">
+                                <div class="print-medical-row border-b border-slate-200 py-1.5 text-blue-900">
+                                    <span class="font-bold text-blue-800">العلامات الحيوية:</span>
+                                    <span class="print-text-wrap text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.vitals)"></span>
+                                </div>
+                            </template>
+                            <div class="print-medical-row border-b border-slate-200 py-1.5 text-blue-900">
+                                <span class="font-bold text-blue-800">التشخيص الطبي:</span>
+                                <span class="print-text-wrap text-sm font-bold" x-text="selectedPrescriptionForPrint?.diagnosisText || selectedPrescriptionForPrint?.diagnosis || 'فحص واستشارة طبية'"></span>
                             </div>
-                        </template>
-
-                        <template x-if="selectedPrescriptionForPrint?.vitals && selectedPrescriptionForPrint.vitals.length > 0">
-                            <div class="print-section bg-blue-50 p-3 rounded-xl border border-blue-100 text-xs font-semibold text-blue-900 mt-3">
-                                <p class="print-text-wrap"><span class="font-bold text-blue-800">العلامات الحيوية: </span><span class="text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.vitals)"></span></p>
-                            </div>
-                        </template>
-
-                        <div class="print-section bg-blue-50 p-3 rounded-xl border border-blue-100 text-xs font-semibold text-blue-900 mt-3">
-                            <p class="print-text-wrap"><span class="font-bold text-blue-800">التشخيص الطبي: </span><span class="text-sm font-bold" x-text="selectedPrescriptionForPrint?.diagnosisText || selectedPrescriptionForPrint?.diagnosis || 'فحص واستشارة طبية'"></span></p>
+                            <template x-if="selectedPrescriptionForPrint?.labTests && selectedPrescriptionForPrint.labTests.length > 0">
+                                <div class="print-medical-row border-b border-slate-200 py-1.5 text-teal-900">
+                                    <span class="font-bold text-teal-800">المعمل:</span>
+                                    <span class="print-text-wrap text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.labTests)"></span>
+                                </div>
+                            </template>
+                            <template x-if="selectedPrescriptionForPrint?.radiology && selectedPrescriptionForPrint.radiology.length > 0">
+                                <div class="print-medical-row py-1.5 text-purple-900">
+                                    <span class="font-bold text-purple-800">الأشعة:</span>
+                                    <span class="print-text-wrap text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.radiology)"></span>
+                                </div>
+                            </template>
                         </div>
-
-                        <template x-if="selectedPrescriptionForPrint?.labTests && selectedPrescriptionForPrint.labTests.length > 0">
-                            <div class="print-section bg-teal-50 p-3 rounded-xl border border-teal-100 text-xs font-semibold text-teal-900 mt-3">
-                                <p class="print-text-wrap"><span class="font-bold text-teal-800">المعمل: </span><span class="text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.labTests)"></span></p>
-                            </div>
-                        </template>
-
-                        <template x-if="selectedPrescriptionForPrint?.radiology && selectedPrescriptionForPrint.radiology.length > 0">
-                            <div class="print-section bg-purple-50 p-3 rounded-xl border border-purple-100 text-xs font-semibold text-purple-900 mt-3">
-                                <p class="print-text-wrap"><span class="font-bold text-purple-800">الأشعة: </span><span class="text-sm" x-text="formatResultItems(selectedPrescriptionForPrint.radiology)"></span></p>
-                            </div>
-                        </template>
                     </div>
 
                     <div class="print-page print-medicines-page print-medicines-block space-y-4 py-2">

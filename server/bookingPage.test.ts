@@ -88,6 +88,25 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('x-model="loginForm.password"');
   });
 
+  it("يعرض صفوف المعمل والأشعة مع نوع محتوى واضح في الإدخال والطباعة", () => {
+    expect(page).toContain('value="request">طلب</option>');
+    expect(page).toContain('value="result">نتيجة</option>');
+    expect(page).toContain('value="report">تقرير</option>');
+    expect(page).toContain('formatClinicalItem(item)');
+    expect(page).toContain('class="print-medical-row');
+    expect(page).toContain('>المعمل:</span>');
+    expect(page).toContain('>الأشعة:</span>');
+    expect(page).not.toContain('نتيجة المعامل (اختياري):');
+    expect(page).not.toContain('الأشعة المطلوبة');
+    expect(page).not.toContain('نتيجة المعمل المطلوبة');
+  });
+
+  it("يعطي وضع الورق المطبوع مسبقاً هامشاً صفرياً عند إخفاء الرأس أو التذييل", () => {
+    expect(page).toContain('print-no-header { padding-top: 0 !important; }');
+    expect(page).toContain('print-no-footer { padding-bottom: 0 !important; }');
+    expect(page).toContain('printHeaderEnabled = false; doctorInfo.printFooterEnabled = false');
+  });
+
   it("يعرض كل حقول اليوم والشهر باتجاه عربي صحيح", () => {
     const dateInputs = page.match(/<input\b[^>]*type="(?:date|month)"[^>]*>/g) || [];
 
