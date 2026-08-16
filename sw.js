@@ -1,4 +1,4 @@
-const CACHE_NAME = "soli-medical-pwa-v5";
+const CACHE_NAME = "soli-medical-pwa-v7";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -31,6 +31,7 @@ self.addEventListener("fetch", (event) => {
   // HTML and application scripts must prefer the network so deployments reach
   // existing installations immediately. The cache remains an offline fallback.
   const isAppShell = requestUrl.pathname === "/" ||
+    requestUrl.pathname.endsWith("/") ||
     requestUrl.pathname.endsWith("/index.html") ||
     requestUrl.pathname.endsWith(".js") ||
     requestUrl.pathname.endsWith(".mjs");

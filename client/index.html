@@ -70,7 +70,7 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.4.0';
+        const SOLI_APP_VERSION = 'v1.5.0';
         const SOLI_APP_RELEASE = 'ربط المواعيد بالفواتير والصلاحيات وتحسين الدخول بين المتصفحات';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -4367,6 +4367,7 @@
                         <p class="soli-login-kicker text-[10px] font-extrabold uppercase mb-2">Clinic Operations</p>
                         <h1 class="soli-login-wordmark text-[2.15rem] font-extrabold tracking-tight">Soli Medical</h1>
                         <p class="soli-login-subtitle text-sm font-semibold mt-2">إدارة العيادة بوضوح، حتى عند انقطاع الاتصال.</p>
+                        <div class="mt-3 inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-400/10 px-3 py-1.5 text-xs font-extrabold text-cyan-100" aria-label="رقم إصدار النظام"><i data-lucide="badge-check" class="w-4 h-4"></i><span x-text="'إصدار النظام ' + appVersion"></span></div>
                     </div>
 
 
