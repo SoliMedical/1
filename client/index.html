@@ -69,6 +69,9 @@
             }
         };
         const publicBookingMode = isPublicBookingUrl();
+        // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
+        const SOLI_APP_VERSION = 'v1.4.0';
+        const SOLI_APP_RELEASE = 'ربط المواعيد بالفواتير والصلاحيات وتحسين الدخول بين المتصفحات';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -275,6 +278,8 @@
 
                 // Full Page View Navigation Control
                 currentView: 'dashboard',
+                appVersion: SOLI_APP_VERSION,
+                appRelease: SOLI_APP_RELEASE,
                 navigationHistory: [],
                 openPrescriptionPatientId: null,
 
@@ -1846,6 +1851,7 @@
                             if (validUsers.length) {
                                 this.users = validUsers;
                                 this.persistState();
+                                this.revokeDeviceTrust();
                                 return true;
                             }
                             if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
@@ -2318,13 +2324,16 @@
                     if (validPhone === null) return;
                     form.phone = validPhone;
                     const patient = (this.patients || []).find(item => String(item.fullName || '').trim() === patientName || (form.phone && String(item.phone || '').trim() === String(form.phone).trim()));
-                    const status = form.status === 'pending_confirmation' ? 'pending_confirmation' : 'scheduled';
+                    const allowedStatuses = new Set(this.appointmentStatusOptions.map(item => item.key));
+                    const status = allowedStatuses.has(form.status) ? form.status : 'scheduled';
                     const appointment = { id: 'APT-' + Date.now(), patientId: patient?.id || null, patientName, phone: String(form.phone || patient?.phone || '').trim(), date: form.date, time: form.time, visitType: form.visitType || 'كشف', notes: String(form.notes || '').trim(), status, source: form.source === 'whatsapp' ? 'whatsapp' : 'manual', createdAt: new Date().toISOString() };
                     this.appointments = [appointment, ...(this.appointments || [])];
                     this.selectedAppointmentDate = appointment.date;
                     this.resetAppointmentForm();
                     if (['waiting', 'in_consultation', 'completed'].includes(status)) {
                         this.ensureAppointmentFinancialLink(appointment);
+                        if (status === 'waiting' || status === 'in_consultation') this.ensureAppointmentQueueLink(appointment);
+                        if (status === 'completed') this.completeAppointment(appointment);
                     }
                     this.recordAudit('إضافة موعد', patientName + ' - ' + appointment.date + ' ' + appointment.time);
                     this.persistState();
@@ -5511,6 +5520,13 @@
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings' || currentView === 'prescriptionSettings'" class="max-w-4xl space-y-6">
+                            <div class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-cyan-200 dark:border-cyan-900/60 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3" dir="rtl">
+                                <div class="flex items-center gap-3">
+                                    <span class="w-10 h-10 rounded-xl bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 flex items-center justify-center"><i data-lucide="badge-check" class="w-5 h-5"></i></span>
+                                    <div><h3 class="font-bold text-slate-800 dark:text-white">نسخة النظام</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appRelease"></p></div>
+                                </div>
+                                <span class="self-start sm:self-auto text-sm font-extrabold text-cyan-800 dark:text-cyan-200 bg-cyan-50 dark:bg-cyan-950/40 px-3 py-2 rounded-lg" x-text="'إصدار ' + appVersion"></span>
+                            </div>
                             <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">

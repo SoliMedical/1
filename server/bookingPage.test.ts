@@ -208,4 +208,11 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('نُقل إلى إدارة المرضى');
     expect(page).toContain('removeFromQueueForPatient(patientId)');
   });
+
+  it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.4.0'");
+    expect(page).toContain('appVersion: SOLI_APP_VERSION');
+    expect(page).toContain("'إصدار ' + appVersion");
+    expect(page).toContain('نسخة النظام');
+  });
 });
