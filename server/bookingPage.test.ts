@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const page = readFileSync(resolve(import.meta.dirname, "../client/index.html"), "utf8");
+const sw = readFileSync(resolve(import.meta.dirname, "../client/public/sw.js"), "utf8");
 
 const getEgyptianPhoneValidator = () => {
   const match = page.match(/const validateEgyptianPhone = \(value\) => \{[\s\S]*?^\s*};/m);
@@ -189,7 +190,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   it("يربط صلاحية المواعيد مستقلاً عن مرضى الانتظار مع دعم الحسابات القديمة", () => {
     expect(page).toContain("{ key: 'appointments', label: 'المواعيد والتقويم' }");
     expect(page).toContain("appointments: 'appointments'");
-    expect(page).toContain("u.permissions.appointments = u.role === 'admin' || !!u.permissions.waitingQueue");
+    expect(page).toContain("permissions.appointments = Boolean(permissions.waitingQueue)");
+    expect(page).toContain("permissions[module.key] = true");
     expect(page).toContain("currentUser?.permissions?.appointments || currentUser?.permissions?.waitingQueue");
   });
 
@@ -220,5 +222,28 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('this.renderBookingShareQr()');
     expect(page).toContain('renderBookingShareQr() {');
     expect(page).toContain("document.getElementById('bookingShareQrCode')");
+  });
+
+  it("يستخدم تعريفاً واحداً لفتح المواعيد مع التوافق مع صلاحية الانتظار", () => {
+    const matches = page.match(/^\s*openAppointmentsPage\s*\([^)]*\)\s*\{/gm) || [];
+    expect(matches).toHaveLength(1);
+    expect(page).toContain("const canOpen = user?.role === 'admin' || permissions.appointments || permissions.waitingQueue");
+    expect(page).toContain("this.currentView = 'appointments'");
+  });
+
+  it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js')");
+    expect(sw).toContain('soli-medical-pwa-v5');
+    expect(sw).toContain('const isAppShell');
+    expect(sw).toContain('fetch(event.request)');
+  });
+});
+
+
+describe("تحديث جلسة المستخدم بعد مزامنة الصلاحيات", () => {
+  it("يحدّث currentUser من users الجديدة قبل فحص صلاحية المواعيد", () => {
+    expect(page).toContain("syncCurrentUserFromUsers()");
+    expect(page).toContain("if (freshUser) this.currentUser = this.withCompatiblePermissions(freshUser);");
+    expect(page).toContain("this.users = this.normalizeUsers(data.users);\n                                this.syncCurrentUserFromUsers();");
   });
 });

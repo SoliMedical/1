@@ -864,6 +864,26 @@
                         users: Array.isArray(data?.users) ? data.users.length : 0
                     };
                 },
+                syncCurrentUserFromUsers() {
+                    if (!this.currentUser || !Array.isArray(this.users)) return;
+                    const currentId = String(this.currentUser.id ?? '');
+                    const currentEmail = String(this.currentUser.email || '').trim().toLowerCase();
+                    const freshUser = this.users.find(user =>
+                        (currentId && String(user.id ?? '') === currentId) ||
+                        (currentEmail && String(user.email || '').trim().toLowerCase() === currentEmail)
+                    );
+                    if (freshUser) this.currentUser = this.withCompatiblePermissions(freshUser);
+                },
+                withCompatiblePermissions(user) {
+                    if (!user) return user;
+                    const permissions = { ...(user.permissions || {}) };
+                    if (user.role === 'admin' || user.id === 1 || String(user.id) === '1') {
+                        this.permissionModules.forEach(module => { permissions[module.key] = true; });
+                    } else if (permissions.appointments === undefined) {
+                        permissions.appointments = Boolean(permissions.waitingQueue);
+                    }
+                    return { ...user, permissions };
+                },
                 normalizeUsers(users) {
                     const source = Array.isArray(users) ? users : [];
                     const result = [];
@@ -877,7 +897,7 @@
                     };
                     source.forEach(rawUser => {
                         if (!rawUser || !rawUser.email || !rawUser.password) return;
-                        const user = { ...rawUser, email: String(rawUser.email).trim(), password: String(rawUser.password) };
+                        const user = this.withCompatiblePermissions({ ...rawUser, email: String(rawUser.email).trim(), password: String(rawUser.password) });
                         const emailKey = user.email.toLowerCase();
                         const idKey = user.id === undefined || user.id === null ? '' : String(user.id);
                         const existingIndex = (idKey && indexesById.has(idKey)) ? indexesById.get(idKey) : indexesByEmail.get(emailKey);
@@ -1056,6 +1076,7 @@
                             const remoteMeta = data._syncMeta || {};
                             if (Array.isArray(data.users) && !this.usersWriteInFlight && !this.usersLocalChangesPending) {
                                 this.users = this.normalizeUsers(data.users);
+                                this.syncCurrentUserFromUsers();
                                 this.persistState();
                             }
                             const remoteRevision = Number(remoteMeta.revision || 0);
@@ -1129,6 +1150,7 @@
                     const docRef = firestoreDB.doc(this.cloudDocPath);
                     const writeSequence = Number(this.syncChangeSequence || 0);
                     this.users = this.normalizeUsers(this.users);
+                    this.syncCurrentUserFromUsers();
                     const usersWriteSequence = Number(this.usersChangeSequence || 0);
                     const localUsers = JSON.parse(JSON.stringify(this.users || []));
                     this.cloudStatus = 'syncing';
@@ -1456,7 +1478,11 @@
                         } else if (user) {
                             this.clearSession();
                             this.revokeDeviceTrust();
-                            this.loginError = 'تم تغيير كلمة مرور هذا الحساب أو انتهاء اعتماد الجهاز. سجّل الدخول من جديد بالكلمة الحالية.';
+                            // انتهاء اعتماد الجهاز لا يمنع إعادة الدخول المتصل؛ يعاد اعتماد
+                            // المتصفح بعد نجاح الاسم وكلمة المرور من أحدث نسخة للحسابات.
+                            if (!navigator.onLine) {
+                                this.loginError = 'تم تغيير كلمة مرور هذا الحساب أو انتهاء اعتماد الجهاز. اتصل بالإنترنت ثم سجّل الدخول بالكلمة الحالية.';
+                            }
                         }
                     } catch (e) {
                         console.error('تعذر استرجاع جلسة الدخول:', e);
@@ -1850,6 +1876,7 @@
                             const validUsers = this.normalizeUsers(remoteUsers);
                             if (validUsers.length) {
                                 this.users = validUsers;
+                                this.syncCurrentUserFromUsers();
                                 this.persistState();
                                 this.revokeDeviceTrust();
                                 return true;
@@ -2195,9 +2222,35 @@
                     return this.firebaseMigrationUser ? this.firebaseEmailForUser(this.firebaseMigrationUser.email) : '';
                 },
 
+                openAppointmentsPage(date = null) {
+                    const user = this.currentUser ? this.withCompatiblePermissions(this.currentUser) : null;
+                    if (user) this.currentUser = user;
+                    const permissions = user?.permissions || {};
+                    const canOpen = user?.role === 'admin' || permissions.appointments || permissions.waitingQueue;
+                    if (!canOpen) {
+                        this.landOnAllowedPage(user);
+                        this.mobileMenuOpen = false;
+                        return;
+                    }
+                    this.selectedAppointmentDate = date || this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
+                    this.appointmentForm.date = this.selectedAppointmentDate;
+                    // تعيين الصفحة مباشرة يمنع أي حالة صلاحيات قديمة من إعادة التوجيه
+                    // إلى لوحة التحكم أثناء تحديث currentUser من Firestore.
+                    this.currentView = 'appointments';
+                    localStorage.setItem('soliLastSection', 'appointments');
+                    this.mobileMenuOpen = false;
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                    this.$nextTick(() => {
+                        this.renderBookingShareQr();
+                        this.renderIcons();
+                    });
+                },
                 navigateTo(view, options = {}) {
                     const requiredPermission = this.viewPermissionMap[view];
-                    if (this.currentUser && requiredPermission && !this.currentUser.permissions[requiredPermission]) {
+                    const compatibleUser = this.currentUser ? this.withCompatiblePermissions(this.currentUser) : null;
+                    if (compatibleUser) this.currentUser = compatibleUser;
+                    const legacyAppointmentsAccess = view === 'appointments' && (compatibleUser?.role === 'admin' || compatibleUser?.permissions?.waitingQueue);
+                    if (compatibleUser && requiredPermission && !compatibleUser.permissions[requiredPermission] && !legacyAppointmentsAccess) {
                         // Not allowed here — send them to the first section they DO have access to.
                         this.landOnAllowedPage(this.currentUser);
                         this.mobileMenuOpen = false;
@@ -2289,15 +2342,6 @@
                 },
                 get reportCompletedAppointments() {
                     return this.reportAppointments.filter(item => item.status === 'completed');
-                },
-                openAppointmentsPage(date = null) {
-                    this.selectedAppointmentDate = date || this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
-                    this.appointmentForm.date = this.selectedAppointmentDate;
-                    this.navigateTo('appointments');
-                    this.$nextTick(() => {
-                        this.renderBookingShareQr();
-                        this.renderIcons();
-                    });
                 },
                 resetAppointmentForm() {
                     this.appointmentForm = { patientName: '', phone: '', date: this.selectedAppointmentDate || new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '', status: 'scheduled', source: 'manual' };
