@@ -70,7 +70,7 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.4.0';
+        const SOLI_APP_VERSION = 'v1.5.0';
         const SOLI_APP_RELEASE = 'ربط المواعيد بالفواتير والصلاحيات وتحسين الدخول بين المتصفحات';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -265,6 +265,10 @@
                 authError: '',
                 showPassword: false,
                 loginError: '',
+                flashNotice: '',
+                flashNoticeType: 'success',
+                flashNoticeTimer: null,
+                recentRegisteredPatients: [],
                 backupInfo: '',
                 patientSearch: '',
                 patientVisitTypeFilter: 'all',
@@ -1471,10 +1475,16 @@
                         if (!raw) return;
                         const session = JSON.parse(raw);
                         const user = this.users.find(u => u.id === session.userId);
-                        if (user && user.active !== false && this.isDeviceTrustValid(user) && !navigator.onLine) {
+                        if (user && user.active !== false && (navigator.onLine || this.isDeviceTrustValid(user))) {
                             this.currentUser = user;
                             this.isAuthenticated = true;
-                            this.landOnAllowedPage(user);
+                            const savedView = localStorage.getItem('soliLastSection');
+                            const savedPermission = this.viewPermissionMap?.[savedView];
+                            if (savedView && (!savedPermission || user.role === 'admin' || user.permissions?.[savedPermission])) {
+                                this.currentView = savedView;
+                            } else {
+                                this.landOnAllowedPage(user);
+                            }
                         } else if (user) {
                             this.clearSession();
                             this.revokeDeviceTrust();
@@ -1779,6 +1789,22 @@
                             window.lucide.createIcons();
                         }
                     });
+                },
+                showFlashNotice(message, type = 'success') {
+                    this.flashNotice = String(message || '');
+                    this.flashNoticeType = type;
+                    if (this.flashNoticeTimer) clearTimeout(this.flashNoticeTimer);
+                    this.flashNoticeTimer = setTimeout(() => { this.flashNotice = ''; }, 1000);
+                },
+                saveVisitTypePrices() {
+                    const normalized = {};
+                    Object.entries(this.visitTypePrices || {}).forEach(([name, value]) => {
+                        normalized[name] = Math.max(0, Number(value) || 0);
+                    });
+                    this.visitTypePrices = normalized;
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.showFlashNotice('تم حفظ أسعار أنواع الزيارات والفواتير تلقائياً');
                 },
 
                 handleClinicLogoUpload(event) {
@@ -2996,9 +3022,10 @@
                         alert('يوجد نوع زيارة بنفس هذا الاسم بالفعل');
                         return;
                     }
-                    this.visitTypePrices[name] = Number(this.newVisitTypePrice) || 0;
+                    this.visitTypePrices[name] = Math.max(0, Number(this.newVisitTypePrice) || 0);
                     this.newVisitTypeName = '';
                     this.newVisitTypePrice = '';
+                    this.saveVisitTypePrices();
                     this.renderIcons();
                 },
                 removeVisitType(name) {
@@ -3011,6 +3038,7 @@
                     if (this.patientForm.visitType === name) {
                         this.patientForm.visitType = Object.keys(this.visitTypePrices)[0];
                     }
+                    this.saveVisitTypePrices();
                 },
 
                 openPatientFormPage() {
@@ -3281,11 +3309,17 @@
                             status: 'مدفوعة'
                         });
                     }
+                                        const savedPatient = this.editingPatient || this.matchedExistingPatient || this.patients[0];
+                    if (savedPatient) {
+                        this.recentRegisteredPatients = [{ id: savedPatient.id, name: savedPatient.fullName, visitType: savedPatient.visitType, createdAt: new Date().toISOString() }, ...(this.recentRegisteredPatients || [])].slice(0, 8);
+                    }
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.showFlashNotice(`تم تسجيل زيارة ${savedPatient?.fullName || ''} وتوليد الفاتورة`);
                     this.matchedExistingPatient = null;
-
+                    this.editingPatient = null;
                     this.renderIcons();
                 },
-
                 openMedicalRecordPage(patient) {
                     this.selectedPatientForRecord = patient;
                     if (!this.selectedPatientForRecord.selectedSymptoms) this.selectedPatientForRecord.selectedSymptoms = [];
@@ -4315,8 +4349,12 @@
         <div x-data="appData">
 
     <!-- Application Root -->
-    <div class="min-h-screen flex flex-col">
-
+        <div class="min-h-screen flex flex-col">
+        <template x-if="flashNotice">
+            <div class="fixed top-4 left-1/2 -translate-x-1/2 z-[100] w-[min(92vw,32rem)] rounded-2xl border px-4 py-3 text-center text-sm font-bold shadow-2xl"
+                 :class="flashNoticeType === 'error' ? 'bg-red-600 text-white border-red-400' : 'bg-emerald-600 text-white border-emerald-400'"
+                 role="status" aria-live="polite" x-text="flashNotice"></div>
+        </template>
         <!-- LOGIN VIEW -->
         <template x-if="!isAuthenticated">
             <div class="soli-login-shell min-h-screen flex items-center justify-center p-4 sm:p-6">
@@ -4329,6 +4367,7 @@
                         <p class="soli-login-kicker text-[10px] font-extrabold uppercase mb-2">Clinic Operations</p>
                         <h1 class="soli-login-wordmark text-[2.15rem] font-extrabold tracking-tight">Soli Medical</h1>
                         <p class="soli-login-subtitle text-sm font-semibold mt-2">إدارة العيادة بوضوح، حتى عند انقطاع الاتصال.</p>
+                        <div class="mt-3 inline-flex items-center gap-2 rounded-full border border-cyan-300/40 bg-cyan-400/10 px-3 py-1.5 text-xs font-extrabold text-cyan-100" aria-label="رقم إصدار النظام"><i data-lucide="badge-check" class="w-4 h-4"></i><span x-text="'إصدار النظام ' + appVersion"></span></div>
                     </div>
 
 
@@ -4879,13 +4918,26 @@
                                     </div>
                                 </div>
 
-                                <div class="flex justify-end space-x-2 space-x-reverse pt-4 border-t dark:border-slate-800">
+                                                                <div class="flex justify-end space-x-2 space-x-reverse pt-4 border-t dark:border-slate-800">
                                     <button type="button" @click="navigateTo('patientsList')" class="px-4 py-2 text-sm text-slate-500">إلغاء</button>
                                     <button type="submit" class="px-6 py-2.5 bg-blue-600 text-white rounded-xl text-sm font-bold shadow-lg">حفظ المريض وتوليد الفاتورة</button>
                                 </div>
                             </form>
+                            <div x-show="recentRegisteredPatients.length" class="mt-5 rounded-2xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/70 dark:bg-emerald-950/20 p-4">
+                                <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+                                    <h4 class="font-bold text-emerald-800 dark:text-emerald-300">آخر الزيارات المسجلة</h4>
+                                    <button type="button" @click="navigateTo('followUps')" class="text-xs font-bold text-blue-700 dark:text-blue-300 hover:underline">فتح المتابعة القادمة</button>
+                                </div>
+                                <div class="grid gap-2 sm:grid-cols-2">
+                                    <template x-for="recent in recentRegisteredPatients" :key="recent.id + '-' + recent.createdAt">
+                                        <button type="button" @click="navigateTo('followUps')" class="flex items-center justify-between rounded-xl bg-white dark:bg-slate-900 px-3 py-2 text-right shadow-sm hover:ring-2 hover:ring-emerald-400">
+                                            <span class="font-semibold" x-text="recent.name"></span>
+                                            <span class="text-[11px] text-slate-500" x-text="recent.visitType || 'زيارة'"></span>
+                                        </button>
+                                    </template>
+                                </div>
+                            </div>
                         </div>
-
                         <!-- 4. FULL PAGE EXTENDED MEDICAL RECORD VIEW -->
                         <div x-show="currentView === 'medicalRecord'" class="w-full max-w-7xl mx-auto bg-white dark:bg-slate-900 rounded-2xl p-6 lg:p-10 border dark:border-slate-800 shadow-xl space-y-6">
                             <div class="flex justify-between items-center border-b dark:border-slate-800 pb-4">
