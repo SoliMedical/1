@@ -422,6 +422,7 @@
                 permissionModules: [
                     { key: 'dashboard', label: 'لوحة التحكم' },
                     { key: 'newVisit', label: 'إضافة زيارة / كشف' },
+                    { key: 'appointments', label: 'المواعيد والتقويم' },
                     { key: 'waitingQueue', label: 'مرضى في الانتظار' },
                     { key: 'followUps', label: 'المتابعة القادمة' },
                     { key: 'patients', label: 'المرضى والملفات الطبية' },
@@ -440,7 +441,7 @@
                         password: '1234',
                         role: 'admin',
                         active: true,
-                        permissions: { dashboard: true, newVisit: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, prescriptionSettings: true, settings: true }
+                        permissions: { dashboard: true, newVisit: true, appointments: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, prescriptionSettings: true, settings: true }
                     },
                     {
                         id: 2,
@@ -449,7 +450,7 @@
                         password: '1111',
                         role: 'محاسب',
                         active: true,
-                        permissions: { dashboard: true, newVisit: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, prescriptionSettings: false, settings: false }
+                        permissions: { dashboard: true, newVisit: false, appointments: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, prescriptionSettings: false, settings: false }
                     }
                 ],
                 newUserForm: {
@@ -457,7 +458,7 @@
                     email: '',
                     password: '',
                     role: 'موظف استقبال',
-                    permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, prescriptionSettings: false, settings: false }
+                    permissions: { dashboard: true, newVisit: true, appointments: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, prescriptionSettings: false, settings: false }
                 },
                 firebaseMigrationUserId: '',
                 firebaseMigrationPassword: '',
@@ -762,6 +763,10 @@
                         }
                         if (u.permissions.waitingQueue === undefined) {
                             u.permissions.waitingQueue = u.role === 'admin' || !!u.permissions.newVisit || !!u.permissions.patients;
+                        }
+                        if (u.permissions.appointments === undefined) {
+                            // Before v2.1 appointments shared the waitingQueue permission.
+                            u.permissions.appointments = u.role === 'admin' || !!u.permissions.waitingQueue;
                         }
                         if (u.permissions.prescriptionSettings === undefined) {
                             u.permissions.prescriptionSettings = u.role === 'admin' || !!u.permissions.settings;
@@ -2137,7 +2142,7 @@
                     newVisit: 'newVisit',
                     followUps: 'followUps',
                     waitingQueue: 'waitingQueue',
-                    appointments: 'waitingQueue',
+                    appointments: 'appointments',
                     patientsList: 'patients',
                     medicalRecord: 'patients',
                     invoices: 'invoices',
@@ -2318,7 +2323,63 @@
                     this.appointments = [appointment, ...(this.appointments || [])];
                     this.selectedAppointmentDate = appointment.date;
                     this.resetAppointmentForm();
+                    if (['waiting', 'in_consultation', 'completed'].includes(status)) {
+                        this.ensureAppointmentFinancialLink(appointment);
+                    }
                     this.recordAudit('إضافة موعد', patientName + ' - ' + appointment.date + ' ' + appointment.time);
+                    this.persistState();
+                    this.queueCloudSync();
+                },
+                ensureAppointmentPatient(appointment) {
+                    if (!appointment) return null;
+                    let patient = this.getPatientById(appointment.patientId);
+                    if (!patient) {
+                        patient = (this.patients || []).find(item => String(item.fullName || '').trim() === String(appointment.patientName || '').trim() || (appointment.phone && String(item.phone || '').trim() === String(appointment.phone).trim()));
+                    }
+                    if (!patient) {
+                        patient = { id: 'PAT-' + Date.now(), fullName: appointment.patientName, phone: appointment.phone || '', age: '', gender: '', bloodType: '', visitType: appointment.visitType || 'كشف', selectedSymptoms: [], selectedChronicDiseases: [], records: [] };
+                        this.patients.unshift(patient);
+                    }
+                    appointment.patientId = patient.id;
+                    return patient;
+                },
+                ensureAppointmentFinancialLink(appointment) {
+                    if (!appointment) return null;
+                    const appointmentId = appointment.id || appointment.appointmentId;
+                    if (!appointmentId) return null;
+                    const patient = this.ensureAppointmentPatient(appointment);
+                    let invoice = (this.invoices || []).find(item => String(item.appointmentId || '') === String(appointmentId));
+                    if (!invoice) {
+                        const amount = Number(this.visitTypePrices?.[appointment.visitType] || 300);
+                        invoice = { id: 'INV-APT-' + Date.now(), appointmentId, patientId: patient?.id || appointment.patientId || null, waitingQueueId: appointment.waitingQueueId || null, source: 'appointment', patientName: appointment.patientName, serviceName: `رسوم ${appointment.visitType || 'كشف'} طبي`, amount, discount: 0, tax: 0, total: amount, date: appointment.date || new Date().toISOString().slice(0, 10), status: 'مدفوعة' };
+                        this.invoices.unshift(invoice);
+                    }
+                    appointment.invoiceId = invoice.id;
+                    return invoice;
+                },
+                ensureAppointmentQueueLink(appointment) {
+                    if (!appointment) return null;
+                    const invoice = this.ensureAppointmentFinancialLink(appointment);
+                    let queueItem = (this.waitingQueue || []).find(item => String(item.appointmentId || '') === String(appointment.id));
+                    if (!queueItem) {
+                        queueItem = { id: 'WQ-' + Date.now(), appointmentId: appointment.id, patientId: appointment.patientId, patientName: appointment.patientName, phone: appointment.phone || '', visitType: appointment.visitType || 'كشف', invoiceId: invoice?.id || null, symptom: `زيارة ${appointment.visitType || 'كشف'}`, clinic: 'عيادة الطبيب', status: appointment.status === 'in_consultation' ? 'in_consultation' : 'waiting', createdAt: new Date().toISOString() };
+                        this.waitingQueue.unshift(queueItem);
+                    } else {
+                        queueItem.patientId = appointment.patientId;
+                        queueItem.invoiceId = invoice?.id || queueItem.invoiceId;
+                        queueItem.status = appointment.status === 'in_consultation' ? 'in_consultation' : queueItem.status || 'waiting';
+                    }
+                    appointment.waitingQueueId = queueItem.id;
+                    return queueItem;
+                },
+                completeAppointment(appointment) {
+                    if (!appointment) return false;
+                    this.ensureAppointmentFinancialLink(appointment);
+                    const patient = this.ensureAppointmentPatient(appointment);
+                    this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.appointmentId || '') !== String(appointment.id));
+                    this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id));
+                    this.recordAudit('إكمال موعد', `${appointment.patientName} — نُقل إلى إدارة المرضى${patient ? ' وتم تثبيت التحصيل' : ''}`);
+                    return true;
                 },
                 appointmentStatusBadgeClass(status) {
                     return ({
@@ -2351,16 +2412,18 @@
                     const appointment = (this.appointments || []).find(item => item.id === id);
                     if (!appointment) return;
                     appointment.status = status;
-                    if (status === 'waiting') {
-                        const exists = (this.waitingQueue || []).some(item => item.appointmentId === id);
-                        if (!exists) this.waitingQueue.unshift({ id: Date.now(), appointmentId: id, patientId: appointment.patientId, patientName: appointment.patientName, phone: appointment.phone, symptom: appointment.visitType, clinic: 'عيادة الطبيب', status: 'waiting', createdAt: new Date().toISOString() });
-                    }
+                    if (status === 'waiting') this.ensureAppointmentQueueLink(appointment);
                     if (status === 'in_consultation') {
-                        const queueItem = (this.waitingQueue || []).find(item => item.appointmentId === id);
+                        this.ensureAppointmentQueueLink(appointment);
+                        const queueItem = (this.waitingQueue || []).find(item => String(item.appointmentId || '') === String(id));
                         if (queueItem) queueItem.status = 'in_consultation';
                     }
-                    if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(item => item.appointmentId !== id);
+                    if (status === 'completed') this.completeAppointment(appointment);
+                    if (status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.appointmentId || '') !== String(id));
+                    if (['waiting', 'in_consultation', 'completed'].includes(status)) this.ensureAppointmentFinancialLink(appointment);
                     this.recordAudit('تغيير حالة موعد', appointment.patientName + ': ' + this.appointmentStatusLabel(status));
+                    this.persistState();
+                    this.queueCloudSync();
                 },
                 getRefundableWaitingInvoices(item) {
                     const queueId = String(item?.id || '');
@@ -2407,9 +2470,14 @@
                         return;
                     }
                     item.status = status;
-                    const appointment = (this.appointments || []).find(appt => appt.id === item.appointmentId);
-                    if (appointment) appointment.status = status;
-                    if (status === 'completed') this.waitingQueue = (this.waitingQueue || []).filter(entry => entry.id !== item.id);
+                    const appointment = (this.appointments || []).find(appt => String(appt.id) === String(item.appointmentId));
+                    if (appointment) {
+                        appointment.status = status;
+                        if (status === 'completed') this.completeAppointment(appointment);
+                        else if (status === 'in_consultation') this.ensureAppointmentQueueLink(appointment);
+                    }
+                    if (status === 'waiting' && appointment) this.ensureAppointmentQueueLink(appointment);
+                    if (status === 'completed') this.waitingQueue = (this.waitingQueue || []).filter(entry => String(entry.id) !== String(item.id));
                     this.recordAudit('تغيير حالة قائمة الانتظار', item.patientName + ': ' + this.appointmentStatusLabel(status));
                     this.persistState();
                     this.queueCloudSync();
@@ -3658,8 +3726,14 @@
                 },
 
                 removeFromQueueForPatient(patientId) {
-                    // Completion from the medical record is not a cancellation and must keep the collected invoice intact.
-                    this.waitingQueue = this.waitingQueue.filter(item => item.patientId !== patientId);
+                    // Completion from the medical record is not a cancellation: keep the invoice,
+                    // complete the linked appointment, and remove only the operational queue entry.
+                    const linkedAppointments = (this.appointments || []).filter(item => String(item.patientId || '') === String(patientId));
+                    linkedAppointments.forEach(appointment => {
+                        this.ensureAppointmentFinancialLink(appointment);
+                        this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id));
+                    });
+                    this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.patientId || '') !== String(patientId));
                 },
 
                 removeFromQueue(id) {
@@ -4275,7 +4349,7 @@
                             <i data-lucide="user-plus" class="w-5 h-5"></i>
                             <span>إضافة زيارة / كشف</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'appointments'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
+                        <a x-show="currentUser?.permissions?.appointments || currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'appointments'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="calendar-days" class="w-5 h-5"></i>
                             <span>المواعيد والتقويم</span>
                         </a>
@@ -4377,7 +4451,7 @@
                                 <button x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" class="dashboard-action-card col-span-2 xl:col-span-3 text-right bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 p-5 sm:p-6 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="flex items-center justify-between gap-4"><span class="flex items-center gap-4"><span class="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-600/20"><i data-lucide="user-plus" class="w-6 h-6"></i></span><span><span class="block text-sm text-blue-800 dark:text-blue-200 font-black">إضافة زيارة / كشف جديد</span><span class="block text-xs text-slate-500 dark:text-slate-400 mt-1">ابدأ ملف مريض جديد أو أضف زيارة إلى ملف قائم.</span></span></span><i data-lucide="arrow-left" class="w-5 h-5 shrink-0 text-blue-600 dark:text-blue-300"></i></span>
                                 </button>
-                                <button x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" class="dashboard-action-card text-right bg-sky-50 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                <button x-show="currentUser?.permissions?.appointments || currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" class="dashboard-action-card text-right bg-sky-50 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center mb-3"><i data-lucide="calendar-days" class="w-5 h-5"></i></span>
                                     <p class="text-xs text-sky-700 dark:text-sky-300 font-bold">مواعيد اليوم</p>
                                     <p class="text-2xl font-bold text-sky-700 dark:text-sky-300 mt-1" x-text="appointmentsForSelectedDay.length"></p>

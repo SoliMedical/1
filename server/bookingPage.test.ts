@@ -185,4 +185,27 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('locale: window.flatpickr.l10ns.ar');
     expect(page).toContain("disableMobile: true");
   });
+
+  it("يربط صلاحية المواعيد مستقلاً عن مرضى الانتظار مع دعم الحسابات القديمة", () => {
+    expect(page).toContain("{ key: 'appointments', label: 'المواعيد والتقويم' }");
+    expect(page).toContain("appointments: 'appointments'");
+    expect(page).toContain("u.permissions.appointments = u.role === 'admin' || !!u.permissions.waitingQueue");
+    expect(page).toContain("currentUser?.permissions?.appointments || currentUser?.permissions?.waitingQueue");
+  });
+
+  it("ينشئ تحصيلاً واحداً للموعد ويربطه بالمريض وقائمة الانتظار", () => {
+    expect(page).toContain('ensureAppointmentFinancialLink(appointment)');
+    expect(page).toContain("source: 'appointment'");
+    expect(page).toContain('appointmentId, patientId: patient?.id');
+    expect(page).toContain('ensureAppointmentQueueLink(appointment)');
+    expect(page).toContain('invoiceId: invoice?.id || null');
+  });
+
+  it("ينقل الموعد المكتمل إلى إدارة المرضى ويحذف البطاقة التشغيلية مع إبقاء الفاتورة", () => {
+    expect(page).toContain('completeAppointment(appointment)');
+    expect(page).toContain("this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id))");
+    expect(page).toContain('this.ensureAppointmentFinancialLink(appointment)');
+    expect(page).toContain('نُقل إلى إدارة المرضى');
+    expect(page).toContain('removeFromQueueForPatient(patientId)');
+  });
 });
