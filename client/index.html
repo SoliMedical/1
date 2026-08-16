@@ -2271,7 +2271,6 @@
                     this.selectedAppointmentDate = appointment.date;
                     this.resetAppointmentForm();
                     this.recordAudit('إضافة موعد', patientName + ' - ' + appointment.date + ' ' + appointment.time);
-                    alert(status === 'pending_confirmation' ? 'تم حفظ الطلب بحالة «بانتظار التأكيد».': 'تم حفظ الموعد بنجاح.');
                 },
                 appointmentStatusBadgeClass(status) {
                     return ({
@@ -2751,7 +2750,6 @@
                     this.newRecurringNote = '';
                     this.newRecurringMedicine = '';
                     this.recordAudit('حفظ عناصر متكررة من الروشتة', `تشخيصات: ${diagnoses.length}، أدوية: ${medicines.length}`);
-                    alert('تم حفظ التشخيص والملاحظات والأدوية المتكررة في القوائم الطبية.');
                 },
                 addRecurringNote() {
                     const value = String(this.newRecurringNote || '').trim();
@@ -3102,7 +3100,6 @@
                     }
                     this.matchedExistingPatient = null;
 
-                    alert('تم تسجيل الزيارة وإضافتها إلى قائمة مرضى في الانتظار ✅');
                     this.renderIcons();
                 },
 
@@ -3282,7 +3279,6 @@
                             selectedMedicinesWithDosage: [], nextFollowUpDate: '', generalNotes: ''
                         };
                         this.renderIcons();
-                        alert('تم حفظ الزيارة وتوليد الروشتة بنجاح. ستظل داخل ملف المريض ويمكنك طباعة الروشتة الآن ✅');
                     } catch (err) {
                         console.error('addMedicalRecord failed:', err);
                         alert('حدث خطأ غير متوقع أثناء الحفظ: ' + err.message + '\n\nجرّب الضغط على Ctrl+Shift+R لتحديث الصفحة بالكامل، أو استخدم زر "إعادة ضبط البيانات المحلية" في الإعدادات إذا استمرت المشكلة.');
@@ -3315,7 +3311,7 @@
                     this.queueCloudSync();
                     if (this.selectedPrescriptionForPrint) this.updatePrescriptionPrintMode();
                     else if (this.showPrescriptionPrintModal) this.$nextTick(() => this.refreshPrescriptionQrCode());
-                    if (showMessage) alert('تم حفظ إعدادات طباعة الروشتة محلياً وبدء مزامنتها مع السحابة.');
+                    // لا تعرض رسالة نجاح علوية عند حفظ إعدادات الطباعة.
                 },
                 refreshPrintSettingsPreview() {
                     if (this.selectedPrescriptionForPrint) this.updatePrescriptionPrintMode();
@@ -3446,7 +3442,8 @@
                     if (!this.validateDoctorContactNumbers()) return;
                     this.persistState();
                     this.queueCloudSync();
-                    alert('تم حفظ إعدادات الطبيب والروشتة ورابط QR بنجاح!');
+                                            // لا تعرض رسالة نجاح علوية عند حفظ إعدادات الطبيب والروشتة.
+
                 },
 
                 sendWhatsAppPrescription(rx, patientObj) {
