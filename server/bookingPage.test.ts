@@ -158,6 +158,17 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('conflictKey');
   });
 
+  it("يمنع النسخة العامة القديمة من استبدال users الأحدث بين متصفحين", () => {
+    const persistentKeysMatch = page.match(/persistentKeys:\s*\[([^\]]+)\]/);
+    expect(persistentKeysMatch?.[1]).toBeTruthy();
+    expect(persistentKeysMatch?.[1]).not.toContain("'users'");
+    expect(page).toContain('normalizeUsers(users)');
+    expect(page).toContain('this.users = this.normalizeUsers(data.users)');
+    expect(page).toContain('async persistUsersToCloudNow()');
+    expect(page).toContain('usersWriteInFlight');
+    expect(page).toContain("get({ source: 'server' })");
+  });
+
   it("يعرض كل حقول اليوم والشهر باتجاه عربي صحيح", () => {
     const dateInputs = page.match(/<input\b[^>]*type="(?:date|month)"[^>]*>/g) || [];
 

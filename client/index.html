@@ -754,6 +754,7 @@
                         const discount = Number(inv.discount || 0);
                         return { ...inv, tax: 0, total: Math.max(0, amount - discount) };
                     });
+                    this.users = this.normalizeUsers(this.users);
                     this.users.forEach(u => {
                         if (!u.permissions) u.permissions = {};
                         if (u.role === 'admin') {
@@ -852,6 +853,36 @@
                         prescriptions: Array.isArray(data?.prescriptions) ? data.prescriptions.length : 0,
                         users: Array.isArray(data?.users) ? data.users.length : 0
                     };
+                },
+                normalizeUsers(users) {
+                    const source = Array.isArray(users) ? users : [];
+                    const result = [];
+                    const indexesById = new Map();
+                    const indexesByEmail = new Map();
+                    const choosePreferredUser = (current, candidate) => {
+                        if (!current) return candidate;
+                        const currentIsPrimaryAdmin = String(current.id) === '1' && current.role === 'admin';
+                        const candidateIsPrimaryAdmin = String(candidate.id) === '1' && candidate.role === 'admin';
+                        return candidateIsPrimaryAdmin && !currentIsPrimaryAdmin ? candidate : current;
+                    };
+                    source.forEach(rawUser => {
+                        if (!rawUser || !rawUser.email || !rawUser.password) return;
+                        const user = { ...rawUser, email: String(rawUser.email).trim(), password: String(rawUser.password) };
+                        const emailKey = user.email.toLowerCase();
+                        const idKey = user.id === undefined || user.id === null ? '' : String(user.id);
+                        const existingIndex = (idKey && indexesById.has(idKey)) ? indexesById.get(idKey) : indexesByEmail.get(emailKey);
+                        if (existingIndex === undefined) {
+                            const index = result.push(user) - 1;
+                            if (idKey) indexesById.set(idKey, index);
+                            indexesByEmail.set(emailKey, index);
+                            return;
+                        }
+                        const preferred = choosePreferredUser(result[existingIndex], user);
+                        result[existingIndex] = preferred;
+                        if (preferred.email) indexesByEmail.set(preferred.email.toLowerCase(), existingIndex);
+                        if (preferred.id !== undefined && preferred.id !== null) indexesById.set(String(preferred.id), existingIndex);
+                    });
+                    return result;
                 },
                 getSyncDataSnapshot() {
                     const snapshot = {};
@@ -1013,6 +1044,10 @@
                             if (snap.metadata.hasPendingWrites) return;
                             const data = snap.data();
                             const remoteMeta = data._syncMeta || {};
+                            if (Array.isArray(data.users) && !this.usersWriteInFlight && !this.usersLocalChangesPending) {
+                                this.users = this.normalizeUsers(data.users);
+                                this.persistState();
+                            }
                             const remoteRevision = Number(remoteMeta.revision || 0);
                             const hasForeignPendingConflict = this.localChangesPending &&
                                 remoteMeta.writerId && remoteMeta.writerId !== this.syncDeviceId &&
@@ -1073,15 +1108,21 @@
                 },
 
                 async persistUsersToCloudNow() {
+                    this.usersLocalChangesPending = true;
+                    this.usersChangeSequence = Number(this.usersChangeSequence || 0) + 1;
                     if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine) {
+                        this.persistState();
                         return { ok: false, deferred: true };
                     }
                     if (!(await this.waitForCloudAuthReady())) return { ok: false, deferred: false };
                     clearTimeout(this.cloudSyncTimer);
                     const docRef = firestoreDB.doc(this.cloudDocPath);
                     const writeSequence = Number(this.syncChangeSequence || 0);
+                    this.users = this.normalizeUsers(this.users);
+                    const usersWriteSequence = Number(this.usersChangeSequence || 0);
                     const localUsers = JSON.parse(JSON.stringify(this.users || []));
                     this.cloudStatus = 'syncing';
+                    this.usersWriteInFlight = true;
                     try {
                         const result = await firestoreDB.runTransaction(async transaction => {
                             const snap = await transaction.get(docRef);
@@ -1106,14 +1147,18 @@
                         this.localChangesPending = changedDuringWrite;
                         this.cloudStatus = 'online';
                         this.cloudRetryAttempts = 0;
+                        this.usersLocalChangesPending = Number(this.usersChangeSequence || 0) !== usersWriteSequence;
                         if (this.localChangesPending) this.queueCloudSync();
                         return { ok: true, deferred: false };
                     } catch (error) {
                         console.error('تعذر حفظ قائمة الحسابات مباشرة في Firestore:', error);
                         this.cloudStatus = 'offline';
                         this.localChangesPending = true;
+                        this.usersLocalChangesPending = true;
                         this.scheduleCloudRetry();
                         return { ok: false, deferred: false, error };
+                    } finally {
+                        this.usersWriteInFlight = false;
                     }
                 },
 
@@ -1662,7 +1707,10 @@
                 // Local storage is the offline safety layer. Firebase/Firestore mirrors these
                 // same keys when cloud sync is configured for the clinic.
                 storageKey: 'soliMedicalData_v1',
-                    persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
+                    usersWriteInFlight: false,
+                usersLocalChangesPending: false,
+                usersChangeSequence: 0,
+                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
 
                 loadPersistedState() {
                     try {
@@ -1672,6 +1720,7 @@
                         this.persistentKeys.forEach(key => {
                             if (saved[key] !== undefined) this[key] = saved[key];
                         });
+                        if (Array.isArray(saved.users)) this.users = this.normalizeUsers(saved.users);
                     } catch (e) {
                         console.error('تعذر تحميل البيانات المحفوظة محلياً:', e);
                     }
@@ -1681,6 +1730,7 @@
                     try {
                         const dataToSave = {};
                         this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
+                        dataToSave.users = this.normalizeUsers(this.users);
                         localStorage.setItem(this.storageKey, JSON.stringify(dataToSave));
                     } catch (e) {
                         console.error('تعذر حفظ البيانات محلياً:', e);
@@ -1787,9 +1837,7 @@
                         for (let attempt = 0; attempt < 3; attempt += 1) {
                             const snapshot = await firestoreDB.doc(this.cloudDocPath).get({ source: 'server' });
                             remoteUsers = snapshot.exists ? snapshot.data()?.users : null;
-                            const validUsers = Array.isArray(remoteUsers)
-                                ? remoteUsers.filter(user => user && user.email && user.password)
-                                : [];
+                            const validUsers = this.normalizeUsers(remoteUsers);
                             if (validUsers.length) {
                                 this.users = validUsers;
                                 this.persistState();
