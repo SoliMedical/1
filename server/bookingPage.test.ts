@@ -247,3 +247,25 @@ describe("تحديث جلسة المستخدم بعد مزامنة الصلاح�
     expect(page).toContain("this.users = this.normalizeUsers(data.users);\n                                this.syncCurrentUserFromUsers();");
   });
 });
+
+describe("إصلاحات الزيارة والجلسة والتنبيهات", () => {
+  it("يحفظ أسعار أنواع الزيارات ويعيد مزامنتها بعد التعديل", () => {
+    expect(page).toContain("saveVisitTypePrices() {");
+    expect(page).toContain("this.persistState();");
+    expect(page).toContain("this.queueCloudSync();");
+    expect(page).toContain("تم حفظ أسعار أنواع الزيارات والفواتير تلقائياً");
+    expect(page).toContain("this.saveVisitTypePrices();");
+  });
+  it("يستعيد الجلسة والقسم الحالي بعد إعادة تحميل الصفحة عند الاتصال", () => {
+    expect(page).toContain("localStorage.getItem('soliLastSection')");
+    expect(page).toContain("navigator.onLine || this.isDeviceTrustValid(user)");
+    expect(page).toContain("this.currentView = savedView");
+  });
+  it("يعرض تنبيهاً بصرياً وقائمة الزيارات المسجلة ويربطها بالمتابعة القادمة", () => {
+    expect(page).toContain("showFlashNotice(message, type = 'success')");
+    expect(page).toContain("setTimeout(() => { this.flashNotice = ''; }, 1000)");
+    expect(page).toContain("recentRegisteredPatients");
+    expect(page).toContain("تم تسجيل زيارة");
+    expect(page).toContain("navigateTo('followUps')");
+  });
+});
