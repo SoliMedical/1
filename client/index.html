@@ -2414,6 +2414,20 @@
                     if (reception) base.searchParams.set('reception', this.formatPhoneForWhatsApp(reception));
                     return base.toString();
                 },
+                renderBookingShareQr() {
+                    const target = document.getElementById('bookingShareQrCode');
+                    if (!target) return;
+                    target.innerHTML = '';
+                    if (!window.QRCode) return;
+                    new QRCode(target, {
+                        text: this.getBookingShareUrl(),
+                        width: 160,
+                        height: 160,
+                        colorDark: '#0f172a',
+                        colorLight: '#ffffff',
+                        correctLevel: QRCode.CorrectLevel.M
+                    });
+                },
                 escapePrintHtml(value) {
                     return String(value || '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]);
                 },

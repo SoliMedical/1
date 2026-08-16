@@ -215,4 +215,10 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain('نسخة النظام');
   });
+
+  it("يعرّف دالة QR التي يستدعيها فتح صفحة المواعيد حتى لا تنهار تهيئة Alpine", () => {
+    expect(page).toContain('this.renderBookingShareQr()');
+    expect(page).toContain('renderBookingShareQr() {');
+    expect(page).toContain("document.getElementById('bookingShareQrCode')");
+  });
 });
