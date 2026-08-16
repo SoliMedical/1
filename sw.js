@@ -1,4 +1,4 @@
-const CACHE_NAME = "soli-medical-github-pages-v3";
+const CACHE_NAME = "soli-medical-github-pages-v5";
 const BASE_URL = new URL("./", self.registration.scope);
 const APP_SHELL = [
   new URL("./", BASE_URL).toString(),
@@ -19,8 +19,15 @@ self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
-  event.respondWith(caches.match(event.request).then((cachedResponse) => {
-    const networkResponse = fetch(event.request).then((response) => {
+  event.respondWith(fetch(event.request).then((response) => {
+    if (response.ok && response.type === "basic") {
+      const copy = response.clone();
+      caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+    }
+    return response;
+  }).catch(() => caches.match(event.request).then((cachedResponse) => {
+    const networkResponse = Promise.resolve(cachedResponse);
+
       if (response.ok && response.type === "basic") {
         const copy = response.clone();
         caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));

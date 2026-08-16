@@ -69,6 +69,9 @@
             }
         };
         const publicBookingMode = isPublicBookingUrl();
+        // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
+        const SOLI_APP_VERSION = 'v1.4.0';
+        const SOLI_APP_RELEASE = 'ربط المواعيد بالفواتير والصلاحيات وتحسين الدخول بين المتصفحات';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -275,6 +278,8 @@
 
                 // Full Page View Navigation Control
                 currentView: 'dashboard',
+                appVersion: SOLI_APP_VERSION,
+                appRelease: SOLI_APP_RELEASE,
                 navigationHistory: [],
                 openPrescriptionPatientId: null,
 
@@ -422,6 +427,7 @@
                 permissionModules: [
                     { key: 'dashboard', label: 'لوحة التحكم' },
                     { key: 'newVisit', label: 'إضافة زيارة / كشف' },
+                    { key: 'appointments', label: 'المواعيد والتقويم' },
                     { key: 'waitingQueue', label: 'مرضى في الانتظار' },
                     { key: 'followUps', label: 'المتابعة القادمة' },
                     { key: 'patients', label: 'المرضى والملفات الطبية' },
@@ -440,7 +446,7 @@
                         password: '1234',
                         role: 'admin',
                         active: true,
-                        permissions: { dashboard: true, newVisit: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, prescriptionSettings: true, settings: true }
+                        permissions: { dashboard: true, newVisit: true, appointments: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, prescriptionSettings: true, settings: true }
                     },
                     {
                         id: 2,
@@ -449,7 +455,7 @@
                         password: '1111',
                         role: 'محاسب',
                         active: true,
-                        permissions: { dashboard: true, newVisit: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, prescriptionSettings: false, settings: false }
+                        permissions: { dashboard: true, newVisit: false, appointments: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, prescriptionSettings: false, settings: false }
                     }
                 ],
                 newUserForm: {
@@ -457,7 +463,7 @@
                     email: '',
                     password: '',
                     role: 'موظف استقبال',
-                    permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, prescriptionSettings: false, settings: false }
+                    permissions: { dashboard: true, newVisit: true, appointments: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, prescriptionSettings: false, settings: false }
                 },
                 firebaseMigrationUserId: '',
                 firebaseMigrationPassword: '',
@@ -754,6 +760,7 @@
                         const discount = Number(inv.discount || 0);
                         return { ...inv, tax: 0, total: Math.max(0, amount - discount) };
                     });
+                    this.users = this.normalizeUsers(this.users);
                     this.users.forEach(u => {
                         if (!u.permissions) u.permissions = {};
                         if (u.role === 'admin') {
@@ -761,6 +768,10 @@
                         }
                         if (u.permissions.waitingQueue === undefined) {
                             u.permissions.waitingQueue = u.role === 'admin' || !!u.permissions.newVisit || !!u.permissions.patients;
+                        }
+                        if (u.permissions.appointments === undefined) {
+                            // Before v2.1 appointments shared the waitingQueue permission.
+                            u.permissions.appointments = u.role === 'admin' || !!u.permissions.waitingQueue;
                         }
                         if (u.permissions.prescriptionSettings === undefined) {
                             u.permissions.prescriptionSettings = u.role === 'admin' || !!u.permissions.settings;
@@ -852,6 +863,56 @@
                         prescriptions: Array.isArray(data?.prescriptions) ? data.prescriptions.length : 0,
                         users: Array.isArray(data?.users) ? data.users.length : 0
                     };
+                },
+                syncCurrentUserFromUsers() {
+                    if (!this.currentUser || !Array.isArray(this.users)) return;
+                    const currentId = String(this.currentUser.id ?? '');
+                    const currentEmail = String(this.currentUser.email || '').trim().toLowerCase();
+                    const freshUser = this.users.find(user =>
+                        (currentId && String(user.id ?? '') === currentId) ||
+                        (currentEmail && String(user.email || '').trim().toLowerCase() === currentEmail)
+                    );
+                    if (freshUser) this.currentUser = this.withCompatiblePermissions(freshUser);
+                },
+                withCompatiblePermissions(user) {
+                    if (!user) return user;
+                    const permissions = { ...(user.permissions || {}) };
+                    if (user.role === 'admin' || user.id === 1 || String(user.id) === '1') {
+                        this.permissionModules.forEach(module => { permissions[module.key] = true; });
+                    } else if (permissions.appointments === undefined) {
+                        permissions.appointments = Boolean(permissions.waitingQueue);
+                    }
+                    return { ...user, permissions };
+                },
+                normalizeUsers(users) {
+                    const source = Array.isArray(users) ? users : [];
+                    const result = [];
+                    const indexesById = new Map();
+                    const indexesByEmail = new Map();
+                    const choosePreferredUser = (current, candidate) => {
+                        if (!current) return candidate;
+                        const currentIsPrimaryAdmin = String(current.id) === '1' && current.role === 'admin';
+                        const candidateIsPrimaryAdmin = String(candidate.id) === '1' && candidate.role === 'admin';
+                        return candidateIsPrimaryAdmin && !currentIsPrimaryAdmin ? candidate : current;
+                    };
+                    source.forEach(rawUser => {
+                        if (!rawUser || !rawUser.email || !rawUser.password) return;
+                        const user = this.withCompatiblePermissions({ ...rawUser, email: String(rawUser.email).trim(), password: String(rawUser.password) });
+                        const emailKey = user.email.toLowerCase();
+                        const idKey = user.id === undefined || user.id === null ? '' : String(user.id);
+                        const existingIndex = (idKey && indexesById.has(idKey)) ? indexesById.get(idKey) : indexesByEmail.get(emailKey);
+                        if (existingIndex === undefined) {
+                            const index = result.push(user) - 1;
+                            if (idKey) indexesById.set(idKey, index);
+                            indexesByEmail.set(emailKey, index);
+                            return;
+                        }
+                        const preferred = choosePreferredUser(result[existingIndex], user);
+                        result[existingIndex] = preferred;
+                        if (preferred.email) indexesByEmail.set(preferred.email.toLowerCase(), existingIndex);
+                        if (preferred.id !== undefined && preferred.id !== null) indexesById.set(String(preferred.id), existingIndex);
+                    });
+                    return result;
                 },
                 getSyncDataSnapshot() {
                     const snapshot = {};
@@ -1013,6 +1074,11 @@
                             if (snap.metadata.hasPendingWrites) return;
                             const data = snap.data();
                             const remoteMeta = data._syncMeta || {};
+                            if (Array.isArray(data.users) && !this.usersWriteInFlight && !this.usersLocalChangesPending) {
+                                this.users = this.normalizeUsers(data.users);
+                                this.syncCurrentUserFromUsers();
+                                this.persistState();
+                            }
                             const remoteRevision = Number(remoteMeta.revision || 0);
                             const hasForeignPendingConflict = this.localChangesPending &&
                                 remoteMeta.writerId && remoteMeta.writerId !== this.syncDeviceId &&
@@ -1050,6 +1116,82 @@
                     this.cloudRetryTimer = setTimeout(() => {
                         if (navigator.onLine && this.cloudAuthReady && this.localChangesPending) this.queueCloudSync();
                     }, delay);
+                },
+
+                async waitForCloudAuthReady(timeoutMs = 10000) {
+                    if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine || !firebaseAuth) return false;
+                    if (!this.cloudAuthListenerStarted) {
+                        this.cloudAuthListenerStarted = true;
+                        this.observeFirebaseAuth();
+                    }
+                    try {
+                        if (!firebaseAuth.currentUser) await firebaseAuth.signInAnonymously();
+                    } catch (error) {
+                        console.warn('تعذر إنشاء جلسة المزامنة قبل حفظ الحسابات:', error);
+                        return false;
+                    }
+                    const startedAt = Date.now();
+                    while (!this.cloudAuthReady && Date.now() - startedAt < timeoutMs) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                    if (this.cloudAuthReady) this.startCloudSync();
+                    return !!this.cloudAuthReady;
+                },
+
+                async persistUsersToCloudNow() {
+                    this.usersLocalChangesPending = true;
+                    this.usersChangeSequence = Number(this.usersChangeSequence || 0) + 1;
+                    if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine) {
+                        this.persistState();
+                        return { ok: false, deferred: true };
+                    }
+                    if (!(await this.waitForCloudAuthReady())) return { ok: false, deferred: false };
+                    clearTimeout(this.cloudSyncTimer);
+                    const docRef = firestoreDB.doc(this.cloudDocPath);
+                    const writeSequence = Number(this.syncChangeSequence || 0);
+                    this.users = this.normalizeUsers(this.users);
+                    this.syncCurrentUserFromUsers();
+                    const usersWriteSequence = Number(this.usersChangeSequence || 0);
+                    const localUsers = JSON.parse(JSON.stringify(this.users || []));
+                    this.cloudStatus = 'syncing';
+                    this.usersWriteInFlight = true;
+                    try {
+                        const result = await firestoreDB.runTransaction(async transaction => {
+                            const snap = await transaction.get(docRef);
+                            const remoteData = snap.exists ? snap.data() : {};
+                            const remoteMeta = remoteData._syncMeta || {};
+                            const revision = Number(remoteMeta.revision || 0) + 1;
+                            transaction.set(docRef, {
+                                users: localUsers,
+                                _syncMeta: {
+                                    ...remoteMeta,
+                                    revision,
+                                    writerId: this.syncDeviceId,
+                                    writerName: this.currentUser?.fullName || 'مدير النظام',
+                                    updatedAt: new Date().toISOString()
+                                }
+                            }, { merge: true });
+                            return { revision };
+                        });
+                        this.syncRevision = result.revision;
+                        this.localEditBaseRevision = result.revision;
+                        const changedDuringWrite = Number(this.syncChangeSequence || 0) !== writeSequence;
+                        this.localChangesPending = changedDuringWrite;
+                        this.cloudStatus = 'online';
+                        this.cloudRetryAttempts = 0;
+                        this.usersLocalChangesPending = Number(this.usersChangeSequence || 0) !== usersWriteSequence;
+                        if (this.localChangesPending) this.queueCloudSync();
+                        return { ok: true, deferred: false };
+                    } catch (error) {
+                        console.error('تعذر حفظ قائمة الحسابات مباشرة في Firestore:', error);
+                        this.cloudStatus = 'offline';
+                        this.localChangesPending = true;
+                        this.usersLocalChangesPending = true;
+                        this.scheduleCloudRetry();
+                        return { ok: false, deferred: false, error };
+                    } finally {
+                        this.usersWriteInFlight = false;
+                    }
                 },
 
                 // Debounced push so rapid local edits (typing, checkbox toggles) don't spam Firestore.
@@ -1266,8 +1408,16 @@
                 sessionKey: 'soliMedicalSession_v1',
                 deviceTrustKey: 'soliMedicalDeviceTrust_v1',
                 deviceTrustDurationMs: 30 * 24 * 60 * 60 * 1000,
-                deviceTrust: null,
-
+                                deviceTrust: null,
+                getUserCredentialVersion(user) {
+                    const source = `${String(user?.email || '').trim().toLowerCase()}|${String(user?.password || '')}`;
+                    let hash = 2166136261;
+                    for (let index = 0; index < source.length; index += 1) {
+                        hash ^= source.charCodeAt(index);
+                        hash = Math.imul(hash, 16777619);
+                    }
+                    return `${user?.id || ''}:${hash >>> 0}`;
+                },
                 restoreDeviceTrust() {
                     try {
                         const raw = localStorage.getItem(this.deviceTrustKey);
@@ -1287,6 +1437,7 @@
                 enrollDevice(user) {
                     const trust = {
                         userId: user.id,
+                        credentialVersion: this.getUserCredentialVersion(user),
                         enrolledAt: new Date().toISOString(),
                         lastVerifiedAt: new Date().toISOString(),
                         expiresAt: new Date(Date.now() + this.deviceTrustDurationMs).toISOString(),
@@ -1300,10 +1451,11 @@
                     }
                 },
 
-                isDeviceTrustValid(userId) {
+                isDeviceTrustValid(user) {
                     return Boolean(
                         this.deviceTrust &&
-                        String(this.deviceTrust.userId) === String(userId) &&
+                        String(this.deviceTrust.userId) === String(user?.id) &&
+                        this.deviceTrust.credentialVersion === this.getUserCredentialVersion(user) &&
                         (!this.deviceTrust.expiresAt || Date.parse(this.deviceTrust.expiresAt) > Date.now())
                     );
                 },
@@ -1319,12 +1471,18 @@
                         if (!raw) return;
                         const session = JSON.parse(raw);
                         const user = this.users.find(u => u.id === session.userId);
-                        if (user && user.active !== false) {
+                        if (user && user.active !== false && this.isDeviceTrustValid(user) && !navigator.onLine) {
                             this.currentUser = user;
                             this.isAuthenticated = true;
                             this.landOnAllowedPage(user);
-                        } else if (user && user.active === false) {
+                        } else if (user) {
                             this.clearSession();
+                            this.revokeDeviceTrust();
+                            // انتهاء اعتماد الجهاز لا يمنع إعادة الدخول المتصل؛ يعاد اعتماد
+                            // المتصفح بعد نجاح الاسم وكلمة المرور من أحدث نسخة للحسابات.
+                            if (!navigator.onLine) {
+                                this.loginError = 'تم تغيير كلمة مرور هذا الحساب أو انتهاء اعتماد الجهاز. اتصل بالإنترنت ثم سجّل الدخول بالكلمة الحالية.';
+                            }
                         }
                     } catch (e) {
                         console.error('تعذر استرجاع جلسة الدخول:', e);
@@ -1585,7 +1743,10 @@
                 // Local storage is the offline safety layer. Firebase/Firestore mirrors these
                 // same keys when cloud sync is configured for the clinic.
                 storageKey: 'soliMedicalData_v1',
-                    persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'users', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
+                    usersWriteInFlight: false,
+                usersLocalChangesPending: false,
+                usersChangeSequence: 0,
+                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
 
                 loadPersistedState() {
                     try {
@@ -1595,6 +1756,7 @@
                         this.persistentKeys.forEach(key => {
                             if (saved[key] !== undefined) this[key] = saved[key];
                         });
+                        if (Array.isArray(saved.users)) this.users = this.normalizeUsers(saved.users);
                     } catch (e) {
                         console.error('تعذر تحميل البيانات المحفوظة محلياً:', e);
                     }
@@ -1604,6 +1766,7 @@
                     try {
                         const dataToSave = {};
                         this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
+                        dataToSave.users = this.normalizeUsers(this.users);
                         localStorage.setItem(this.storageKey, JSON.stringify(dataToSave));
                     } catch (e) {
                         console.error('تعذر حفظ البيانات محلياً:', e);
@@ -1701,21 +1864,28 @@
 
                 async prepareUsersForOnlineLogin() {
                     // في المتصفح الجديد لا توجد قائمة users محلية بعد. نقرأ نسخة الحسابات
-                    // من مستند المزامنة بعد إنشاء جلسة Firebase المجهولة، ثم تبقى المقارنة
-                    // محلية ولا تُرسل كلمة المرور إلى أي خادم.
+                    // من الخادم مباشرة، وليس من Firestore cache، ثم تبقى المقارنة محلية
+                    // ولا تُرسل كلمة المرور إلى أي خادم آخر.
                     if (!this.cloudSyncEnabled || !firestoreDB || !navigator.onLine) return false;
                     try {
-                        if (!firebaseAuth.currentUser) await firebaseAuth.signInAnonymously();
-                        const snapshot = await firestoreDB.doc(this.cloudDocPath).get();
-                        const remoteUsers = snapshot.exists ? snapshot.data()?.users : null;
-                        if (!Array.isArray(remoteUsers) || !remoteUsers.length) return false;
-                        const validUsers = remoteUsers.filter(user => user && user.email && user.password);
-                        if (!validUsers.length) return false;
-                        this.users = validUsers;
-                        this.persistState();
-                        return true;
+                        if (!(await this.waitForCloudAuthReady())) return false;
+                        let remoteUsers = null;
+                        for (let attempt = 0; attempt < 3; attempt += 1) {
+                            const snapshot = await firestoreDB.doc(this.cloudDocPath).get({ source: 'server' });
+                            remoteUsers = snapshot.exists ? snapshot.data()?.users : null;
+                            const validUsers = this.normalizeUsers(remoteUsers);
+                            if (validUsers.length) {
+                                this.users = validUsers;
+                                this.syncCurrentUserFromUsers();
+                                this.persistState();
+                                this.revokeDeviceTrust();
+                                return true;
+                            }
+                            if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
+                        }
+                        return false;
                     } catch (error) {
-                        console.warn('تعذر تحميل حسابات العيادة قبل الدخول:', error);
+                        console.warn('تعذر تحميل أحدث حسابات العيادة من خادم Firestore قبل الدخول:', error);
                         return false;
                     }
                 },
@@ -1765,7 +1935,10 @@
                     if (newPassword) admin.password = newPassword;
                     if (this.currentUser.id === admin.id) this.currentUser = admin;
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم حفظ التغيير محلياً فقط ولم يؤكَّد في السحابة. تحقق من الاتصال قبل الاعتماد على كلمة المرور الجديدة من جهاز آخر.');
+                    }
                     this.securityForm.answer = '';
                     this.securityForm.newPassword = '';
                     this.securitySaveFeedback = 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً.';
@@ -1805,7 +1978,11 @@
                     }
                     admin.password = newPassword;
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        this.recoveryState.error = 'تم التغيير محلياً، لكن لم يُؤكَّد في السحابة. تحقق من الاتصال ثم أعد المحاولة.';
+                        return;
+                    }
                     this.loginForm.email = admin.email;
                     this.loginForm.password = '';
                     this.loginError = '';
@@ -1818,7 +1995,12 @@
                     this.isLoading = true;
                     this.loginError = '';
                     if (navigator.onLine && this.cloudSyncEnabled) {
-                        await this.prepareUsersForOnlineLogin();
+                        const latestUsersLoaded = await this.prepareUsersForOnlineLogin();
+                        if (!latestUsersLoaded) {
+                            this.loginError = 'تعذر التحقق من أحدث بيانات الحسابات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.';
+                            this.isLoading = false;
+                            return;
+                        }
                     }
                     const enteredEmail = (this.loginForm.email || '').trim().toLowerCase();
                     const enteredPassword = (this.loginForm.password || '').trim();
@@ -1826,12 +2008,12 @@
 
                     if (!matchedUser || matchedUser.password !== enteredPassword) {
                         this.loginError = navigator.onLine
-                            ? 'اسم المستخدم أو كلمة المرور غير صحيحة. إذا غيّرت الحساب من جهاز آخر، تأكد من اتصال الإنترنت ثم أعد المحاولة.'
+                            ? 'اسم المستخدم أو كلمة المرور غير صحيحة وفق أحدث نسخة للحسابات. استخدم البيانات الجديدة بعد أي تعديل من المدير.'
                             : 'اسم المستخدم أو كلمة المرور غير صحيحة، كما أن هذا الجهاز يحتاج إلى أول دخول متصل بالإنترنت.';
                         this.isLoading = false;
                         return;
                     }
-                    const trustedForThisUser = this.isDeviceTrustValid(matchedUser.id);
+                    const trustedForThisUser = this.isDeviceTrustValid(matchedUser);
                     if (this.cloudSyncEnabled && !trustedForThisUser && !navigator.onLine) {
                         this.loginError = 'هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول، ثم سيعمل النظام دون اتصال على هذا الجهاز.';
                         this.isLoading = false;
@@ -1850,6 +2032,7 @@
                     this.isAuthenticated = true;
                     if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser);
                     if (trustedForThisUser) {
+                        this.deviceTrust.credentialVersion = this.getUserCredentialVersion(matchedUser);
                         this.deviceTrust.lastVerifiedAt = new Date().toISOString();
                         this.deviceTrust.expiresAt = new Date(Date.now() + this.deviceTrustDurationMs).toISOString();
                         try { localStorage.setItem(this.deviceTrustKey, JSON.stringify(this.deviceTrust)); } catch (error) { console.warn('تعذر تحديث اعتماد الجهاز:', error); }
@@ -1874,7 +2057,7 @@
                     }
                 },
 
-                addUser() {
+                async addUser() {
                     if (!this.newUserForm.fullName.trim() || !this.newUserForm.email.trim() || !this.newUserForm.password.trim()) {
                         alert('يرجى إدخال الاسم والبريد/اسم المستخدم وكلمة المرور');
                         return;
@@ -1895,7 +2078,11 @@
                     this.users.push(newUser);
                     this.userPermissionDrafts[newUser.id] = { ...newUser.permissions };
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم حفظ الحساب محلياً، لكن لم يؤكَّد حفظه في السحابة. لا تغلق الصفحة حتى يعود الاتصال وتظهر حالة «متصل»، ثم أعد المحاولة.');
+                        return;
+                    }
 
                     this.newUserForm = {
                         fullName: '',
@@ -1907,7 +2094,7 @@
                     this.renderIcons();
                 },
 
-                removeUser(userId) {
+                async removeUser(userId) {
                     if (userId === 1) {
                         alert('لا يمكن حذف حساب المدير الأساسي');
                         return;
@@ -1916,10 +2103,13 @@
                     this.users = this.users.filter(u => u.id !== userId);
                     delete this.userPermissionDrafts[userId];
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم حذف الحساب محلياً فقط ولم يؤكَّد الحذف في السحابة. تحقق من الاتصال ثم أعد المحاولة.');
+                    }
                 },
 
-                toggleUserActive(userId) {
+                async toggleUserActive(userId) {
                     if (userId === 1) {
                         alert('لا يمكن إيقاف حساب المدير الأساسي');
                         return;
@@ -1932,10 +2122,13 @@
                         this.logout();
                     }
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم تعديل حالة الحساب محلياً فقط ولم يؤكَّد التعديل في السحابة.');
+                    }
                 },
 
-                promoteToAdmin(userId) {
+                async promoteToAdmin(userId) {
                     const user = this.users.find(u => u.id === userId);
                     if (!user) return;
                     if (!confirm(`هل تريد منح "${user.fullName}" صلاحيات إدارة كاملة (مدير آخر)؟`)) return;
@@ -1945,10 +2138,13 @@
                     user.permissions = fullPermissions;
                     this.userPermissionDrafts[userId] = { ...fullPermissions };
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم تعديل الصلاحيات محلياً فقط ولم يؤكَّد حفظها في السحابة.');
+                    }
                 },
 
-                saveUserPermissions(userId) {
+                async saveUserPermissions(userId) {
                     const user = this.users.find(u => u.id === userId);
                     if (!user) return;
                     const fullPermissions = {};
@@ -1963,7 +2159,10 @@
                     this.userSaveFeedback[userId] = true;
                     setTimeout(() => { this.userSaveFeedback[userId] = false; }, 2000);
                     this.persistState();
-                    this.queueCloudSync();
+                    const cloudResult = await this.persistUsersToCloudNow();
+                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                        alert('تم تعديل الصلاحيات محلياً فقط ولم يؤكَّد حفظها في السحابة.');
+                    }
                 },
 
                 // Maps each page to the permission required to view it, so navigation can never
@@ -1976,7 +2175,7 @@
                     newVisit: 'newVisit',
                     followUps: 'followUps',
                     waitingQueue: 'waitingQueue',
-                    appointments: 'waitingQueue',
+                    appointments: 'appointments',
                     patientsList: 'patients',
                     medicalRecord: 'patients',
                     invoices: 'invoices',
@@ -2023,9 +2222,35 @@
                     return this.firebaseMigrationUser ? this.firebaseEmailForUser(this.firebaseMigrationUser.email) : '';
                 },
 
+                openAppointmentsPage(date = null) {
+                    const user = this.currentUser ? this.withCompatiblePermissions(this.currentUser) : null;
+                    if (user) this.currentUser = user;
+                    const permissions = user?.permissions || {};
+                    const canOpen = user?.role === 'admin' || permissions.appointments || permissions.waitingQueue;
+                    if (!canOpen) {
+                        this.landOnAllowedPage(user);
+                        this.mobileMenuOpen = false;
+                        return;
+                    }
+                    this.selectedAppointmentDate = date || this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
+                    this.appointmentForm.date = this.selectedAppointmentDate;
+                    // تعيين الصفحة مباشرة يمنع أي حالة صلاحيات قديمة من إعادة التوجيه
+                    // إلى لوحة التحكم أثناء تحديث currentUser من Firestore.
+                    this.currentView = 'appointments';
+                    localStorage.setItem('soliLastSection', 'appointments');
+                    this.mobileMenuOpen = false;
+                    window.scrollTo({ top: 0, behavior: 'smooth' });
+                    this.$nextTick(() => {
+                        this.renderBookingShareQr();
+                        this.renderIcons();
+                    });
+                },
                 navigateTo(view, options = {}) {
                     const requiredPermission = this.viewPermissionMap[view];
-                    if (this.currentUser && requiredPermission && !this.currentUser.permissions[requiredPermission]) {
+                    const compatibleUser = this.currentUser ? this.withCompatiblePermissions(this.currentUser) : null;
+                    if (compatibleUser) this.currentUser = compatibleUser;
+                    const legacyAppointmentsAccess = view === 'appointments' && (compatibleUser?.role === 'admin' || compatibleUser?.permissions?.waitingQueue);
+                    if (compatibleUser && requiredPermission && !compatibleUser.permissions[requiredPermission] && !legacyAppointmentsAccess) {
                         // Not allowed here — send them to the first section they DO have access to.
                         this.landOnAllowedPage(this.currentUser);
                         this.mobileMenuOpen = false;
@@ -2118,15 +2343,6 @@
                 get reportCompletedAppointments() {
                     return this.reportAppointments.filter(item => item.status === 'completed');
                 },
-                openAppointmentsPage(date = null) {
-                    this.selectedAppointmentDate = date || this.selectedAppointmentDate || new Date().toISOString().slice(0, 10);
-                    this.appointmentForm.date = this.selectedAppointmentDate;
-                    this.navigateTo('appointments');
-                    this.$nextTick(() => {
-                        this.renderBookingShareQr();
-                        this.renderIcons();
-                    });
-                },
                 resetAppointmentForm() {
                     this.appointmentForm = { patientName: '', phone: '', date: this.selectedAppointmentDate || new Date().toISOString().slice(0, 10), time: '09:00', visitType: 'كشف', notes: '', status: 'scheduled', source: 'manual' };
                 },
@@ -2152,13 +2368,71 @@
                     if (validPhone === null) return;
                     form.phone = validPhone;
                     const patient = (this.patients || []).find(item => String(item.fullName || '').trim() === patientName || (form.phone && String(item.phone || '').trim() === String(form.phone).trim()));
-                    const status = form.status === 'pending_confirmation' ? 'pending_confirmation' : 'scheduled';
+                    const allowedStatuses = new Set(this.appointmentStatusOptions.map(item => item.key));
+                    const status = allowedStatuses.has(form.status) ? form.status : 'scheduled';
                     const appointment = { id: 'APT-' + Date.now(), patientId: patient?.id || null, patientName, phone: String(form.phone || patient?.phone || '').trim(), date: form.date, time: form.time, visitType: form.visitType || 'كشف', notes: String(form.notes || '').trim(), status, source: form.source === 'whatsapp' ? 'whatsapp' : 'manual', createdAt: new Date().toISOString() };
                     this.appointments = [appointment, ...(this.appointments || [])];
                     this.selectedAppointmentDate = appointment.date;
                     this.resetAppointmentForm();
+                    if (['waiting', 'in_consultation', 'completed'].includes(status)) {
+                        this.ensureAppointmentFinancialLink(appointment);
+                        if (status === 'waiting' || status === 'in_consultation') this.ensureAppointmentQueueLink(appointment);
+                        if (status === 'completed') this.completeAppointment(appointment);
+                    }
                     this.recordAudit('إضافة موعد', patientName + ' - ' + appointment.date + ' ' + appointment.time);
-                    alert(status === 'pending_confirmation' ? 'تم حفظ الطلب بحالة «بانتظار التأكيد».': 'تم حفظ الموعد بنجاح.');
+                    this.persistState();
+                    this.queueCloudSync();
+                },
+                ensureAppointmentPatient(appointment) {
+                    if (!appointment) return null;
+                    let patient = this.getPatientById(appointment.patientId);
+                    if (!patient) {
+                        patient = (this.patients || []).find(item => String(item.fullName || '').trim() === String(appointment.patientName || '').trim() || (appointment.phone && String(item.phone || '').trim() === String(appointment.phone).trim()));
+                    }
+                    if (!patient) {
+                        patient = { id: 'PAT-' + Date.now(), fullName: appointment.patientName, phone: appointment.phone || '', age: '', gender: '', bloodType: '', visitType: appointment.visitType || 'كشف', selectedSymptoms: [], selectedChronicDiseases: [], records: [] };
+                        this.patients.unshift(patient);
+                    }
+                    appointment.patientId = patient.id;
+                    return patient;
+                },
+                ensureAppointmentFinancialLink(appointment) {
+                    if (!appointment) return null;
+                    const appointmentId = appointment.id || appointment.appointmentId;
+                    if (!appointmentId) return null;
+                    const patient = this.ensureAppointmentPatient(appointment);
+                    let invoice = (this.invoices || []).find(item => String(item.appointmentId || '') === String(appointmentId));
+                    if (!invoice) {
+                        const amount = Number(this.visitTypePrices?.[appointment.visitType] || 300);
+                        invoice = { id: 'INV-APT-' + Date.now(), appointmentId, patientId: patient?.id || appointment.patientId || null, waitingQueueId: appointment.waitingQueueId || null, source: 'appointment', patientName: appointment.patientName, serviceName: `رسوم ${appointment.visitType || 'كشف'} طبي`, amount, discount: 0, tax: 0, total: amount, date: appointment.date || new Date().toISOString().slice(0, 10), status: 'مدفوعة' };
+                        this.invoices.unshift(invoice);
+                    }
+                    appointment.invoiceId = invoice.id;
+                    return invoice;
+                },
+                ensureAppointmentQueueLink(appointment) {
+                    if (!appointment) return null;
+                    const invoice = this.ensureAppointmentFinancialLink(appointment);
+                    let queueItem = (this.waitingQueue || []).find(item => String(item.appointmentId || '') === String(appointment.id));
+                    if (!queueItem) {
+                        queueItem = { id: 'WQ-' + Date.now(), appointmentId: appointment.id, patientId: appointment.patientId, patientName: appointment.patientName, phone: appointment.phone || '', visitType: appointment.visitType || 'كشف', invoiceId: invoice?.id || null, symptom: `زيارة ${appointment.visitType || 'كشف'}`, clinic: 'عيادة الطبيب', status: appointment.status === 'in_consultation' ? 'in_consultation' : 'waiting', createdAt: new Date().toISOString() };
+                        this.waitingQueue.unshift(queueItem);
+                    } else {
+                        queueItem.patientId = appointment.patientId;
+                        queueItem.invoiceId = invoice?.id || queueItem.invoiceId;
+                        queueItem.status = appointment.status === 'in_consultation' ? 'in_consultation' : queueItem.status || 'waiting';
+                    }
+                    appointment.waitingQueueId = queueItem.id;
+                    return queueItem;
+                },
+                completeAppointment(appointment) {
+                    if (!appointment) return false;
+                    this.ensureAppointmentFinancialLink(appointment);
+                    const patient = this.ensureAppointmentPatient(appointment);
+                    this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.appointmentId || '') !== String(appointment.id));
+                    this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id));
+                    this.recordAudit('إكمال موعد', `${appointment.patientName} — نُقل إلى إدارة المرضى${patient ? ' وتم تثبيت التحصيل' : ''}`);
+                    return true;
                 },
                 appointmentStatusBadgeClass(status) {
                     return ({
@@ -2184,6 +2458,20 @@
                     if (reception) base.searchParams.set('reception', this.formatPhoneForWhatsApp(reception));
                     return base.toString();
                 },
+                renderBookingShareQr() {
+                    const target = document.getElementById('bookingShareQrCode');
+                    if (!target) return;
+                    target.innerHTML = '';
+                    if (!window.QRCode) return;
+                    new QRCode(target, {
+                        text: this.getBookingShareUrl(),
+                        width: 160,
+                        height: 160,
+                        colorDark: '#0f172a',
+                        colorLight: '#ffffff',
+                        correctLevel: QRCode.CorrectLevel.M
+                    });
+                },
                 escapePrintHtml(value) {
                     return String(value || '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' })[char]);
                 },
@@ -2191,16 +2479,18 @@
                     const appointment = (this.appointments || []).find(item => item.id === id);
                     if (!appointment) return;
                     appointment.status = status;
-                    if (status === 'waiting') {
-                        const exists = (this.waitingQueue || []).some(item => item.appointmentId === id);
-                        if (!exists) this.waitingQueue.unshift({ id: Date.now(), appointmentId: id, patientId: appointment.patientId, patientName: appointment.patientName, phone: appointment.phone, symptom: appointment.visitType, clinic: 'عيادة الطبيب', status: 'waiting', createdAt: new Date().toISOString() });
-                    }
+                    if (status === 'waiting') this.ensureAppointmentQueueLink(appointment);
                     if (status === 'in_consultation') {
-                        const queueItem = (this.waitingQueue || []).find(item => item.appointmentId === id);
+                        this.ensureAppointmentQueueLink(appointment);
+                        const queueItem = (this.waitingQueue || []).find(item => String(item.appointmentId || '') === String(id));
                         if (queueItem) queueItem.status = 'in_consultation';
                     }
-                    if (status === 'completed' || status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(item => item.appointmentId !== id);
+                    if (status === 'completed') this.completeAppointment(appointment);
+                    if (status === 'cancelled') this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.appointmentId || '') !== String(id));
+                    if (['waiting', 'in_consultation', 'completed'].includes(status)) this.ensureAppointmentFinancialLink(appointment);
                     this.recordAudit('تغيير حالة موعد', appointment.patientName + ': ' + this.appointmentStatusLabel(status));
+                    this.persistState();
+                    this.queueCloudSync();
                 },
                 getRefundableWaitingInvoices(item) {
                     const queueId = String(item?.id || '');
@@ -2247,9 +2537,14 @@
                         return;
                     }
                     item.status = status;
-                    const appointment = (this.appointments || []).find(appt => appt.id === item.appointmentId);
-                    if (appointment) appointment.status = status;
-                    if (status === 'completed') this.waitingQueue = (this.waitingQueue || []).filter(entry => entry.id !== item.id);
+                    const appointment = (this.appointments || []).find(appt => String(appt.id) === String(item.appointmentId));
+                    if (appointment) {
+                        appointment.status = status;
+                        if (status === 'completed') this.completeAppointment(appointment);
+                        else if (status === 'in_consultation') this.ensureAppointmentQueueLink(appointment);
+                    }
+                    if (status === 'waiting' && appointment) this.ensureAppointmentQueueLink(appointment);
+                    if (status === 'completed') this.waitingQueue = (this.waitingQueue || []).filter(entry => String(entry.id) !== String(item.id));
                     this.recordAudit('تغيير حالة قائمة الانتظار', item.patientName + ': ' + this.appointmentStatusLabel(status));
                     this.persistState();
                     this.queueCloudSync();
@@ -2638,7 +2933,6 @@
                     this.newRecurringNote = '';
                     this.newRecurringMedicine = '';
                     this.recordAudit('حفظ عناصر متكررة من الروشتة', `تشخيصات: ${diagnoses.length}، أدوية: ${medicines.length}`);
-                    alert('تم حفظ التشخيص والملاحظات والأدوية المتكررة في القوائم الطبية.');
                 },
                 addRecurringNote() {
                     const value = String(this.newRecurringNote || '').trim();
@@ -2989,7 +3283,6 @@
                     }
                     this.matchedExistingPatient = null;
 
-                    alert('تم تسجيل الزيارة وإضافتها إلى قائمة مرضى في الانتظار ✅');
                     this.renderIcons();
                 },
 
@@ -3169,7 +3462,6 @@
                             selectedMedicinesWithDosage: [], nextFollowUpDate: '', generalNotes: ''
                         };
                         this.renderIcons();
-                        alert('تم حفظ الزيارة وتوليد الروشتة بنجاح. ستظل داخل ملف المريض ويمكنك طباعة الروشتة الآن ✅');
                     } catch (err) {
                         console.error('addMedicalRecord failed:', err);
                         alert('حدث خطأ غير متوقع أثناء الحفظ: ' + err.message + '\n\nجرّب الضغط على Ctrl+Shift+R لتحديث الصفحة بالكامل، أو استخدم زر "إعادة ضبط البيانات المحلية" في الإعدادات إذا استمرت المشكلة.');
@@ -3202,7 +3494,7 @@
                     this.queueCloudSync();
                     if (this.selectedPrescriptionForPrint) this.updatePrescriptionPrintMode();
                     else if (this.showPrescriptionPrintModal) this.$nextTick(() => this.refreshPrescriptionQrCode());
-                    if (showMessage) alert('تم حفظ إعدادات طباعة الروشتة محلياً وبدء مزامنتها مع السحابة.');
+                    // لا تعرض رسالة نجاح علوية عند حفظ إعدادات الطباعة.
                 },
                 refreshPrintSettingsPreview() {
                     if (this.selectedPrescriptionForPrint) this.updatePrescriptionPrintMode();
@@ -3333,7 +3625,8 @@
                     if (!this.validateDoctorContactNumbers()) return;
                     this.persistState();
                     this.queueCloudSync();
-                    alert('تم حفظ إعدادات الطبيب والروشتة ورابط QR بنجاح!');
+                                            // لا تعرض رسالة نجاح علوية عند حفظ إعدادات الطبيب والروشتة.
+
                 },
 
                 sendWhatsAppPrescription(rx, patientObj) {
@@ -3500,8 +3793,14 @@
                 },
 
                 removeFromQueueForPatient(patientId) {
-                    // Completion from the medical record is not a cancellation and must keep the collected invoice intact.
-                    this.waitingQueue = this.waitingQueue.filter(item => item.patientId !== patientId);
+                    // Completion from the medical record is not a cancellation: keep the invoice,
+                    // complete the linked appointment, and remove only the operational queue entry.
+                    const linkedAppointments = (this.appointments || []).filter(item => String(item.patientId || '') === String(patientId));
+                    linkedAppointments.forEach(appointment => {
+                        this.ensureAppointmentFinancialLink(appointment);
+                        this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id));
+                    });
+                    this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.patientId || '') !== String(patientId));
                 },
 
                 removeFromQueue(id) {
@@ -3782,6 +4081,14 @@
                 margin: 0 !important;
                 padding: 0 !important;
                 background: #fff !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+            }
+            /* A5 paper must never inherit the dark application canvas, frame, or shadow. */
+            #printablePrescriptionArea,
+            #printablePrescriptionArea * {
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
             }
             body * {
                 visibility: hidden;
@@ -3805,6 +4112,7 @@
                 border: 0 !important;
                 border-radius: 0 !important;
                 box-shadow: none !important;
+                outline: 0 !important;
                 border: none !important;
                 page-break-after: auto;
                 page-break-inside: auto;
@@ -4108,7 +4416,7 @@
                             <i data-lucide="user-plus" class="w-5 h-5"></i>
                             <span>إضافة زيارة / كشف</span>
                         </a>
-                        <a x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'appointments'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
+                        <a x-show="currentUser?.permissions?.appointments || currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" :class="{'bg-blue-600 text-white font-semibold': currentView === 'appointments'}" class="flex items-center px-4 py-3 rounded-xl cursor-pointer space-x-3 space-x-reverse hover:bg-[#294765]">
                             <i data-lucide="calendar-days" class="w-5 h-5"></i>
                             <span>المواعيد والتقويم</span>
                         </a>
@@ -4210,7 +4518,7 @@
                                 <button x-show="currentUser?.permissions?.newVisit" @click="openPatientFormPage()" class="dashboard-action-card col-span-2 xl:col-span-3 text-right bg-blue-50 dark:bg-blue-950/30 border border-blue-100 dark:border-blue-900/60 p-5 sm:p-6 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="flex items-center justify-between gap-4"><span class="flex items-center gap-4"><span class="w-12 h-12 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-lg shadow-blue-600/20"><i data-lucide="user-plus" class="w-6 h-6"></i></span><span><span class="block text-sm text-blue-800 dark:text-blue-200 font-black">إضافة زيارة / كشف جديد</span><span class="block text-xs text-slate-500 dark:text-slate-400 mt-1">ابدأ ملف مريض جديد أو أضف زيارة إلى ملف قائم.</span></span></span><i data-lucide="arrow-left" class="w-5 h-5 shrink-0 text-blue-600 dark:text-blue-300"></i></span>
                                 </button>
-                                <button x-show="currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" class="dashboard-action-card text-right bg-sky-50 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
+                                <button x-show="currentUser?.permissions?.appointments || currentUser?.permissions?.waitingQueue" @click="openAppointmentsPage()" class="dashboard-action-card text-right bg-sky-50 dark:bg-sky-950/30 border border-sky-100 dark:border-sky-900/60 p-5 rounded-2xl shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all">
                                     <span class="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center mb-3"><i data-lucide="calendar-days" class="w-5 h-5"></i></span>
                                     <p class="text-xs text-sky-700 dark:text-sky-300 font-bold">مواعيد اليوم</p>
                                     <p class="text-2xl font-bold text-sky-700 dark:text-sky-300 mt-1" x-text="appointmentsForSelectedDay.length"></p>
@@ -5270,6 +5578,13 @@
 
                         <!-- 8. SETTINGS VIEW FOR ALL MASTER LISTS & VISIT PRICES -->
                         <div x-show="currentView === 'settings' || currentView === 'prescriptionSettings'" class="max-w-4xl space-y-6">
+                            <div class="bg-white dark:bg-slate-900 p-4 lg:p-5 rounded-2xl border border-cyan-200 dark:border-cyan-900/60 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3" dir="rtl">
+                                <div class="flex items-center gap-3">
+                                    <span class="w-10 h-10 rounded-xl bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 flex items-center justify-center"><i data-lucide="badge-check" class="w-5 h-5"></i></span>
+                                    <div><h3 class="font-bold text-slate-800 dark:text-white">نسخة النظام</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appRelease"></p></div>
+                                </div>
+                                <span class="self-start sm:self-auto text-sm font-extrabold text-cyan-800 dark:text-cyan-200 bg-cyan-50 dark:bg-cyan-950/40 px-3 py-2 rounded-lg" x-text="'إصدار ' + appVersion"></span>
+                            </div>
                             <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
