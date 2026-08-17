@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const salesPage = readFileSync(resolve(import.meta.dirname, "../sales/index.html"), "utf8");
+const packageManifest = readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8");
 
 describe("صفحة مبيعات Soli Medical", () => {
   it("تستخدم اسم مستخدم واتساب في جميع وجهات التواصل ولا تكشف رقم المبيعات السابق", () => {
@@ -27,5 +28,9 @@ describe("صفحة مبيعات Soli Medical", () => {
     expect(salesPage).toContain('data-product-link="clinic"');
     expect(salesPage).toContain('data-product-link="complex"');
     expect(salesPage).toContain("soli-medical-complex-dashboard-enhanced_4ef474a0.png");
+  });
+
+  it("يضم صفحة المبيعات ضمن حزمة الإنتاج للاستضافة المستقلة", () => {
+    expect(packageManifest).toContain("cp sales/index.html dist/public/sales/index.html");
   });
 });
