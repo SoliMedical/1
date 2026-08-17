@@ -20,6 +20,20 @@ export async function setupVite(app: Express, server: Server) {
     appType: "custom",
   });
 
+  const salesLandingPath = path.resolve(
+    import.meta.dirname,
+    "../..",
+    "sales",
+    "index.html"
+  );
+  app.get(["/sales", "/sales/"], (_req, res, next) => {
+    if (!fs.existsSync(salesLandingPath)) {
+      next();
+      return;
+    }
+    res.sendFile(salesLandingPath);
+  });
+
   app.use(vite.middlewares);
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;

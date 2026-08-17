@@ -39,4 +39,19 @@ describe("صفحة مبيعات Soli Medical", () => {
       staticServer.indexOf("app.use(express.static(distPath))")
     );
   });
+
+  it("يحجز مسار المبيعات قبل مسار Vite العام في بيئة المعاينة", () => {
+    const developmentServer = staticServer.slice(
+      0,
+      staticServer.indexOf("export function serveStatic")
+    );
+
+    expect(developmentServer).toContain('app.get(["/sales", "/sales/"]');
+    expect(developmentServer.indexOf('app.get(["/sales", "/sales/"]')).toBeLessThan(
+      developmentServer.indexOf("app.use(vite.middlewares)")
+    );
+    expect(developmentServer.indexOf('app.get(["/sales", "/sales/"]')).toBeLessThan(
+      developmentServer.indexOf('app.use("*", async')
+    );
+  });
 });
