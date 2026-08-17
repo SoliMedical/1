@@ -26,6 +26,6 @@ describe("صفحة مبيعات Soli Medical", () => {
     expect(salesPage).toContain('value="مجمع عيادات"');
     expect(salesPage).toContain('data-product-link="clinic"');
     expect(salesPage).toContain('data-product-link="complex"');
-    expect(salesPage).toContain("soli-medical-complex-dashboard_5eb932bc.png");
+    expect(salesPage).toContain("soli-medical-complex-dashboard-enhanced_4ef474a0.png");
   });
 });
