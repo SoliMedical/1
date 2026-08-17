@@ -6,6 +6,7 @@ import { relative, resolve } from "node:path";
 const root = resolve(process.cwd());
 const allowedHtml = new Set([
   "index.html",
+  "sales/index.html",
   "client/index.html",
   "client/src/SoliMedical-source.html",
 ]);
