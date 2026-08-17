@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 
 const salesPage = readFileSync(resolve(import.meta.dirname, "../sales/index.html"), "utf8");
 const packageManifest = readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8");
+const staticServer = readFileSync(resolve(import.meta.dirname, "_core/vite.ts"), "utf8");
 
 describe("صفحة مبيعات Soli Medical", () => {
   it("تستخدم اسم مستخدم واتساب في جميع وجهات التواصل ولا تكشف رقم المبيعات السابق", () => {
@@ -32,5 +33,10 @@ describe("صفحة مبيعات Soli Medical", () => {
 
   it("يضم صفحة المبيعات ضمن حزمة الإنتاج للاستضافة المستقلة", () => {
     expect(packageManifest).toContain("cp sales/index.html dist/public/sales/index.html");
+    expect(staticServer).toContain('path.resolve(distPath, "sales", "index.html")');
+    expect(staticServer).toContain('app.get(["/sales", "/sales/"]');
+    expect(staticServer.indexOf('app.get(["/sales", "/sales/"]')).toBeLessThan(
+      staticServer.indexOf("app.use(express.static(distPath))")
+    );
   });
 });
