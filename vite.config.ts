@@ -152,6 +152,36 @@ function vitePluginManusDebugCollector(): Plugin {
 
 const plugins = [react(), tailwindcss(), jsxLocPlugin(), vitePluginManusRuntime(), vitePluginManusDebugCollector()];
 
+function vitePluginSalesPreview(): Plugin {
+  const salesDirectory = path.join(PROJECT_ROOT, "sales");
+  return {
+    name: "soli-medical-sales-preview",
+    configureServer(server: ViteDevServer) {
+      server.middlewares.use("/sales", (req, res, next) => {
+        const requestPath = decodeURIComponent((req.url || "/").split("?")[0]);
+        const relativePath = requestPath === "/" ? "index.html" : requestPath.replace(/^\/+/, "");
+        const targetPath = path.resolve(salesDirectory, relativePath);
+
+        if (!targetPath.startsWith(`${salesDirectory}${path.sep}`) || !fs.existsSync(targetPath)) {
+          next();
+          return;
+        }
+
+        if (!fs.statSync(targetPath).isFile()) {
+          next();
+          return;
+        }
+
+        const contentType = targetPath.endsWith(".html") ? "text/html; charset=utf-8" : "application/octet-stream";
+        res.writeHead(200, { "Content-Type": contentType, "Cache-Control": "no-store" });
+        res.end(fs.readFileSync(targetPath));
+      });
+    },
+  };
+}
+
+plugins.push(vitePluginSalesPreview());
+
 export default defineConfig({
   plugins,
   resolve: {
