@@ -70,8 +70,8 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.0';
-        const SOLI_APP_RELEASE = 'ربط المواعيد بالفواتير والصلاحيات وتحسين الدخول بين المتصفحات';
+        const SOLI_APP_VERSION = 'v1.5.1';
+        const SOLI_APP_RELEASE = 'تصحيح القوائم المتكررة للروشتة ومنع اقتراحات كلمات المرور في النماذج الطبية';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -310,6 +310,8 @@
 
                 // Local clinic protection tools.
                 // Reusable items saved directly from the prescription form.
+                recurringPrescriptionLists: [],
+                selectedRecurringPrescriptionListId: '',
                 recurringNotesList: [],
                 recurringMedicinesList: [],
                 lastPrescriptionReusableData: null,
@@ -1756,7 +1758,7 @@
                     usersWriteInFlight: false,
                 usersLocalChangesPending: false,
                 usersChangeSequence: 0,
-                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
+                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringPrescriptionLists', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
 
                 loadPersistedState() {
                     try {
@@ -1766,6 +1768,7 @@
                         this.persistentKeys.forEach(key => {
                             if (saved[key] !== undefined) this[key] = saved[key];
                         });
+                        this.recurringPrescriptionLists = this.normalizeRecurringPrescriptionLists(this.recurringPrescriptionLists);
                         if (Array.isArray(saved.users)) this.users = this.normalizeUsers(saved.users);
                     } catch (e) {
                         console.error('تعذر تحميل البيانات المحفوظة محلياً:', e);
@@ -1785,9 +1788,20 @@
 
                 renderIcons() {
                     this.$nextTick(() => {
+                        this.preventPasswordSuggestionsInClinicalForms();
                         if (window.lucide) {
                             window.lucide.createIcons();
                         }
+                    });
+                },
+                preventPasswordSuggestionsInClinicalForms() {
+                    document.querySelectorAll('[data-soli-non-auth] input, [data-soli-non-auth] textarea, [data-soli-non-auth] select, input[type="tel"]').forEach(field => {
+                        if (field instanceof HTMLInputElement && field.type === 'password') return;
+                        field.setAttribute('autocomplete', 'off');
+                        field.setAttribute('data-lpignore', 'true');
+                        field.setAttribute('data-1p-ignore', 'true');
+                        field.setAttribute('data-bwignore', 'true');
+                        field.setAttribute('data-form-type', 'other');
                     });
                 },
                 showFlashNotice(message, type = 'success') {
@@ -2929,6 +2943,25 @@
                     }
                 },
                 removeMasterDiagnosis(index) { this.diagnosesMasterList.splice(index, 1); },
+                normalizeRecurringPrescriptionLists(value) {
+                    const usedIds = new Set();
+                    return (Array.isArray(value) ? value : []).map((item, index) => {
+                        if (!item || typeof item !== 'object') return null;
+                        const diagnoses = [...new Set((Array.isArray(item.diagnoses) ? item.diagnoses : []).map(diagnosis => String(diagnosis || '').trim()).filter(Boolean))];
+                        const notes = String(item.notes || '').trim();
+                        const medicines = (Array.isArray(item.medicines) ? item.medicines : []).map(medicine => ({
+                            name: String(medicine?.name || '').trim(),
+                            timing: String(medicine?.timing || '').trim(),
+                            extraDosageNotes: String(medicine?.extraDosageNotes || '').trim()
+                        })).filter(medicine => medicine.name);
+                        if (!diagnoses.length && !notes && !medicines.length) return null;
+                        let id = String(item.id || '').trim() || `rx-template-legacy-${index + 1}`;
+                        while (usedIds.has(id)) id = `${id}-${index + 1}`;
+                        usedIds.add(id);
+                        const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicines[0]?.name || 'روشتة متكررة';
+                        return { id, name: String(item.name || '').trim() || `قائمة: ${fallbackName}`, diagnoses, notes, medicines, createdAt: String(item.createdAt || ''), updatedAt: String(item.updatedAt || '') };
+                    }).filter(Boolean);
+                },
                 saveRecurringItemsFromPrescription() {
                     const hasCurrentData = this.newRecordForm?.selectedDiagnosesList?.length || this.newRecordForm?.customDiagnosis || this.newRecordForm?.generalNotes || this.newRecordForm?.selectedMedicinesWithDosage?.length;
                     const source = hasCurrentData ? this.newRecordForm : (this.lastPrescriptionReusableData || {});
@@ -2937,12 +2970,19 @@
                         source.customDiagnosis || ''
                     ].map(value => String(value).trim()).filter(Boolean);
                     const notes = String(source.generalNotes || '').trim();
-                    const medicines = (source.selectedMedicinesWithDosage || []).map(item => {
-                        const name = String(item?.name || '').trim();
-                        const timing = String(item?.timing || '').trim();
-                        const extra = String(item?.extraDosageNotes || '').trim();
-                        return [name, timing, extra].filter(Boolean).join(' — ');
-                    }).filter(Boolean);
+                    const medicineEntries = (source.selectedMedicinesWithDosage || []).map(item => ({ name: String(item?.name || '').trim(), timing: String(item?.timing || '').trim(), extraDosageNotes: String(item?.extraDosageNotes || '').trim() })).filter(item => item.name);
+                    const medicines = medicineEntries.map(item => [item.name, item.timing, item.extraDosageNotes].filter(Boolean).join(' — '));
+                    if (!diagnoses.length && !notes && !medicineEntries.length) {
+                        alert('أدخل تشخيصاً أو ملاحظة أو دواءً في الروشتة أولاً، ثم احفظه في القوائم المتكررة.');
+                        return;
+                    }
+                    const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicineEntries[0]?.name || 'روشتة متكررة';
+                    const listName = `قائمة: ${fallbackName}`;
+                    const existingIndex = (this.recurringPrescriptionLists || []).findIndex(list => list.name === listName);
+                    const now = new Date().toISOString();
+                    const savedList = { id: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].id : `rx-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: listName, diagnoses, notes, medicines: medicineEntries, createdAt: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].createdAt : now, updatedAt: now };
+                    if (existingIndex >= 0) this.recurringPrescriptionLists.splice(existingIndex, 1, savedList);
+                    else this.recurringPrescriptionLists.push(savedList);
                     diagnoses.forEach(value => {
                         if (!this.diagnosesMasterList.includes(value)) this.diagnosesMasterList.push(value);
                     });
@@ -2950,15 +2990,42 @@
                     medicines.forEach(value => {
                         if (!this.recurringMedicinesList.includes(value)) this.recurringMedicinesList.push(value);
                     });
-                    if (!diagnoses.length && !notes && !medicines.length) {
-                        alert('أدخل تشخيصاً أو ملاحظة أو دواءً في الروشتة أولاً، ثم احفظه في القوائم المتكررة.');
-                        return;
-                    }
+                    this.selectedRecurringPrescriptionListId = savedList.id;
                     this.persistState();
                     this.queueCloudSync();
                     this.newRecurringNote = '';
                     this.newRecurringMedicine = '';
-                    this.recordAudit('حفظ عناصر متكررة من الروشتة', `تشخيصات: ${diagnoses.length}، أدوية: ${medicines.length}`);
+                    this.recordAudit(existingIndex >= 0 ? 'تحديث قائمة روشتة متكررة' : 'حفظ قائمة روشتة متكررة', `${listName} — تشخيصات: ${diagnoses.length}، أدوية: ${medicineEntries.length}`);
+                    this.showFlashNotice(existingIndex >= 0 ? 'تم تحديث القائمة المتكررة.' : 'تم حفظ القائمة المتكررة وظهرت أعلى الروشتة.');
+                },
+                applyRecurringPrescriptionList(listId) {
+                    const savedList = (this.recurringPrescriptionLists || []).find(list => list.id === listId);
+                    if (!savedList) return;
+                    const normalized = this.normalizeRecurringPrescriptionLists([savedList])[0];
+                    if (!normalized) return;
+                    this.newRecordForm.selectedDiagnosesList = [...normalized.diagnoses];
+                    this.newRecordForm.customDiagnosis = '';
+                    this.newRecordForm.generalNotes = normalized.notes;
+                    this.newRecordForm.selectedMedicinesWithDosage = normalized.medicines.map(medicine => ({ ...medicine }));
+                    this.selectedRecurringPrescriptionListId = normalized.id;
+                    this.diagnosisSearchQuery = '';
+                    this.medicineSearchQuery = '';
+                    this.diagnosisSuggestionsOpen = false;
+                    this.medicineSuggestionsOpen = false;
+                    this.showFlashNotice(`تم تحميل «${normalized.name}» في الروشتة.`);
+                    this.$nextTick(() => this.renderIcons());
+                },
+                removeRecurringPrescriptionList(listId) {
+                    const index = (this.recurringPrescriptionLists || []).findIndex(list => list.id === listId);
+                    if (index < 0) return;
+                    const savedList = this.recurringPrescriptionLists[index];
+                    if (!confirm(`سيتم حذف القائمة المتكررة «${savedList.name}». هل تريد المتابعة؟`)) return;
+                    this.recurringPrescriptionLists.splice(index, 1);
+                    if (this.selectedRecurringPrescriptionListId === listId) this.selectedRecurringPrescriptionListId = '';
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.recordAudit('حذف قائمة روشتة متكررة', savedList.name);
+                    this.showFlashNotice('تم حذف القائمة المتكررة.');
                 },
                 addRecurringNote() {
                     const value = String(this.newRecurringNote || '').trim();
@@ -5039,11 +5106,17 @@
                             </div>
 
                             <!-- Visit Recording Form with Next Follow Up Date -->
-                            <div class="bg-slate-50 dark:bg-slate-800/60 p-6 rounded-2xl border dark:border-slate-700 space-y-5">
+                            <div data-soli-non-auth class="bg-slate-50 dark:bg-slate-800/60 p-6 rounded-2xl border dark:border-slate-700 space-y-5">
                                 <h4 class="font-bold text-base flex items-center space-x-2 space-x-reverse">
                                     <i data-lucide="stethoscope" class="w-5 h-5 text-blue-600"></i>
                                     <span>تسجيل تشخيص وزيارة وكتابة روشتة جديدة</span>
                                 </h4>
+
+                                <div class="rounded-2xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/80 dark:bg-indigo-950/25 p-4 space-y-2">
+                                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5"><label for="recurring-prescription-list" class="text-xs font-bold text-indigo-900 dark:text-indigo-200">القوائم المتكررة من الروشتة</label><span class="text-[10px] text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length ? recurringPrescriptionLists.length + ' قوائم محفوظة' : 'احفظ الروشتة الحالية لتظهر هنا'"></span></div>
+                                    <select id="recurring-prescription-list" x-model="selectedRecurringPrescriptionListId" @change="applyRecurringPrescriptionList($event.target.value)" :disabled="!recurringPrescriptionLists.length" class="w-full px-3 py-2.5 border rounded-xl text-xs bg-white dark:bg-slate-900 border-indigo-200 dark:border-indigo-800 text-slate-800 dark:text-white disabled:cursor-not-allowed disabled:opacity-60"><option value="">اختر قائمة محفوظة لتحميل التشخيص والملاحظات والأدوية...</option><template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><option :value="savedList.id" x-text="savedList.name + ' — ' + savedList.diagnoses.length + ' تشخيص / ' + savedList.medicines.length + ' دواء'"></option></template></select>
+                                    <p class="text-[10px] text-indigo-800/80 dark:text-indigo-200/80">عند الاختيار، تُستبدل حقول التشخيص والملاحظات والأدوية الحالية بمحتوى القائمة المحفوظة.</p>
+                                </div>
 
                                 <!-- Vital Signs (العلامات الحيوية) -->
                                 <div x-show="recordFormSections.vitals" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
@@ -5839,10 +5912,10 @@
                                     حفظ بيانات الطبيب
                                 </button>
 
-                                <div x-show="currentView === 'prescriptionSettings'" class="prescription-settings-panel mt-5 bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-indigo-100 dark:border-indigo-900/60 shadow-sm space-y-3">
-                                    <div class="flex items-start justify-between gap-3"><div><h3 class="text-base font-bold text-slate-800 dark:text-white">القوائم المتكررة من الروشتة</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1">احفظ التشخيص والملاحظات والأدوية الحالية لاستخدامها لاحقاً بسرعة.</p></div><i data-lucide="bookmark-plus" class="w-6 h-6 text-indigo-600 dark:text-indigo-400 flex-shrink-0"></i></div>
-                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-slate-600 dark:text-slate-300"><span>التشخيص: <b x-text="(newRecordForm.selectedDiagnosesList || []).length + (newRecordForm.customDiagnosis ? 1 : 0)"></b></span><span>الملاحظات: <b x-text="newRecordForm.generalNotes ? 'جاهزة للحفظ' : 'غير موجودة'"></b></span><span>الأدوية: <b x-text="(newRecordForm.selectedMedicinesWithDosage || []).length"></b></span></div>
-                                    <button type="button" @click="saveRecurringItemsFromPrescription()" class="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold">حفظ الموجود حالياً في القوائم الطبية</button>
+                            <div x-show="currentView === 'prescriptionSettings'" class="prescription-settings-panel mt-5 bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-indigo-100 dark:border-indigo-900/60 shadow-sm space-y-3">
+                                    <div class="flex items-start justify-between gap-3"><div><h3 class="text-base font-bold text-slate-800 dark:text-white">القوائم المتكررة من الروشتة</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تُحفظ من زر «حفظ عناصر الروشتة كقائمة متكررة» بجوار حفظ الزيارة، ثم تظهر أعلى الروشتة للاستخدام السريع.</p></div><i data-lucide="bookmark-plus" class="w-6 h-6 text-indigo-600 dark:text-indigo-400 flex-shrink-0"></i></div>
+                                    <div class="flex items-center justify-between rounded-xl bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2 text-xs"><span class="font-bold text-indigo-800 dark:text-indigo-200">القوائم المحفوظة</span><span class="font-extrabold text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length + ' قائمة'"></span></div>
+                                    <div class="space-y-2 max-h-48 overflow-y-auto"><template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><div class="flex items-center justify-between gap-3 rounded-xl border border-indigo-100 dark:border-indigo-900/60 p-3"><div class="min-w-0"><p class="truncate text-xs font-bold text-slate-800 dark:text-white" x-text="savedList.name"></p><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div><button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30">حذف</button></div></template><p x-show="recurringPrescriptionLists.length === 0" class="py-3 text-center text-xs text-slate-400">لا توجد قوائم محفوظة بعد.</p></div>
                                 </div>
 
                                 <!-- Clinic Branches (merged here, appears at bottom of prescriptions) -->

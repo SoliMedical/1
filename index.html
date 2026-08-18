@@ -70,8 +70,8 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.0';
-        const SOLI_APP_RELEASE = 'ربط المواعيد بالفواتير والصلاحيات وتحسين الدخول بين المتصفحات';
+        const SOLI_APP_VERSION = 'v1.5.1';
+        const SOLI_APP_RELEASE = 'تصحيح القوائم المتكررة للروشتة ومنع اقتراحات كلمات المرور في النماذج الطبية';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -312,7 +312,6 @@
                 // Reusable items saved directly from the prescription form.
                 recurringPrescriptionLists: [],
                 selectedRecurringPrescriptionListId: '',
-                newRecurringPrescriptionListName: '',
                 recurringNotesList: [],
                 recurringMedicinesList: [],
                 lastPrescriptionReusableData: null,
@@ -1789,9 +1788,20 @@
 
                 renderIcons() {
                     this.$nextTick(() => {
+                        this.preventPasswordSuggestionsInClinicalForms();
                         if (window.lucide) {
                             window.lucide.createIcons();
                         }
+                    });
+                },
+                preventPasswordSuggestionsInClinicalForms() {
+                    document.querySelectorAll('[data-soli-non-auth] input, [data-soli-non-auth] textarea, [data-soli-non-auth] select, input[type="tel"]').forEach(field => {
+                        if (field instanceof HTMLInputElement && field.type === 'password') return;
+                        field.setAttribute('autocomplete', 'off');
+                        field.setAttribute('data-lpignore', 'true');
+                        field.setAttribute('data-1p-ignore', 'true');
+                        field.setAttribute('data-bwignore', 'true');
+                        field.setAttribute('data-form-type', 'other');
                     });
                 },
                 showFlashNotice(message, type = 'success') {
@@ -2985,7 +2995,7 @@
                         return;
                     }
                     const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicineEntries[0]?.name || 'روشتة متكررة';
-                    const listName = String(this.newRecurringPrescriptionListName || '').trim() || `قائمة: ${fallbackName}`;
+                    const listName = `قائمة: ${fallbackName}`;
                     const existingIndex = (this.recurringPrescriptionLists || []).findIndex(list => list.name === listName);
                     const now = new Date().toISOString();
                     const savedList = {
@@ -3012,7 +3022,6 @@
                     });
                     this.persistState();
                     this.queueCloudSync();
-                    this.newRecurringPrescriptionListName = '';
                     this.newRecurringNote = '';
                     this.newRecurringMedicine = '';
                     this.recordAudit(existingIndex >= 0 ? 'تحديث قائمة روشتة متكررة' : 'حفظ قائمة روشتة متكررة', `${listName} — تشخيصات: ${diagnoses.length}، أدوية: ${medicineEntries.length}`);
@@ -4403,7 +4412,7 @@
 
                         <div class="bg-white rounded-[1.75rem] shadow-2xl shadow-slate-950/20 border border-white/70 p-5 sm:p-7 lg:p-8">
                             <template x-if="!sent">
-                                <form @submit.prevent="submitBooking" class="space-y-5" aria-label="نموذج طلب موعد جديد">
+                                <form @submit.prevent="submitBooking" data-soli-non-auth class="space-y-5" aria-label="نموذج طلب موعد جديد">
                                     <div><h2 class="text-xl font-extrabold text-slate-900">بيانات طلب الموعد</h2><p class="text-xs text-slate-500 mt-1.5">سيصل الطلب للاستقبال بحالة «بانتظار التأكيد».</p></div>
                                     <div class="grid sm:grid-cols-2 gap-4">
                                         <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">الاسم الكامل</span><input type="text" x-model.trim="bookingForm.name" required autocomplete="name" placeholder="اكتب الاسم كما سيظهر في الموعد" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
@@ -4708,7 +4717,7 @@
                             <div><h3 class="font-bold text-slate-800 dark:text-white text-xl">إدارة المواعيد والتقويم</h3><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">نظّم المواعيد وحوّل الموعد إلى قائمة الانتظار عند حضور المريض.</p></div>
                             <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
                                 <div class="lg:col-span-1 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-3">
-                                    <div class="flex items-center justify-between gap-2"><h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4><button type="button" @click="prepareWhatsAppAppointment" class="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline">إضافة من طلب واتساب</button></div>
+                                    <div data-soli-non-auth class="space-y-3"><div class="flex items-center justify-between gap-2"><h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4><button type="button" @click="prepareWhatsAppAppointment" class="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline">إضافة من طلب واتساب</button></div>
                                     <div x-show="appointmentForm.status === 'pending_confirmation'" class="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-900/50 px-3 py-2 text-xs font-bold text-amber-700 dark:text-amber-300"><i data-lucide="clock-3" class="w-4 h-4"></i>سيُحفظ هذا الموعد بحالة «بانتظار التأكيد»</div>
                                     <input id="appointmentPatientNameInput" type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
                                     <input id="appointmentPhoneInput" name="appointment-phone" type="tel" inputmode="numeric" autocomplete="tel-national" autocapitalize="off" spellcheck="false" x-model="appointmentForm.phone" pattern="(?:01(?:0|1|2|5)[0-9]{8}|(?:\\+20|0020|20)1(?:0|1|2|5)[0-9]{8})" title="أدخل رقم محمول مصري صحيحاً، مثل: 01012345678" placeholder="مثال: 01012345678" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
@@ -4716,6 +4725,7 @@
                                     <select x-model="appointmentForm.visitType" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select>
                                     <textarea x-model="appointmentForm.notes" rows="2" placeholder="ملاحظات الموعد" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></textarea>
                                     <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold" x-text="appointmentForm.status === 'pending_confirmation' ? 'حفظ طلب بانتظار التأكيد' : 'حفظ الموعد'"></button>
+                                    </div>
                                 </div>
                                 <div class="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-4">
                                     <div class="flex justify-end"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
@@ -4916,7 +4926,7 @@
                                 <h3 class="text-xl font-bold" x-text="editingPatient ? 'تعديل مريض' : 'تسجيل مريض أو زيارة جديدة'"></h3>
                                 <button @click="navigateTo('patientsList')" class="text-xs text-blue-600">العودة للقائمة</button>
                             </div>
-                            <form @submit.prevent="savePatient" class="space-y-5">
+                            <form @submit.prevent="savePatient" data-soli-non-auth class="space-y-5">
                                 <div class="relative">
                                     <label class="block text-xs font-bold text-blue-600 mb-1">اسم المريض الكامل (إجباري) *</label>
                                     <input type="text" x-model="patientForm.fullName" @input="showPatientSuggestions = true; if (matchedExistingPatient && patientForm.fullName !== matchedExistingPatient.fullName) matchedExistingPatient = null" @focus="showPatientSuggestions = true" autocomplete="off" required class="w-full px-4 py-3 border-2 border-blue-500 rounded-xl text-base bg-slate-50 dark:bg-slate-800 dark:text-white" placeholder="اسم المريض...">
@@ -5126,7 +5136,7 @@
                             </div>
 
                             <!-- Visit Recording Form with Next Follow Up Date -->
-                            <div class="bg-slate-50 dark:bg-slate-800/60 p-6 rounded-2xl border dark:border-slate-700 space-y-5">
+                                <div data-soli-non-auth class="bg-slate-50 dark:bg-slate-800/60 p-6 rounded-2xl border dark:border-slate-700 space-y-5">
                                 <h4 class="font-bold text-base flex items-center space-x-2 space-x-reverse">
                                     <i data-lucide="stethoscope" class="w-5 h-5 text-blue-600"></i>
                                     <span>تسجيل تشخيص وزيارة وكتابة روشتة جديدة</span>
@@ -5378,8 +5388,7 @@
                                 </div>
 
                                 <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                                    <input type="text" x-model="newRecurringPrescriptionListName" maxlength="80" placeholder="اسم القائمة المتكررة (اختياري)" class="min-w-0 sm:w-64 px-3 py-3 border rounded-xl text-xs bg-white dark:bg-slate-900 border-indigo-200 dark:border-indigo-800 text-slate-800 dark:text-white">
-                                    <button type="button" @click="saveRecurringItemsFromPrescription()" class="bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 font-bold px-4 py-3 rounded-xl text-xs">حفظ الروشتة كقائمة متكررة</button>
+                                    <button type="button" @click="saveRecurringItemsFromPrescription()" class="bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 font-bold px-4 py-3 rounded-xl text-xs">حفظ عناصر الروشتة كقائمة متكررة</button>
                                     <button @click="addMedicalRecord" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-6 py-3 rounded-xl text-sm shadow">
                                         حفظ الزيارة وتوليد الروشتة
                                     </button>
@@ -5739,7 +5748,7 @@
                                 </div>
                                 <span class="self-start sm:self-auto text-sm font-extrabold text-cyan-800 dark:text-cyan-200 bg-cyan-50 dark:bg-cyan-950/40 px-3 py-2 rounded-lg" x-text="'إصدار ' + appVersion"></span>
                             </div>
-                            <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
+                            <div x-show="currentView === 'prescriptionSettings'" data-soli-non-auth class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
                                     <div>
@@ -5942,9 +5951,12 @@
                                 </button>
 
                                 <div x-show="currentView === 'prescriptionSettings'" class="prescription-settings-panel mt-5 bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-indigo-100 dark:border-indigo-900/60 shadow-sm space-y-3">
-                                    <div class="flex items-start justify-between gap-3"><div><h3 class="text-base font-bold text-slate-800 dark:text-white">القوائم المتكررة من الروشتة</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1">احفظ التشخيص والملاحظات والأدوية الحالية لاستخدامها لاحقاً بسرعة.</p></div><i data-lucide="bookmark-plus" class="w-6 h-6 text-indigo-600 dark:text-indigo-400 flex-shrink-0"></i></div>
-                                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] text-slate-600 dark:text-slate-300"><span>التشخيص: <b x-text="(newRecordForm.selectedDiagnosesList || []).length + (newRecordForm.customDiagnosis ? 1 : 0)"></b></span><span>الملاحظات: <b x-text="newRecordForm.generalNotes ? 'جاهزة للحفظ' : 'غير موجودة'"></b></span><span>الأدوية: <b x-text="(newRecordForm.selectedMedicinesWithDosage || []).length"></b></span></div>
-                                    <button type="button" @click="saveRecurringItemsFromPrescription()" class="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold">حفظ الموجود حالياً في القوائم الطبية</button>
+                                    <div class="flex items-start justify-between gap-3"><div><h3 class="text-base font-bold text-slate-800 dark:text-white">القوائم المتكررة من الروشتة</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تُحفظ من زر «حفظ عناصر الروشتة كقائمة متكررة» بجوار حفظ الزيارة، ثم تظهر أعلى الروشتة للاستخدام السريع.</p></div><i data-lucide="bookmark-plus" class="w-6 h-6 text-indigo-600 dark:text-indigo-400 flex-shrink-0"></i></div>
+                                    <div class="flex items-center justify-between rounded-xl bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2 text-xs"><span class="font-bold text-indigo-800 dark:text-indigo-200">القوائم المحفوظة</span><span class="font-extrabold text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length + ' قائمة'"></span></div>
+                                    <div class="space-y-2 max-h-48 overflow-y-auto">
+                                        <template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><div class="flex items-center justify-between gap-3 rounded-xl border border-indigo-100 dark:border-indigo-900/60 p-3"><div class="min-w-0"><p class="truncate text-xs font-bold text-slate-800 dark:text-white" x-text="savedList.name"></p><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div><button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30">حذف</button></div></template>
+                                        <p x-show="recurringPrescriptionLists.length === 0" class="py-3 text-center text-xs text-slate-400">لا توجد قوائم محفوظة بعد.</p>
+                                    </div>
                                 </div>
 
                                 <!-- Clinic Branches (merged here, appears at bottom of prescriptions) -->

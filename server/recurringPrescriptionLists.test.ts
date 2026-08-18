@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 
-const pagePath = new URL("../index.html", import.meta.url);
+const pagePath = new URL("../client/index.html", import.meta.url);
 
 async function createAppData() {
   const html = await readFile(pagePath, "utf8");
@@ -65,7 +65,6 @@ describe("قوائم الروشتة المتكررة", () => {
     app.recurringNotesList = [];
     app.recurringMedicinesList = [];
     app.recurringPrescriptionLists = [];
-    app.newRecurringPrescriptionListName = "حساسية موسمية";
     app.newRecordForm = {
       selectedDiagnosesList: ["التهاب الأنف التحسسي"],
       customDiagnosis: "",
@@ -79,7 +78,7 @@ describe("قوائم الروشتة المتكررة", () => {
 
     expect(app.recurringPrescriptionLists).toHaveLength(1);
     expect(app.recurringPrescriptionLists[0]).toMatchObject({
-      name: "حساسية موسمية",
+      name: "قائمة: التهاب الأنف التحسسي",
       diagnoses: ["التهاب الأنف التحسسي"],
       notes: "تجنب المثيرات والمتابعة عند الحاجة.",
       medicines: [{ name: "لوراتادين", timing: "مرة يومياً", extraDosageNotes: "بعد الأكل" }],
@@ -123,5 +122,16 @@ describe("قوائم الروشتة المتكررة", () => {
 
     expect(app.recurringPrescriptionLists).toHaveLength(0);
     expect(alerts.at(-1)).toContain("أدخل تشخيصاً أو ملاحظة أو دواءً");
+  });
+
+  it("يبقي الزر الأصلي والقائمة المنسدلة وحماية النماذج الطبية من اقتراحات كلمات المرور", async () => {
+    const html = await readFile(pagePath, "utf8");
+
+    expect(html).toContain("حفظ عناصر الروشتة كقائمة متكررة");
+    expect(html).toContain('id="recurring-prescription-list"');
+    expect(html).toContain("preventPasswordSuggestionsInClinicalForms()");
+    expect(html).toContain("data-soli-non-auth");
+    expect(html).toContain('input[type="tel"]');
+    expect(html).toContain("const SOLI_APP_VERSION = 'v1.5.1'");
   });
 });
