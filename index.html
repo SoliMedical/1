@@ -310,6 +310,9 @@
 
                 // Local clinic protection tools.
                 // Reusable items saved directly from the prescription form.
+                recurringPrescriptionLists: [],
+                selectedRecurringPrescriptionListId: '',
+                newRecurringPrescriptionListName: '',
                 recurringNotesList: [],
                 recurringMedicinesList: [],
                 lastPrescriptionReusableData: null,
@@ -1756,7 +1759,7 @@
                     usersWriteInFlight: false,
                 usersLocalChangesPending: false,
                 usersChangeSequence: 0,
-                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
+                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringPrescriptionLists', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
 
                 loadPersistedState() {
                     try {
@@ -1766,6 +1769,7 @@
                         this.persistentKeys.forEach(key => {
                             if (saved[key] !== undefined) this[key] = saved[key];
                         });
+                        this.recurringPrescriptionLists = this.normalizeRecurringPrescriptionLists(this.recurringPrescriptionLists);
                         if (Array.isArray(saved.users)) this.users = this.normalizeUsers(saved.users);
                     } catch (e) {
                         console.error('تعذر تحميل البيانات المحفوظة محلياً:', e);
@@ -2929,6 +2933,35 @@
                     }
                 },
                 removeMasterDiagnosis(index) { this.diagnosesMasterList.splice(index, 1); },
+                normalizeRecurringPrescriptionLists(value) {
+                    const usedIds = new Set();
+                    return (Array.isArray(value) ? value : []).map((item, index) => {
+                        if (!item || typeof item !== 'object') return null;
+                        const diagnoses = [...new Set((Array.isArray(item.diagnoses) ? item.diagnoses : [])
+                            .map(diagnosis => String(diagnosis || '').trim())
+                            .filter(Boolean))];
+                        const notes = String(item.notes || '').trim();
+                        const medicines = (Array.isArray(item.medicines) ? item.medicines : []).map(medicine => ({
+                            name: String(medicine?.name || '').trim(),
+                            timing: String(medicine?.timing || '').trim(),
+                            extraDosageNotes: String(medicine?.extraDosageNotes || '').trim()
+                        })).filter(medicine => medicine.name);
+                        if (!diagnoses.length && !notes && !medicines.length) return null;
+                        let id = String(item.id || '').trim() || `rx-template-legacy-${index + 1}`;
+                        while (usedIds.has(id)) id = `${id}-${index + 1}`;
+                        usedIds.add(id);
+                        const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicines[0]?.name || 'روشتة متكررة';
+                        return {
+                            id,
+                            name: String(item.name || '').trim() || `قائمة: ${fallbackName}`,
+                            diagnoses,
+                            notes,
+                            medicines,
+                            createdAt: String(item.createdAt || ''),
+                            updatedAt: String(item.updatedAt || '')
+                        };
+                    }).filter(Boolean);
+                },
                 saveRecurringItemsFromPrescription() {
                     const hasCurrentData = this.newRecordForm?.selectedDiagnosesList?.length || this.newRecordForm?.customDiagnosis || this.newRecordForm?.generalNotes || this.newRecordForm?.selectedMedicinesWithDosage?.length;
                     const source = hasCurrentData ? this.newRecordForm : (this.lastPrescriptionReusableData || {});
@@ -2937,12 +2970,39 @@
                         source.customDiagnosis || ''
                     ].map(value => String(value).trim()).filter(Boolean);
                     const notes = String(source.generalNotes || '').trim();
-                    const medicines = (source.selectedMedicinesWithDosage || []).map(item => {
-                        const name = String(item?.name || '').trim();
-                        const timing = String(item?.timing || '').trim();
-                        const extra = String(item?.extraDosageNotes || '').trim();
+                    const medicineEntries = (source.selectedMedicinesWithDosage || []).map(item => ({
+                        name: String(item?.name || '').trim(),
+                        timing: String(item?.timing || '').trim(),
+                        extraDosageNotes: String(item?.extraDosageNotes || '').trim()
+                    })).filter(item => item.name);
+                    const medicines = medicineEntries.map(item => {
+                        const { name, timing, extraDosageNotes } = item;
+                        const extra = extraDosageNotes;
                         return [name, timing, extra].filter(Boolean).join(' — ');
                     }).filter(Boolean);
+                    if (!diagnoses.length && !notes && !medicineEntries.length) {
+                        alert('أدخل تشخيصاً أو ملاحظة أو دواءً في الروشتة أولاً، ثم احفظه في القوائم المتكررة.');
+                        return;
+                    }
+                    const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicineEntries[0]?.name || 'روشتة متكررة';
+                    const listName = String(this.newRecurringPrescriptionListName || '').trim() || `قائمة: ${fallbackName}`;
+                    const existingIndex = (this.recurringPrescriptionLists || []).findIndex(list => list.name === listName);
+                    const now = new Date().toISOString();
+                    const savedList = {
+                        id: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].id : `rx-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        name: listName,
+                        diagnoses,
+                        notes,
+                        medicines: medicineEntries,
+                        createdAt: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].createdAt : now,
+                        updatedAt: now
+                    };
+                    if (existingIndex >= 0) {
+                        this.recurringPrescriptionLists.splice(existingIndex, 1, savedList);
+                    } else {
+                        this.recurringPrescriptionLists.push(savedList);
+                    }
+                    this.selectedRecurringPrescriptionListId = savedList.id;
                     diagnoses.forEach(value => {
                         if (!this.diagnosesMasterList.includes(value)) this.diagnosesMasterList.push(value);
                     });
@@ -2950,15 +3010,42 @@
                     medicines.forEach(value => {
                         if (!this.recurringMedicinesList.includes(value)) this.recurringMedicinesList.push(value);
                     });
-                    if (!diagnoses.length && !notes && !medicines.length) {
-                        alert('أدخل تشخيصاً أو ملاحظة أو دواءً في الروشتة أولاً، ثم احفظه في القوائم المتكررة.');
-                        return;
-                    }
                     this.persistState();
                     this.queueCloudSync();
+                    this.newRecurringPrescriptionListName = '';
                     this.newRecurringNote = '';
                     this.newRecurringMedicine = '';
-                    this.recordAudit('حفظ عناصر متكررة من الروشتة', `تشخيصات: ${diagnoses.length}، أدوية: ${medicines.length}`);
+                    this.recordAudit(existingIndex >= 0 ? 'تحديث قائمة روشتة متكررة' : 'حفظ قائمة روشتة متكررة', `${listName} — تشخيصات: ${diagnoses.length}، أدوية: ${medicineEntries.length}`);
+                    this.showFlashNotice(existingIndex >= 0 ? 'تم تحديث القائمة المتكررة.' : 'تم حفظ القائمة المتكررة وظهرت أعلى الروشتة.');
+                },
+                applyRecurringPrescriptionList(listId) {
+                    const savedList = (this.recurringPrescriptionLists || []).find(list => list.id === listId);
+                    if (!savedList) return;
+                    const normalized = this.normalizeRecurringPrescriptionLists([savedList])[0];
+                    if (!normalized) return;
+                    this.newRecordForm.selectedDiagnosesList = [...normalized.diagnoses];
+                    this.newRecordForm.customDiagnosis = '';
+                    this.newRecordForm.generalNotes = normalized.notes;
+                    this.newRecordForm.selectedMedicinesWithDosage = normalized.medicines.map(medicine => ({ ...medicine }));
+                    this.selectedRecurringPrescriptionListId = normalized.id;
+                    this.diagnosisSearchQuery = '';
+                    this.medicineSearchQuery = '';
+                    this.diagnosisSuggestionsOpen = false;
+                    this.medicineSuggestionsOpen = false;
+                    this.showFlashNotice(`تم تحميل «${normalized.name}» في الروشتة.`);
+                    this.$nextTick(() => this.renderIcons());
+                },
+                removeRecurringPrescriptionList(listId) {
+                    const index = (this.recurringPrescriptionLists || []).findIndex(list => list.id === listId);
+                    if (index < 0) return;
+                    const savedList = this.recurringPrescriptionLists[index];
+                    if (!confirm(`سيتم حذف القائمة المتكررة «${savedList.name}». هل تريد المتابعة؟`)) return;
+                    this.recurringPrescriptionLists.splice(index, 1);
+                    if (this.selectedRecurringPrescriptionListId === listId) this.selectedRecurringPrescriptionListId = '';
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.recordAudit('حذف قائمة روشتة متكررة', savedList.name);
+                    this.showFlashNotice('تم حذف القائمة المتكررة.');
                 },
                 addRecurringNote() {
                     const value = String(this.newRecurringNote || '').trim();
@@ -5045,6 +5132,20 @@
                                     <span>تسجيل تشخيص وزيارة وكتابة روشتة جديدة</span>
                                 </h4>
 
+                                <div class="rounded-2xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/80 dark:bg-indigo-950/25 p-4 space-y-2">
+                                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
+                                        <label for="recurring-prescription-list" class="text-xs font-bold text-indigo-900 dark:text-indigo-200">قائمة روشتة متكررة</label>
+                                        <span class="text-[10px] text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length ? recurringPrescriptionLists.length + ' قوائم محفوظة' : 'احفظ قائمة من محتوى الروشتة الحالية'"></span>
+                                    </div>
+                                    <select id="recurring-prescription-list" x-model="selectedRecurringPrescriptionListId" @change="applyRecurringPrescriptionList($event.target.value)" :disabled="!recurringPrescriptionLists.length" class="w-full px-3 py-2.5 border rounded-xl text-xs bg-white dark:bg-slate-900 border-indigo-200 dark:border-indigo-800 text-slate-800 dark:text-white disabled:cursor-not-allowed disabled:opacity-60">
+                                        <option value="">اختر قائمة محفوظة لتحميل التشخيص والملاحظات والأدوية...</option>
+                                        <template x-for="savedList in recurringPrescriptionLists" :key="savedList.id">
+                                            <option :value="savedList.id" x-text="savedList.name + ' — ' + savedList.diagnoses.length + ' تشخيص / ' + savedList.medicines.length + ' دواء' "></option>
+                                        </template>
+                                    </select>
+                                    <p class="text-[10px] text-indigo-800/80 dark:text-indigo-200/80">اختيار قائمة يستبدل حقول التشخيص والملاحظات والأدوية الحالية بمحتوى القائمة المحفوظة.</p>
+                                </div>
+
                                 <!-- Vital Signs (العلامات الحيوية) -->
                                 <div x-show="recordFormSections.vitals" x-cloak class="space-y-3 border-t dark:border-slate-700 pt-4">
                                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-300">العلامات الحيوية (اختياري):</label>
@@ -5277,7 +5378,8 @@
                                 </div>
 
                                 <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                                    <button type="button" @click="saveRecurringItemsFromPrescription()" class="bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 font-bold px-4 py-3 rounded-xl text-xs">حفظ عناصر الروشتة كقائمة متكررة</button>
+                                    <input type="text" x-model="newRecurringPrescriptionListName" maxlength="80" placeholder="اسم القائمة المتكررة (اختياري)" class="min-w-0 sm:w-64 px-3 py-3 border rounded-xl text-xs bg-white dark:bg-slate-900 border-indigo-200 dark:border-indigo-800 text-slate-800 dark:text-white">
+                                    <button type="button" @click="saveRecurringItemsFromPrescription()" class="bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-950/70 text-indigo-700 dark:text-indigo-300 font-bold px-4 py-3 rounded-xl text-xs">حفظ الروشتة كقائمة متكررة</button>
                                     <button @click="addMedicalRecord" class="bg-blue-600 hover:bg-blue-700 text-white font-bold px-6 py-3 rounded-xl text-sm shadow">
                                         حفظ الزيارة وتوليد الروشتة
                                     </button>
@@ -6161,8 +6263,20 @@
                                 <!-- Reusable items captured from the prescription form -->
                                                                 <div class="mt-5 pt-5 border-t border-slate-100 dark:border-slate-800 space-y-4">
                                                                     <div>
-                                                                        <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">الملاحظات والأدوية المتكررة</h4>
-                                                                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">يمكن حفظها من صفحة الروشتة أو إضافتها وتعديلها هنا.</p>
+                                                                        <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">قوائم الروشتة المتكررة</h4>
+                                                                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تُحفظ الروشتة كاملة من النموذج ثم تظهر في القائمة المنسدلة أعلى الروشتة، ويمكن حذف القوائم غير المطلوبة هنا.</p>
+                                                                    </div>
+                                                                    <div class="rounded-xl border border-indigo-200 dark:border-indigo-900/60 p-3 space-y-2">
+                                                                        <div class="flex items-center justify-between gap-2"><span class="text-xs font-bold text-indigo-800 dark:text-indigo-200">قوالب الروشتة الكاملة</span><span class="text-[11px] text-slate-500" x-text="recurringPrescriptionLists.length + ' قائمة'"></span></div>
+                                                                        <div class="space-y-1.5 max-h-48 overflow-y-auto">
+                                                                            <template x-for="savedList in recurringPrescriptionLists" :key="savedList.id">
+                                                                                <div class="flex items-center justify-between gap-3 rounded-lg bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2">
+                                                                                    <div class="min-w-0"><p class="truncate text-[11px] font-bold text-indigo-900 dark:text-indigo-100" x-text="savedList.name"></p><p class="text-[10px] text-indigo-700 dark:text-indigo-300" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div>
+                                                                                    <button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="shrink-0 text-red-500 hover:text-red-700" :title="'حذف ' + savedList.name"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                                                                                </div>
+                                                                            </template>
+                                                                            <p x-show="recurringPrescriptionLists.length === 0" class="text-[11px] text-slate-400 text-center py-2">لا توجد قوائم روشتة كاملة محفوظة بعد.</p>
+                                                                        </div>
                                                                     </div>
                                                                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                                                         <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-3 space-y-3">
