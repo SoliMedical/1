@@ -70,8 +70,8 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.1';
-        const SOLI_APP_RELEASE = 'تصحيح القوائم المتكررة للروشتة ومنع اقتراحات كلمات المرور في النماذج الطبية';
+        const SOLI_APP_VERSION = 'v1.5.3';
+        const SOLI_APP_RELEASE = 'إجبار تحديث النسخة المنشورة وتفعيل تحرير القوائم المتكررة من الإعدادات';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -312,6 +312,8 @@
                 // Reusable items saved directly from the prescription form.
                 recurringPrescriptionLists: [],
                 selectedRecurringPrescriptionListId: '',
+                editingRecurringPrescriptionListId: '',
+                recurringPrescriptionListDraft: { name: '', diagnosesText: '', notes: '', medicines: [] },
                 recurringNotesList: [],
                 recurringMedicinesList: [],
                 lastPrescriptionReusableData: null,
@@ -2947,9 +2949,7 @@
                     const usedIds = new Set();
                     return (Array.isArray(value) ? value : []).map((item, index) => {
                         if (!item || typeof item !== 'object') return null;
-                        const diagnoses = [...new Set((Array.isArray(item.diagnoses) ? item.diagnoses : [])
-                            .map(diagnosis => String(diagnosis || '').trim())
-                            .filter(Boolean))];
+                        const diagnoses = [...new Set((Array.isArray(item.diagnoses) ? item.diagnoses : []).map(diagnosis => String(diagnosis || '').trim()).filter(Boolean))];
                         const notes = String(item.notes || '').trim();
                         const medicines = (Array.isArray(item.medicines) ? item.medicines : []).map(medicine => ({
                             name: String(medicine?.name || '').trim(),
@@ -2961,15 +2961,7 @@
                         while (usedIds.has(id)) id = `${id}-${index + 1}`;
                         usedIds.add(id);
                         const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicines[0]?.name || 'روشتة متكررة';
-                        return {
-                            id,
-                            name: String(item.name || '').trim() || `قائمة: ${fallbackName}`,
-                            diagnoses,
-                            notes,
-                            medicines,
-                            createdAt: String(item.createdAt || ''),
-                            updatedAt: String(item.updatedAt || '')
-                        };
+                        return { id, name: String(item.name || '').trim() || `قائمة: ${fallbackName}`, diagnoses, notes, medicines, createdAt: String(item.createdAt || ''), updatedAt: String(item.updatedAt || '') };
                     }).filter(Boolean);
                 },
                 saveRecurringItemsFromPrescription() {
@@ -2980,16 +2972,8 @@
                         source.customDiagnosis || ''
                     ].map(value => String(value).trim()).filter(Boolean);
                     const notes = String(source.generalNotes || '').trim();
-                    const medicineEntries = (source.selectedMedicinesWithDosage || []).map(item => ({
-                        name: String(item?.name || '').trim(),
-                        timing: String(item?.timing || '').trim(),
-                        extraDosageNotes: String(item?.extraDosageNotes || '').trim()
-                    })).filter(item => item.name);
-                    const medicines = medicineEntries.map(item => {
-                        const { name, timing, extraDosageNotes } = item;
-                        const extra = extraDosageNotes;
-                        return [name, timing, extra].filter(Boolean).join(' — ');
-                    }).filter(Boolean);
+                    const medicineEntries = (source.selectedMedicinesWithDosage || []).map(item => ({ name: String(item?.name || '').trim(), timing: String(item?.timing || '').trim(), extraDosageNotes: String(item?.extraDosageNotes || '').trim() })).filter(item => item.name);
+                    const medicines = medicineEntries.map(item => [item.name, item.timing, item.extraDosageNotes].filter(Boolean).join(' — '));
                     if (!diagnoses.length && !notes && !medicineEntries.length) {
                         alert('أدخل تشخيصاً أو ملاحظة أو دواءً في الروشتة أولاً، ثم احفظه في القوائم المتكررة.');
                         return;
@@ -2998,21 +2982,9 @@
                     const listName = `قائمة: ${fallbackName}`;
                     const existingIndex = (this.recurringPrescriptionLists || []).findIndex(list => list.name === listName);
                     const now = new Date().toISOString();
-                    const savedList = {
-                        id: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].id : `rx-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                        name: listName,
-                        diagnoses,
-                        notes,
-                        medicines: medicineEntries,
-                        createdAt: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].createdAt : now,
-                        updatedAt: now
-                    };
-                    if (existingIndex >= 0) {
-                        this.recurringPrescriptionLists.splice(existingIndex, 1, savedList);
-                    } else {
-                        this.recurringPrescriptionLists.push(savedList);
-                    }
-                    this.selectedRecurringPrescriptionListId = savedList.id;
+                    const savedList = { id: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].id : `rx-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, name: listName, diagnoses, notes, medicines: medicineEntries, createdAt: existingIndex >= 0 ? this.recurringPrescriptionLists[existingIndex].createdAt : now, updatedAt: now };
+                    if (existingIndex >= 0) this.recurringPrescriptionLists.splice(existingIndex, 1, savedList);
+                    else this.recurringPrescriptionLists.push(savedList);
                     diagnoses.forEach(value => {
                         if (!this.diagnosesMasterList.includes(value)) this.diagnosesMasterList.push(value);
                     });
@@ -3020,6 +2992,7 @@
                     medicines.forEach(value => {
                         if (!this.recurringMedicinesList.includes(value)) this.recurringMedicinesList.push(value);
                     });
+                    this.selectedRecurringPrescriptionListId = savedList.id;
                     this.persistState();
                     this.queueCloudSync();
                     this.newRecurringNote = '';
@@ -3043,6 +3016,63 @@
                     this.medicineSuggestionsOpen = false;
                     this.showFlashNotice(`تم تحميل «${normalized.name}» في الروشتة.`);
                     this.$nextTick(() => this.renderIcons());
+                },
+                openRecurringPrescriptionListEditor(listId) {
+                    const savedList = (this.recurringPrescriptionLists || []).find(list => list.id === listId);
+                    const normalized = this.normalizeRecurringPrescriptionLists(savedList ? [savedList] : [])[0];
+                    if (!normalized) return;
+                    this.editingRecurringPrescriptionListId = normalized.id;
+                    this.recurringPrescriptionListDraft = {
+                        name: normalized.name,
+                        diagnosesText: normalized.diagnoses.join('\n'),
+                        notes: normalized.notes,
+                        medicines: normalized.medicines.map(medicine => ({ ...medicine }))
+                    };
+                    this.$nextTick(() => this.renderIcons());
+                },
+                closeRecurringPrescriptionListEditor() {
+                    this.editingRecurringPrescriptionListId = '';
+                    this.recurringPrescriptionListDraft = { name: '', diagnosesText: '', notes: '', medicines: [] };
+                },
+                addRecurringPrescriptionListMedicine() {
+                    this.recurringPrescriptionListDraft.medicines.push({ name: '', timing: '', extraDosageNotes: '' });
+                },
+                removeRecurringPrescriptionListMedicine(index) {
+                    this.recurringPrescriptionListDraft.medicines.splice(index, 1);
+                },
+                saveRecurringPrescriptionListEditor() {
+                    const listId = this.editingRecurringPrescriptionListId;
+                    const index = (this.recurringPrescriptionLists || []).findIndex(list => list.id === listId);
+                    if (index < 0) return this.closeRecurringPrescriptionListEditor();
+                    const draft = this.recurringPrescriptionListDraft || {};
+                    const diagnoses = [...new Set(String(draft.diagnosesText || '').split(/[\n،,]/).map(value => value.trim()).filter(Boolean))];
+                    const notes = String(draft.notes || '').trim();
+                    const medicines = (Array.isArray(draft.medicines) ? draft.medicines : []).map(medicine => ({
+                        name: String(medicine?.name || '').trim(),
+                        timing: String(medicine?.timing || '').trim(),
+                        extraDosageNotes: String(medicine?.extraDosageNotes || '').trim()
+                    })).filter(medicine => medicine.name);
+                    if (!diagnoses.length && !notes && !medicines.length) {
+                        alert('أدخل تشخيصاً أو ملاحظة أو دواءً واحداً على الأقل قبل حفظ القائمة.');
+                        return;
+                    }
+                    const current = this.recurringPrescriptionLists[index];
+                    const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicines[0]?.name || 'روشتة متكررة';
+                    const name = String(draft.name || '').trim() || `قائمة: ${fallbackName}`;
+                    const updatedList = { ...current, name, diagnoses, notes, medicines, updatedAt: new Date().toISOString() };
+                    this.recurringPrescriptionLists.splice(index, 1, updatedList);
+                    diagnoses.forEach(value => { if (!this.diagnosesMasterList.includes(value)) this.diagnosesMasterList.push(value); });
+                    if (notes && !this.recurringNotesList.includes(notes)) this.recurringNotesList.push(notes);
+                    medicines.forEach(medicine => {
+                        const text = [medicine.name, medicine.timing, medicine.extraDosageNotes].filter(Boolean).join(' — ');
+                        if (text && !this.recurringMedicinesList.includes(text)) this.recurringMedicinesList.push(text);
+                    });
+                    this.selectedRecurringPrescriptionListId = updatedList.id;
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.recordAudit('تعديل قائمة روشتة متكررة', `${updatedList.name} — تشخيصات: ${diagnoses.length}، أدوية: ${medicines.length}`);
+                    this.showFlashNotice('تم حفظ تعديل القائمة المتكررة.');
+                    this.closeRecurringPrescriptionListEditor();
                 },
                 removeRecurringPrescriptionList(listId) {
                     const index = (this.recurringPrescriptionLists || []).findIndex(list => list.id === listId);
@@ -4412,7 +4442,7 @@
 
                         <div class="bg-white rounded-[1.75rem] shadow-2xl shadow-slate-950/20 border border-white/70 p-5 sm:p-7 lg:p-8">
                             <template x-if="!sent">
-                                <form @submit.prevent="submitBooking" data-soli-non-auth class="space-y-5" aria-label="نموذج طلب موعد جديد">
+                                <form @submit.prevent="submitBooking" class="space-y-5" aria-label="نموذج طلب موعد جديد">
                                     <div><h2 class="text-xl font-extrabold text-slate-900">بيانات طلب الموعد</h2><p class="text-xs text-slate-500 mt-1.5">سيصل الطلب للاستقبال بحالة «بانتظار التأكيد».</p></div>
                                     <div class="grid sm:grid-cols-2 gap-4">
                                         <label class="block sm:col-span-2"><span class="block text-sm font-bold text-slate-700 mb-2">الاسم الكامل</span><input type="text" x-model.trim="bookingForm.name" required autocomplete="name" placeholder="اكتب الاسم كما سيظهر في الموعد" class="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm outline-none transition focus:border-blue-500 focus:ring-4 focus:ring-blue-100"></label>
@@ -4717,7 +4747,7 @@
                             <div><h3 class="font-bold text-slate-800 dark:text-white text-xl">إدارة المواعيد والتقويم</h3><p class="text-sm text-slate-500 dark:text-slate-400 mt-1">نظّم المواعيد وحوّل الموعد إلى قائمة الانتظار عند حضور المريض.</p></div>
                             <div class="grid grid-cols-1 lg:grid-cols-3 gap-4">
                                 <div class="lg:col-span-1 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-3">
-                                    <div data-soli-non-auth class="space-y-3"><div class="flex items-center justify-between gap-2"><h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4><button type="button" @click="prepareWhatsAppAppointment" class="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline">إضافة من طلب واتساب</button></div>
+                                    <div class="flex items-center justify-between gap-2"><h4 class="font-bold text-slate-800 dark:text-white">إضافة موعد</h4><button type="button" @click="prepareWhatsAppAppointment" class="text-[11px] font-bold text-emerald-700 dark:text-emerald-300 hover:underline">إضافة من طلب واتساب</button></div>
                                     <div x-show="appointmentForm.status === 'pending_confirmation'" class="flex items-center gap-2 rounded-xl bg-amber-50 dark:bg-amber-900/20 border border-amber-100 dark:border-amber-900/50 px-3 py-2 text-xs font-bold text-amber-700 dark:text-amber-300"><i data-lucide="clock-3" class="w-4 h-4"></i>سيُحفظ هذا الموعد بحالة «بانتظار التأكيد»</div>
                                     <input id="appointmentPatientNameInput" type="text" x-model="appointmentForm.patientName" placeholder="اسم المريض" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
                                     <input id="appointmentPhoneInput" name="appointment-phone" type="tel" inputmode="numeric" autocomplete="tel-national" autocapitalize="off" spellcheck="false" x-model="appointmentForm.phone" pattern="(?:01(?:0|1|2|5)[0-9]{8}|(?:\\+20|0020|20)1(?:0|1|2|5)[0-9]{8})" title="أدخل رقم محمول مصري صحيحاً، مثل: 01012345678" placeholder="مثال: 01012345678" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm">
@@ -4725,7 +4755,6 @@
                                     <select x-model="appointmentForm.visitType" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="كشف">كشف</option><option value="متابعة">متابعة</option><option value="استشارة">استشارة</option></select>
                                     <textarea x-model="appointmentForm.notes" rows="2" placeholder="ملاحظات الموعد" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"></textarea>
                                     <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold" x-text="appointmentForm.status === 'pending_confirmation' ? 'حفظ طلب بانتظار التأكيد' : 'حفظ الموعد'"></button>
-                                    </div>
                                 </div>
                                 <div class="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-4">
                                     <div class="flex justify-end"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
@@ -4926,7 +4955,7 @@
                                 <h3 class="text-xl font-bold" x-text="editingPatient ? 'تعديل مريض' : 'تسجيل مريض أو زيارة جديدة'"></h3>
                                 <button @click="navigateTo('patientsList')" class="text-xs text-blue-600">العودة للقائمة</button>
                             </div>
-                            <form @submit.prevent="savePatient" data-soli-non-auth class="space-y-5">
+                            <form @submit.prevent="savePatient" class="space-y-5">
                                 <div class="relative">
                                     <label class="block text-xs font-bold text-blue-600 mb-1">اسم المريض الكامل (إجباري) *</label>
                                     <input type="text" x-model="patientForm.fullName" @input="showPatientSuggestions = true; if (matchedExistingPatient && patientForm.fullName !== matchedExistingPatient.fullName) matchedExistingPatient = null" @focus="showPatientSuggestions = true" autocomplete="off" required class="w-full px-4 py-3 border-2 border-blue-500 rounded-xl text-base bg-slate-50 dark:bg-slate-800 dark:text-white" placeholder="اسم المريض...">
@@ -5136,24 +5165,16 @@
                             </div>
 
                             <!-- Visit Recording Form with Next Follow Up Date -->
-                                <div data-soli-non-auth class="bg-slate-50 dark:bg-slate-800/60 p-6 rounded-2xl border dark:border-slate-700 space-y-5">
+                            <div data-soli-non-auth class="bg-slate-50 dark:bg-slate-800/60 p-6 rounded-2xl border dark:border-slate-700 space-y-5">
                                 <h4 class="font-bold text-base flex items-center space-x-2 space-x-reverse">
                                     <i data-lucide="stethoscope" class="w-5 h-5 text-blue-600"></i>
                                     <span>تسجيل تشخيص وزيارة وكتابة روشتة جديدة</span>
                                 </h4>
 
                                 <div class="rounded-2xl border border-indigo-200 dark:border-indigo-800 bg-indigo-50/80 dark:bg-indigo-950/25 p-4 space-y-2">
-                                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5">
-                                        <label for="recurring-prescription-list" class="text-xs font-bold text-indigo-900 dark:text-indigo-200">قائمة روشتة متكررة</label>
-                                        <span class="text-[10px] text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length ? recurringPrescriptionLists.length + ' قوائم محفوظة' : 'احفظ قائمة من محتوى الروشتة الحالية'"></span>
-                                    </div>
-                                    <select id="recurring-prescription-list" x-model="selectedRecurringPrescriptionListId" @change="applyRecurringPrescriptionList($event.target.value)" :disabled="!recurringPrescriptionLists.length" class="w-full px-3 py-2.5 border rounded-xl text-xs bg-white dark:bg-slate-900 border-indigo-200 dark:border-indigo-800 text-slate-800 dark:text-white disabled:cursor-not-allowed disabled:opacity-60">
-                                        <option value="">اختر قائمة محفوظة لتحميل التشخيص والملاحظات والأدوية...</option>
-                                        <template x-for="savedList in recurringPrescriptionLists" :key="savedList.id">
-                                            <option :value="savedList.id" x-text="savedList.name + ' — ' + savedList.diagnoses.length + ' تشخيص / ' + savedList.medicines.length + ' دواء' "></option>
-                                        </template>
-                                    </select>
-                                    <p class="text-[10px] text-indigo-800/80 dark:text-indigo-200/80">اختيار قائمة يستبدل حقول التشخيص والملاحظات والأدوية الحالية بمحتوى القائمة المحفوظة.</p>
+                                    <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1.5"><label for="recurring-prescription-list" class="text-xs font-bold text-indigo-900 dark:text-indigo-200">القوائم المتكررة من الروشتة</label><span class="text-[10px] text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length ? recurringPrescriptionLists.length + ' قوائم محفوظة' : 'احفظ الروشتة الحالية لتظهر هنا'"></span></div>
+                                    <select id="recurring-prescription-list" x-model="selectedRecurringPrescriptionListId" @change="applyRecurringPrescriptionList($event.target.value)" :disabled="!recurringPrescriptionLists.length" class="w-full px-3 py-2.5 border rounded-xl text-xs bg-white dark:bg-slate-900 border-indigo-200 dark:border-indigo-800 text-slate-800 dark:text-white disabled:cursor-not-allowed disabled:opacity-60"><option value="">اختر قائمة محفوظة لتحميل التشخيص والملاحظات والأدوية...</option><template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><option :value="savedList.id" x-text="savedList.name + ' — ' + savedList.diagnoses.length + ' تشخيص / ' + savedList.medicines.length + ' دواء'"></option></template></select>
+                                    <p class="text-[10px] text-indigo-800/80 dark:text-indigo-200/80">عند الاختيار، تُستبدل حقول التشخيص والملاحظات والأدوية الحالية بمحتوى القائمة المحفوظة.</p>
                                 </div>
 
                                 <!-- Vital Signs (العلامات الحيوية) -->
@@ -5748,7 +5769,7 @@
                                 </div>
                                 <span class="self-start sm:self-auto text-sm font-extrabold text-cyan-800 dark:text-cyan-200 bg-cyan-50 dark:bg-cyan-950/40 px-3 py-2 rounded-lg" x-text="'إصدار ' + appVersion"></span>
                             </div>
-                            <div x-show="currentView === 'prescriptionSettings'" data-soli-non-auth class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
+                            <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
                                     <div>
@@ -5950,13 +5971,18 @@
                                     حفظ بيانات الطبيب
                                 </button>
 
-                                <div x-show="currentView === 'prescriptionSettings'" class="prescription-settings-panel mt-5 bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-indigo-100 dark:border-indigo-900/60 shadow-sm space-y-3">
+                            <div x-show="currentView === 'prescriptionSettings'" class="prescription-settings-panel mt-5 bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-indigo-100 dark:border-indigo-900/60 shadow-sm space-y-3">
                                     <div class="flex items-start justify-between gap-3"><div><h3 class="text-base font-bold text-slate-800 dark:text-white">القوائم المتكررة من الروشتة</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تُحفظ من زر «حفظ عناصر الروشتة كقائمة متكررة» بجوار حفظ الزيارة، ثم تظهر أعلى الروشتة للاستخدام السريع.</p></div><i data-lucide="bookmark-plus" class="w-6 h-6 text-indigo-600 dark:text-indigo-400 flex-shrink-0"></i></div>
                                     <div class="flex items-center justify-between rounded-xl bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2 text-xs"><span class="font-bold text-indigo-800 dark:text-indigo-200">القوائم المحفوظة</span><span class="font-extrabold text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length + ' قائمة'"></span></div>
-                                    <div class="space-y-2 max-h-48 overflow-y-auto">
-                                        <template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><div class="flex items-center justify-between gap-3 rounded-xl border border-indigo-100 dark:border-indigo-900/60 p-3"><div class="min-w-0"><p class="truncate text-xs font-bold text-slate-800 dark:text-white" x-text="savedList.name"></p><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div><button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30">حذف</button></div></template>
-                                        <p x-show="recurringPrescriptionLists.length === 0" class="py-3 text-center text-xs text-slate-400">لا توجد قوائم محفوظة بعد.</p>
-                                    </div>
+                                    <div class="space-y-2 max-h-48 overflow-y-auto"><template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><div class="flex items-center justify-between gap-3 rounded-xl border border-indigo-100 dark:border-indigo-900/60 p-3"><div class="min-w-0"><p class="truncate text-xs font-bold text-slate-800 dark:text-white" x-text="savedList.name"></p><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div><div class="shrink-0 flex items-center gap-1"><button type="button" @click="openRecurringPrescriptionListEditor(savedList.id)" class="rounded-lg px-2 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/30">تعديل</button><button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="rounded-lg px-2 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30">حذف</button></div></div></template><p x-show="recurringPrescriptionLists.length === 0" class="py-3 text-center text-xs text-slate-400">لا توجد قوائم محفوظة بعد. أنشئ واحدة من زر الحفظ بجوار «حفظ الزيارة» لتظهر أدوات التعديل هنا.</p></div>
+                                    <form x-show="editingRecurringPrescriptionListId" @submit.prevent="saveRecurringPrescriptionListEditor()" class="mt-4 rounded-2xl border border-blue-200 dark:border-blue-900/70 bg-blue-50/60 dark:bg-blue-950/20 p-4 space-y-3" data-soli-non-auth>
+                                        <div class="flex items-center justify-between gap-3"><div><h4 class="text-sm font-bold text-blue-900 dark:text-blue-100">تعديل القائمة المتكررة</h4><p class="mt-0.5 text-[10px] text-blue-700 dark:text-blue-300">عدّل المحتوى ثم اضغط حفظ التعديل.</p></div><button type="button" @click="closeRecurringPrescriptionListEditor()" class="rounded-lg px-2 py-1 text-xs font-bold text-slate-600 hover:bg-white/80 dark:text-slate-300">إلغاء</button></div>
+                                        <div><label class="mb-1 block text-[11px] font-bold text-slate-700 dark:text-slate-200">اسم القائمة</label><input type="text" x-model="recurringPrescriptionListDraft.name" maxlength="100" class="w-full rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-blue-900 dark:bg-slate-900 dark:text-white"></div>
+                                        <div><label class="mb-1 block text-[11px] font-bold text-slate-700 dark:text-slate-200">التشخيصات</label><textarea rows="3" x-model="recurringPrescriptionListDraft.diagnosesText" placeholder="اكتب كل تشخيص في سطر مستقل" class="w-full rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-blue-900 dark:bg-slate-900 dark:text-white"></textarea></div>
+                                        <div><label class="mb-1 block text-[11px] font-bold text-slate-700 dark:text-slate-200">الملاحظات العامة</label><textarea rows="3" x-model="recurringPrescriptionListDraft.notes" placeholder="ملاحظات وتوصيات الروشتة" class="w-full rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-blue-900 dark:bg-slate-900 dark:text-white"></textarea></div>
+                                        <div class="space-y-2"><div class="flex items-center justify-between"><label class="text-[11px] font-bold text-slate-700 dark:text-slate-200">الأدوية والجرعات</label><button type="button" @click="addRecurringPrescriptionListMedicine()" class="rounded-lg px-2 py-1 text-[11px] font-bold text-blue-700 hover:bg-white/80 dark:text-blue-300">إضافة دواء</button></div><template x-for="(medicine, medicineIndex) in recurringPrescriptionListDraft.medicines" :key="medicineIndex"><div class="grid grid-cols-1 sm:grid-cols-[1.2fr_1fr_1fr_auto] gap-2 rounded-xl border border-blue-100 bg-white/80 p-2 dark:border-blue-900/50 dark:bg-slate-900/70"><input type="text" x-model="medicine.name" placeholder="اسم الدواء" class="min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-white"><input type="text" x-model="medicine.timing" placeholder="التوقيت / الجرعة" class="min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-white"><input type="text" x-model="medicine.extraDosageNotes" placeholder="ملاحظات الدواء" class="min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-white"><button type="button" @click="removeRecurringPrescriptionListMedicine(medicineIndex)" class="rounded-lg px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-50 dark:text-red-300">حذف</button></div></template><p x-show="recurringPrescriptionListDraft.medicines.length === 0" class="rounded-lg border border-dashed border-blue-200 px-3 py-2 text-[11px] text-slate-500 dark:border-blue-900 dark:text-slate-400">لا توجد أدوية. استخدم «إضافة دواء» لإدراج دواء وجرعته.</p></div>
+                                        <div class="flex flex-wrap items-center gap-2 pt-1"><button type="submit" class="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700">حفظ التعديل</button><button type="button" @click="closeRecurringPrescriptionListEditor()" class="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-white dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">إلغاء</button></div>
+                                    </form>
                                 </div>
 
                                 <!-- Clinic Branches (merged here, appears at bottom of prescriptions) -->
@@ -6275,20 +6301,8 @@
                                 <!-- Reusable items captured from the prescription form -->
                                                                 <div class="mt-5 pt-5 border-t border-slate-100 dark:border-slate-800 space-y-4">
                                                                     <div>
-                                                                        <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">قوائم الروشتة المتكررة</h4>
-                                                                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">تُحفظ الروشتة كاملة من النموذج ثم تظهر في القائمة المنسدلة أعلى الروشتة، ويمكن حذف القوائم غير المطلوبة هنا.</p>
-                                                                    </div>
-                                                                    <div class="rounded-xl border border-indigo-200 dark:border-indigo-900/60 p-3 space-y-2">
-                                                                        <div class="flex items-center justify-between gap-2"><span class="text-xs font-bold text-indigo-800 dark:text-indigo-200">قوالب الروشتة الكاملة</span><span class="text-[11px] text-slate-500" x-text="recurringPrescriptionLists.length + ' قائمة'"></span></div>
-                                                                        <div class="space-y-1.5 max-h-48 overflow-y-auto">
-                                                                            <template x-for="savedList in recurringPrescriptionLists" :key="savedList.id">
-                                                                                <div class="flex items-center justify-between gap-3 rounded-lg bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2">
-                                                                                    <div class="min-w-0"><p class="truncate text-[11px] font-bold text-indigo-900 dark:text-indigo-100" x-text="savedList.name"></p><p class="text-[10px] text-indigo-700 dark:text-indigo-300" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div>
-                                                                                    <button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="shrink-0 text-red-500 hover:text-red-700" :title="'حذف ' + savedList.name"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
-                                                                                </div>
-                                                                            </template>
-                                                                            <p x-show="recurringPrescriptionLists.length === 0" class="text-[11px] text-slate-400 text-center py-2">لا توجد قوائم روشتة كاملة محفوظة بعد.</p>
-                                                                        </div>
+                                                                        <h4 class="text-sm font-bold text-slate-700 dark:text-slate-200">الملاحظات والأدوية المتكررة</h4>
+                                                                        <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-1">يمكن حفظها من صفحة الروشتة أو إضافتها وتعديلها هنا.</p>
                                                                     </div>
                                                                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
                                                                         <div class="rounded-xl border border-slate-200 dark:border-slate-700 p-3 space-y-3">
@@ -6832,7 +6846,9 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js').catch(error => console.warn('Soli Medical Service Worker:', error));
+                navigator.serviceWorker.register('./sw.js?v=soli-v1.5.3', { updateViaCache: 'none' })
+                    .then(registration => registration.update())
+                    .catch(error => console.warn('Soli Medical Service Worker:', error));
             });
         }
     </script>

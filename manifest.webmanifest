@@ -4,15 +4,15 @@
   "description": "نظام إدارة عيادة الطبيب الواحد يعمل كتطبيق قابل للتثبيت.",
   "lang": "ar",
   "dir": "rtl",
-  "start_url": "./",
-  "scope": "./",
+  "start_url": "/",
+  "scope": "/",
   "display": "standalone",
   "orientation": "portrait-primary",
   "background_color": "#0f2d4a",
   "theme_color": "#0f2d4a",
   "icons": [
     {
-      "src": "./assets/medicenter-icon.png",
+      "src": "/manus-storage/medicenter-icon_c9adbcea.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"

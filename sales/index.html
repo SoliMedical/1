@@ -34,30 +34,10 @@
   <a class="whatsapp-float" href="https://wa.me/Ahmed0soliman" target="_blank" rel="noopener" aria-label="مراسلة Soli Medical عبر واتساب باسم المستخدم Ahmed0soliman"><i>◔</i> واتساب مباشر</a>
   <script>
     const WHATSAPP_USERNAME_LINK = 'https://wa.me/Ahmed0soliman';
-    const SOLI_MEDICAL_PRO = 'SoliMedicalPro';
-    const complexSection = document.getElementById('complex');
-    const complexNavLink = document.querySelector('a[href="#complex"]');
-    const complexLabel = complexSection.querySelector('.label span');
-    const complexHeading = complexSection.querySelector('h2');
-    const complexCopy = complexSection.querySelector('.product-body > p');
-    const complexCta = complexSection.querySelector('[data-product-link="complex"]');
-    const complexImage = complexSection.querySelector('.complex-shot img');
-    const complexCaption = complexSection.querySelector('.caption');
-    complexNavLink.textContent = SOLI_MEDICAL_PRO;
-    complexLabel.textContent = `${SOLI_MEDICAL_PRO} للمجمعات والمستشفيات الصغيرة`;
-    complexHeading.innerHTML = `${SOLI_MEDICAL_PRO}<br><span>منظومة واحدة لرؤية تشغيلية أكبر.</span>`;
-    complexCopy.textContent = 'عندما تتعدد العيادات والوحدات، يحتاج مدير المجمع إلى ربط التشغيل والمالية في رؤية واحدة. صُمم SoliMedicalPro لمتابعة العيادات والأسنان والعمليات والتحاليل والأشعة والخزينة، مع صلاحيات وتقارير تناسب الإدارة.';
-    complexCta.firstChild.textContent = 'ناقش احتياج منشأتك ';
-    complexImage.src = '/manus-storage/solimedicalpro-complex-dashboard-landing_5d1b79a7.png';
-    complexImage.alt = 'لوحة SoliMedicalPro لإدارة مجمع طبي تعرض الوحدات والخزينة والصلاحيات والتقارير';
-    complexCaption.textContent = 'تصور بصري لـ SoliMedicalPro، نظام إدارة المجمعات الطبية والمستشفيات الصغيرة';
-    const proOption = document.querySelector('#leadSystem option[value="مجمع عيادات"]');
-    proOption.value = 'SoliMedicalPro — مجمع عيادات';
-    proOption.textContent = 'SoliMedicalPro — مجمع عيادات';
     document.getElementById('year').textContent = new Date().getFullYear();
     document.querySelectorAll('[data-product-link]').forEach(link => link.addEventListener('click', () => {
       const system = document.getElementById('leadSystem');
-      system.value = link.dataset.productLink === 'clinic' ? 'عيادة الطبيب الواحد' : 'SoliMedicalPro — مجمع عيادات';
+      system.value = link.dataset.productLink === 'clinic' ? 'عيادة الطبيب الواحد' : 'مجمع عيادات';
     }));
     document.getElementById('demoRequestForm').addEventListener('submit', async event => {
       event.preventDefault();

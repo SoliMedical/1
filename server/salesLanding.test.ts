@@ -22,13 +22,12 @@ describe("صفحة مبيعات Soli Medical", () => {
     expect(salesPage).toContain("لا تُرسل البيانات إلى خادم");
   });
 
-  it("يعرض حل العيادة الفردية وSoliMedicalPro بصورة منفصلة ويتيح تحديدهما في طلب العرض", () => {
+  it("يعرض حل العيادة الفردية والمجمع الطبي بصورة منفصلة ويتيح تحديدهما في طلب العرض", () => {
     expect(salesPage).toContain("عيادة الطبيب الواحد");
-    expect(salesPage).toContain("SoliMedicalPro");
-    expect(salesPage).toContain('SoliMedicalPro — مجمع عيادات');
+    expect(salesPage).toContain("مجمع العيادات");
     expect(salesPage).toContain('data-product-link="clinic"');
     expect(salesPage).toContain('data-product-link="complex"');
-    expect(salesPage).toContain("solimedicalpro-complex-dashboard-landing_5d1b79a7.png");
+    expect(salesPage).toContain("system.value = link.dataset.productLink === 'clinic' ? 'عيادة الطبيب الواحد' : 'مجمع عيادات'");
   });
 
   it("يضم صفحة المبيعات ضمن حزمة الإنتاج للاستضافة المستقلة", () => {
