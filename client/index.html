@@ -70,8 +70,8 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.1';
-        const SOLI_APP_RELEASE = 'تصحيح القوائم المتكررة للروشتة ومنع اقتراحات كلمات المرور في النماذج الطبية';
+        const SOLI_APP_VERSION = 'v1.5.2';
+        const SOLI_APP_RELEASE = 'تفعيل تحرير القوائم المتكررة المحفوظة من صفحة الإعدادات';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -312,6 +312,8 @@
                 // Reusable items saved directly from the prescription form.
                 recurringPrescriptionLists: [],
                 selectedRecurringPrescriptionListId: '',
+                editingRecurringPrescriptionListId: '',
+                recurringPrescriptionListDraft: { name: '', diagnosesText: '', notes: '', medicines: [] },
                 recurringNotesList: [],
                 recurringMedicinesList: [],
                 lastPrescriptionReusableData: null,
@@ -3014,6 +3016,63 @@
                     this.medicineSuggestionsOpen = false;
                     this.showFlashNotice(`تم تحميل «${normalized.name}» في الروشتة.`);
                     this.$nextTick(() => this.renderIcons());
+                },
+                openRecurringPrescriptionListEditor(listId) {
+                    const savedList = (this.recurringPrescriptionLists || []).find(list => list.id === listId);
+                    const normalized = this.normalizeRecurringPrescriptionLists(savedList ? [savedList] : [])[0];
+                    if (!normalized) return;
+                    this.editingRecurringPrescriptionListId = normalized.id;
+                    this.recurringPrescriptionListDraft = {
+                        name: normalized.name,
+                        diagnosesText: normalized.diagnoses.join('\n'),
+                        notes: normalized.notes,
+                        medicines: normalized.medicines.map(medicine => ({ ...medicine }))
+                    };
+                    this.$nextTick(() => this.renderIcons());
+                },
+                closeRecurringPrescriptionListEditor() {
+                    this.editingRecurringPrescriptionListId = '';
+                    this.recurringPrescriptionListDraft = { name: '', diagnosesText: '', notes: '', medicines: [] };
+                },
+                addRecurringPrescriptionListMedicine() {
+                    this.recurringPrescriptionListDraft.medicines.push({ name: '', timing: '', extraDosageNotes: '' });
+                },
+                removeRecurringPrescriptionListMedicine(index) {
+                    this.recurringPrescriptionListDraft.medicines.splice(index, 1);
+                },
+                saveRecurringPrescriptionListEditor() {
+                    const listId = this.editingRecurringPrescriptionListId;
+                    const index = (this.recurringPrescriptionLists || []).findIndex(list => list.id === listId);
+                    if (index < 0) return this.closeRecurringPrescriptionListEditor();
+                    const draft = this.recurringPrescriptionListDraft || {};
+                    const diagnoses = [...new Set(String(draft.diagnosesText || '').split(/[\n،,]/).map(value => value.trim()).filter(Boolean))];
+                    const notes = String(draft.notes || '').trim();
+                    const medicines = (Array.isArray(draft.medicines) ? draft.medicines : []).map(medicine => ({
+                        name: String(medicine?.name || '').trim(),
+                        timing: String(medicine?.timing || '').trim(),
+                        extraDosageNotes: String(medicine?.extraDosageNotes || '').trim()
+                    })).filter(medicine => medicine.name);
+                    if (!diagnoses.length && !notes && !medicines.length) {
+                        alert('أدخل تشخيصاً أو ملاحظة أو دواءً واحداً على الأقل قبل حفظ القائمة.');
+                        return;
+                    }
+                    const current = this.recurringPrescriptionLists[index];
+                    const fallbackName = diagnoses[0] || notes.slice(0, 42) || medicines[0]?.name || 'روشتة متكررة';
+                    const name = String(draft.name || '').trim() || `قائمة: ${fallbackName}`;
+                    const updatedList = { ...current, name, diagnoses, notes, medicines, updatedAt: new Date().toISOString() };
+                    this.recurringPrescriptionLists.splice(index, 1, updatedList);
+                    diagnoses.forEach(value => { if (!this.diagnosesMasterList.includes(value)) this.diagnosesMasterList.push(value); });
+                    if (notes && !this.recurringNotesList.includes(notes)) this.recurringNotesList.push(notes);
+                    medicines.forEach(medicine => {
+                        const text = [medicine.name, medicine.timing, medicine.extraDosageNotes].filter(Boolean).join(' — ');
+                        if (text && !this.recurringMedicinesList.includes(text)) this.recurringMedicinesList.push(text);
+                    });
+                    this.selectedRecurringPrescriptionListId = updatedList.id;
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.recordAudit('تعديل قائمة روشتة متكررة', `${updatedList.name} — تشخيصات: ${diagnoses.length}، أدوية: ${medicines.length}`);
+                    this.showFlashNotice('تم حفظ تعديل القائمة المتكررة.');
+                    this.closeRecurringPrescriptionListEditor();
                 },
                 removeRecurringPrescriptionList(listId) {
                     const index = (this.recurringPrescriptionLists || []).findIndex(list => list.id === listId);
@@ -5915,7 +5974,15 @@
                             <div x-show="currentView === 'prescriptionSettings'" class="prescription-settings-panel mt-5 bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-indigo-100 dark:border-indigo-900/60 shadow-sm space-y-3">
                                     <div class="flex items-start justify-between gap-3"><div><h3 class="text-base font-bold text-slate-800 dark:text-white">القوائم المتكررة من الروشتة</h3><p class="text-xs text-slate-500 dark:text-slate-400 mt-1">تُحفظ من زر «حفظ عناصر الروشتة كقائمة متكررة» بجوار حفظ الزيارة، ثم تظهر أعلى الروشتة للاستخدام السريع.</p></div><i data-lucide="bookmark-plus" class="w-6 h-6 text-indigo-600 dark:text-indigo-400 flex-shrink-0"></i></div>
                                     <div class="flex items-center justify-between rounded-xl bg-indigo-50 dark:bg-indigo-950/30 px-3 py-2 text-xs"><span class="font-bold text-indigo-800 dark:text-indigo-200">القوائم المحفوظة</span><span class="font-extrabold text-indigo-700 dark:text-indigo-300" x-text="recurringPrescriptionLists.length + ' قائمة'"></span></div>
-                                    <div class="space-y-2 max-h-48 overflow-y-auto"><template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><div class="flex items-center justify-between gap-3 rounded-xl border border-indigo-100 dark:border-indigo-900/60 p-3"><div class="min-w-0"><p class="truncate text-xs font-bold text-slate-800 dark:text-white" x-text="savedList.name"></p><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div><button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="shrink-0 rounded-lg px-2 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30">حذف</button></div></template><p x-show="recurringPrescriptionLists.length === 0" class="py-3 text-center text-xs text-slate-400">لا توجد قوائم محفوظة بعد.</p></div>
+                                    <div class="space-y-2 max-h-48 overflow-y-auto"><template x-for="savedList in recurringPrescriptionLists" :key="savedList.id"><div class="flex items-center justify-between gap-3 rounded-xl border border-indigo-100 dark:border-indigo-900/60 p-3"><div class="min-w-0"><p class="truncate text-xs font-bold text-slate-800 dark:text-white" x-text="savedList.name"></p><p class="mt-1 text-[10px] text-slate-500 dark:text-slate-400" x-text="savedList.diagnoses.length + ' تشخيص، ' + (savedList.notes ? 'ملاحظات، ' : '') + savedList.medicines.length + ' دواء'"></p></div><div class="shrink-0 flex items-center gap-1"><button type="button" @click="openRecurringPrescriptionListEditor(savedList.id)" class="rounded-lg px-2 py-1.5 text-[11px] font-bold text-blue-700 hover:bg-blue-50 dark:text-blue-300 dark:hover:bg-blue-950/30">تعديل</button><button type="button" @click="removeRecurringPrescriptionList(savedList.id)" class="rounded-lg px-2 py-1.5 text-[11px] font-bold text-red-600 hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/30">حذف</button></div></div></template><p x-show="recurringPrescriptionLists.length === 0" class="py-3 text-center text-xs text-slate-400">لا توجد قوائم محفوظة بعد. أنشئ واحدة من زر الحفظ بجوار «حفظ الزيارة» لتظهر أدوات التعديل هنا.</p></div>
+                                    <form x-show="editingRecurringPrescriptionListId" @submit.prevent="saveRecurringPrescriptionListEditor()" class="mt-4 rounded-2xl border border-blue-200 dark:border-blue-900/70 bg-blue-50/60 dark:bg-blue-950/20 p-4 space-y-3" data-soli-non-auth>
+                                        <div class="flex items-center justify-between gap-3"><div><h4 class="text-sm font-bold text-blue-900 dark:text-blue-100">تعديل القائمة المتكررة</h4><p class="mt-0.5 text-[10px] text-blue-700 dark:text-blue-300">عدّل المحتوى ثم اضغط حفظ التعديل.</p></div><button type="button" @click="closeRecurringPrescriptionListEditor()" class="rounded-lg px-2 py-1 text-xs font-bold text-slate-600 hover:bg-white/80 dark:text-slate-300">إلغاء</button></div>
+                                        <div><label class="mb-1 block text-[11px] font-bold text-slate-700 dark:text-slate-200">اسم القائمة</label><input type="text" x-model="recurringPrescriptionListDraft.name" maxlength="100" class="w-full rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-blue-900 dark:bg-slate-900 dark:text-white"></div>
+                                        <div><label class="mb-1 block text-[11px] font-bold text-slate-700 dark:text-slate-200">التشخيصات</label><textarea rows="3" x-model="recurringPrescriptionListDraft.diagnosesText" placeholder="اكتب كل تشخيص في سطر مستقل" class="w-full rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-blue-900 dark:bg-slate-900 dark:text-white"></textarea></div>
+                                        <div><label class="mb-1 block text-[11px] font-bold text-slate-700 dark:text-slate-200">الملاحظات العامة</label><textarea rows="3" x-model="recurringPrescriptionListDraft.notes" placeholder="ملاحظات وتوصيات الروشتة" class="w-full rounded-xl border border-blue-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-blue-900 dark:bg-slate-900 dark:text-white"></textarea></div>
+                                        <div class="space-y-2"><div class="flex items-center justify-between"><label class="text-[11px] font-bold text-slate-700 dark:text-slate-200">الأدوية والجرعات</label><button type="button" @click="addRecurringPrescriptionListMedicine()" class="rounded-lg px-2 py-1 text-[11px] font-bold text-blue-700 hover:bg-white/80 dark:text-blue-300">إضافة دواء</button></div><template x-for="(medicine, medicineIndex) in recurringPrescriptionListDraft.medicines" :key="medicineIndex"><div class="grid grid-cols-1 sm:grid-cols-[1.2fr_1fr_1fr_auto] gap-2 rounded-xl border border-blue-100 bg-white/80 p-2 dark:border-blue-900/50 dark:bg-slate-900/70"><input type="text" x-model="medicine.name" placeholder="اسم الدواء" class="min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-white"><input type="text" x-model="medicine.timing" placeholder="التوقيت / الجرعة" class="min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-white"><input type="text" x-model="medicine.extraDosageNotes" placeholder="ملاحظات الدواء" class="min-w-0 rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-800 dark:border-slate-700 dark:bg-slate-900 dark:text-white"><button type="button" @click="removeRecurringPrescriptionListMedicine(medicineIndex)" class="rounded-lg px-2 py-1 text-xs font-bold text-red-600 hover:bg-red-50 dark:text-red-300">حذف</button></div></template><p x-show="recurringPrescriptionListDraft.medicines.length === 0" class="rounded-lg border border-dashed border-blue-200 px-3 py-2 text-[11px] text-slate-500 dark:border-blue-900 dark:text-slate-400">لا توجد أدوية. استخدم «إضافة دواء» لإدراج دواء وجرعته.</p></div>
+                                        <div class="flex flex-wrap items-center gap-2 pt-1"><button type="submit" class="rounded-xl bg-blue-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-blue-700">حفظ التعديل</button><button type="button" @click="closeRecurringPrescriptionListEditor()" class="rounded-xl border border-slate-200 px-4 py-2.5 text-xs font-bold text-slate-600 hover:bg-white dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800">إلغاء</button></div>
+                                    </form>
                                 </div>
 
                                 <!-- Clinic Branches (merged here, appears at bottom of prescriptions) -->

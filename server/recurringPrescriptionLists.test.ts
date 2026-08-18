@@ -103,6 +103,72 @@ describe("قوائم الروشتة المتكررة", () => {
     expect(notices.at(-1)?.[0]).toContain("تم تحميل");
   });
 
+  it("يعدل محتوى قائمة محفوظة من الإعدادات ويحافظ على هوية القائمة", async () => {
+    const { app } = await createAppData();
+    let persistCalls = 0;
+    let syncCalls = 0;
+    app.persistState = () => { persistCalls += 1; };
+    app.queueCloudSync = () => { syncCalls += 1; };
+    app.recordAudit = () => undefined;
+    app.showFlashNotice = () => undefined;
+    app.$nextTick = (callback: () => void) => callback();
+    app.renderIcons = () => undefined;
+    app.diagnosesMasterList = [];
+    app.recurringNotesList = [];
+    app.recurringMedicinesList = [];
+    app.recurringPrescriptionLists = [{
+      id: "list-1", name: "قائمة: قديمة", diagnoses: ["تشخيص قديم"], notes: "ملاحظة قديمة",
+      medicines: [{ name: "دواء قديم", timing: "مرة", extraDosageNotes: "قبل الأكل" }], createdAt: "2026-08-18T00:00:00.000Z", updatedAt: ""
+    }];
+
+    app.openRecurringPrescriptionListEditor("list-1");
+    app.recurringPrescriptionListDraft = {
+      name: "قائمة: محدثة",
+      diagnosesText: "تشخيص أول\nتشخيص ثان",
+      notes: "ملاحظة محدثة",
+      medicines: [{ name: "دواء جديد", timing: "كل 12 ساعة", extraDosageNotes: "بعد الأكل" }]
+    };
+    app.saveRecurringPrescriptionListEditor();
+
+    expect(app.recurringPrescriptionLists).toEqual([expect.objectContaining({
+      id: "list-1", name: "قائمة: محدثة", diagnoses: ["تشخيص أول", "تشخيص ثان"], notes: "ملاحظة محدثة",
+      medicines: [{ name: "دواء جديد", timing: "كل 12 ساعة", extraDosageNotes: "بعد الأكل" }]
+    })]);
+    expect(app.selectedRecurringPrescriptionListId).toBe("list-1");
+    expect(app.editingRecurringPrescriptionListId).toBe("");
+    expect(persistCalls).toBe(1);
+    expect(syncCalls).toBe(1);
+
+    app.newRecordForm = { selectedDiagnosesList: [], customDiagnosis: "", generalNotes: "", selectedMedicinesWithDosage: [] };
+    app.applyRecurringPrescriptionList("list-1");
+    expect(app.newRecordForm).toMatchObject({
+      selectedDiagnosesList: ["تشخيص أول", "تشخيص ثان"],
+      generalNotes: "ملاحظة محدثة",
+      selectedMedicinesWithDosage: [{ name: "دواء جديد", timing: "كل 12 ساعة", extraDosageNotes: "بعد الأكل" }]
+    });
+  });
+
+  it("يلغي تحرير القائمة من دون تغيير البيانات المحفوظة", async () => {
+    const { app } = await createAppData();
+    app.$nextTick = (callback: () => void) => callback();
+    app.renderIcons = () => undefined;
+    app.recurringPrescriptionLists = [{
+      id: "list-cancel", name: "قائمة ثابتة", diagnoses: ["تشخيص محفوظ"], notes: "ملاحظة محفوظة",
+      medicines: [{ name: "دواء محفوظ", timing: "مرة", extraDosageNotes: "" }], createdAt: "", updatedAt: ""
+    }];
+
+    app.openRecurringPrescriptionListEditor("list-cancel");
+    app.recurringPrescriptionListDraft.notes = "تغيير غير محفوظ";
+    app.recurringPrescriptionListDraft.medicines[0].name = "دواء مختلف";
+    app.closeRecurringPrescriptionListEditor();
+
+    expect(app.editingRecurringPrescriptionListId).toBe("");
+    expect(app.recurringPrescriptionLists[0]).toMatchObject({
+      notes: "ملاحظة محفوظة",
+      medicines: [{ name: "دواء محفوظ", timing: "مرة", extraDosageNotes: "" }]
+    });
+  });
+
   it("يرفض حفظ قائمة فارغة", async () => {
     const { app, alerts } = await createAppData();
     app.persistState = () => undefined;
@@ -132,6 +198,9 @@ describe("قوائم الروشتة المتكررة", () => {
     expect(html).toContain("preventPasswordSuggestionsInClinicalForms()");
     expect(html).toContain("data-soli-non-auth");
     expect(html).toContain('input[type="tel"]');
-    expect(html).toContain("const SOLI_APP_VERSION = 'v1.5.1'");
+    expect(html).toContain("openRecurringPrescriptionListEditor(listId)");
+    expect(html).toContain("saveRecurringPrescriptionListEditor()");
+    expect(html).toContain("حفظ التعديل");
+    expect(html).toContain("const SOLI_APP_VERSION = 'v1.5.2'");
   });
 });
