@@ -70,8 +70,8 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.2';
-        const SOLI_APP_RELEASE = 'تفعيل تحرير القوائم المتكررة المحفوظة من صفحة الإعدادات';
+        const SOLI_APP_VERSION = 'v1.5.3';
+        const SOLI_APP_RELEASE = 'إجبار تحديث النسخة المنشورة وتفعيل تحرير القوائم المتكررة من الإعدادات';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -6846,7 +6846,9 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js').catch(error => console.warn('Soli Medical Service Worker:', error));
+                navigator.serviceWorker.register('./sw.js?v=soli-v1.5.3', { updateViaCache: 'none' })
+                    .then(registration => registration.update())
+                    .catch(error => console.warn('Soli Medical Service Worker:', error));
             });
         }
     </script>

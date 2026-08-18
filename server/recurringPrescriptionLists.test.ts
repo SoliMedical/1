@@ -3,6 +3,7 @@ import vm from "node:vm";
 import { describe, expect, it } from "vitest";
 
 const pagePath = new URL("../client/index.html", import.meta.url);
+const serviceWorkerPath = new URL("../client/public/sw.js", import.meta.url);
 
 async function createAppData() {
   const html = await readFile(pagePath, "utf8");
@@ -192,6 +193,7 @@ describe("قوائم الروشتة المتكررة", () => {
 
   it("يبقي الزر الأصلي والقائمة المنسدلة وحماية النماذج الطبية من اقتراحات كلمات المرور", async () => {
     const html = await readFile(pagePath, "utf8");
+    const serviceWorker = await readFile(serviceWorkerPath, "utf8");
 
     expect(html).toContain("حفظ عناصر الروشتة كقائمة متكررة");
     expect(html).toContain('id="recurring-prescription-list"');
@@ -201,6 +203,9 @@ describe("قوائم الروشتة المتكررة", () => {
     expect(html).toContain("openRecurringPrescriptionListEditor(listId)");
     expect(html).toContain("saveRecurringPrescriptionListEditor()");
     expect(html).toContain("حفظ التعديل");
-    expect(html).toContain("const SOLI_APP_VERSION = 'v1.5.2'");
+    expect(html).toContain("const SOLI_APP_VERSION = 'v1.5.3'");
+    expect(html).toContain("updateViaCache: 'none'");
+    expect(html).toContain("sw.js?v=soli-v1.5.3");
+    expect(serviceWorker).toContain('const CACHE_NAME = "soli-medical-pwa-v8"');
   });
 });
