@@ -30,3 +30,22 @@
 تمت مراجعة إعدادات GitHub Pages الفعلية للمستودع: نوع البناء هو `workflow` ومصدر النشر هو الفرع `main` من المسار الجذري `/`. لذلك لم يكن هناك خلل في مصدر Pages يحتاج إلى تحويل؛ سبب ظهور `v1.5.0` عند التحقق الأول هو أن سير النشر الجديد كان ما زال قيد التنفيذ. اكتمل سير العمل [Deploy Soli Medical to GitHub Pages](https://github.com/SoliMedical/1/actions/runs/32143105802) بنجاح عند الساعة `2026-08-18T13:34:56Z` لنفس الالتزام المدمج.
 
 بعد اكتمال السير، تم فتح <https://solimedical.github.io/1/?release-check=v1.5.3-after-deploy> والتحقق من أنه يعرض عبارة **«إصدار النظام v1.5.3»**. وبذلك أصبح `SoliMedical/1` المرجع الرسمي للتحديثات، وموقع GitHub Pages يعرض الإصدار الأخير المنشور.
+
+## تشخيص متابعة الإصدار v1.5.4
+
+في فحص النشر بتاريخ 19 أغسطس 2026، أرسل نطاق Manus `https://medicenter-h9mjj4tn.manus.space/` فعلياً الإصدار `v1.5.4` مع رؤوس تمنع تخزين صفحة HTML (`Cache-Control: no-cache, no-store, must-revalidate`). لذلك لا يعود اختلاف النسخة على هذا النطاق إلى ذاكرة المتصفح المؤقتة.
+
+في المقابل، ظل `https://solimedical.github.io/1/` يعرض `v1.5.3` لأن `SoliMedical/1/main` كان ما يزال عند الالتزام `426349b`، وسير GitHub Pages الأخير كان مبنياً على الالتزام نفسه. كشف الفحص أيضاً أن مرجع `user_github` المحلي ما زال موجهاً إلى `SoliMedical/2`، رغم أن المرجع الإضافي `official_repo1` موجّه إلى `SoliMedical/1`. يلزم تصحيح `user_github` ودفع التزامات `v1.5.4` إلى `SoliMedical/1/main` لتشغيل نشر Pages الجديد.
+
+تم تصحيح `user_github` إلى `https://github.com/SoliMedical/1.git` ودفع الالتزام `75c177977bd225754169b1cf3083fe4cbb7d3e6e` إلى `SoliMedical/1/main` دون كتابة قسرية. اكتمل سير [Deploy Soli Medical to GitHub Pages](https://github.com/SoliMedical/1/actions/runs/32302680924) بنجاح. بعد النشر، تحقّق الخادم مباشرة من أن كلا الرابطين يعرض `SOLI_APP_VERSION = 'v1.5.4'`:
+
+- <https://medicenter-h9mjj4tn.manus.space/>
+- <https://solimedical.github.io/1/>
+
+تستخدم GitHub Pages تخزيناً مؤقتاً لمدة تصل إلى 600 ثانية؛ لذلك يُستحسن فتح الرابط مع تحديث قسري أو مع معلمة إصدار بعد كل نشر عند بقاء صفحة قديمة في تبويب مفتوح.
+
+### نتيجة تدقيق عامل الخدمة ومراجع النشر
+
+يستخدم النشران ملفي عامل خدمة متطابقين بإصدار ذاكرة `soli-medical-pwa-v9`. يسجل التطبيق العامل عبر `./sw.js?v=soli-v1.5.4` مع `updateViaCache: 'none'`، كما أن ملفات الترجمة والتباين وعامل الخدمة في مسار التطبيق ومسار GitHub Pages متطابقة. لذلك لا يوجد اختلاف في عامل الخدمة أو مسار الأصول بين النشرين يفسر استمرار عرض `v1.5.3`؛ كان السبب أن تحديث `v1.5.4` لم يُدفع إلى `SoliMedical/1` بعد.
+
+بعد الإصلاح، يشير كل من `official_repo1` و`user_github` إلى `https://github.com/SoliMedical/1.git` للقراءة والكتابة. أما `origin` فهو مرجع Manus الداخلي لتشغيل النطاق `medicenter-h9mjj4tn.manus.space` وليس مستودع GitHub خارجي. وبذلك يبقى `SoliMedical/1` مرجع GitHub الرسمي الوحيد للنشر الخارجي وGitHub Pages.
