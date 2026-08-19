@@ -70,8 +70,8 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.3';
-        const SOLI_APP_RELEASE = 'إجبار تحديث النسخة المنشورة وتفعيل تحرير القوائم المتكررة من الإعدادات';
+        const SOLI_APP_VERSION = 'v1.5.4';
+        const SOLI_APP_RELEASE = 'إضافة لغة عربية وإنجليزية وتحسين تباين الوضعين النهاري والليلي';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -100,26 +100,29 @@
             });
         }
 
-        const initializeArabicDatePickers = (root = document) => {
-            if (!window.flatpickr || !window.flatpickr.l10ns?.ar) return;
+        const initializeArabicDatePickers = (root = document, language = window.SoliInterface?.getStoredLanguage?.() || 'ar', force = false) => {
+            if (!window.flatpickr) return;
             const dateInputs = root.querySelectorAll ? root.querySelectorAll('input.soli-date-input[type="date"], input.soli-date-input[type="month"]') : [];
             dateInputs.forEach(input => {
-                if (input._flatpickr) return;
+                const isEnglish = language === 'en';
+                if (input._flatpickr && !force && input.dataset.soliDateLocale === language) return;
                 const isMonthPicker = input.type === 'month';
                 try {
+                    if (input._flatpickr) input._flatpickr.destroy();
                     window.flatpickr(input, {
-                        locale: window.flatpickr.l10ns.ar,
+                        locale: isEnglish ? 'default' : window.flatpickr.l10ns?.ar,
                         disableMobile: true,
                         allowInput: false,
                         dateFormat: isMonthPicker ? 'Y-m' : 'Y-m-d',
-                        altInput: true,
+                        altInput: !isEnglish,
                         altFormat: isMonthPicker ? 'F Y' : 'j F Y',
                         monthSelectorType: 'static',
                         onReady: (_selectedDates, _dateString, instance) => {
-                            instance.calendarContainer.classList.add('soli-arabic-calendar');
-                            instance.altInput.setAttribute('aria-label', input.getAttribute('aria-label') || 'اختيار التاريخ');
-                            instance.altInput.setAttribute('dir', 'rtl');
-                            instance.altInput.setAttribute('lang', 'ar-EG');
+                            instance.calendarContainer.classList.toggle('soli-arabic-calendar', !isEnglish);
+                            const visibleInput = instance.altInput || instance.input;
+                            visibleInput.setAttribute('aria-label', input.getAttribute('aria-label') || (isEnglish ? 'Choose date' : 'اختيار التاريخ'));
+                            visibleInput.setAttribute('dir', isEnglish ? 'ltr' : 'rtl');
+                            visibleInput.setAttribute('lang', isEnglish ? 'en-GB' : 'ar-EG');
                         },
                         onChange: (_selectedDates, dateString, instance) => {
                             // يبقى x-model مرتبطاً بالحقل الأصلي بصيغة ISO، مع عرض عربي واضح في الحقل البديل.
@@ -128,8 +131,9 @@
                             instance.input.dispatchEvent(new Event('change', { bubbles: true }));
                         }
                     });
+                    input.dataset.soliDateLocale = language;
                 } catch (error) {
-                    console.warn('تعذر تهيئة منتقي التاريخ العربي:', error);
+                    console.warn('تعذر تهيئة منتقي التاريخ:', error);
                 }
             });
         };
@@ -257,6 +261,7 @@
 
             Alpine.data('appData', () => ({
                 darkMode: true,
+                appLanguage: window.SoliInterface?.getStoredLanguage?.() || 'ar',
                 isAuthenticated: false,
                 isLoading: false,
                 cloudSyncEnabled: isFirebaseConfigured,
@@ -706,6 +711,7 @@
                 init() {
                     this.loadPersistedState();
                     this.loadAdminSecuritySettings();
+                    this.applyAppLanguage(this.appLanguage, false);
 
                     try {
                         this.darkMode = localStorage.getItem('soliMedicalTheme_v1') !== 'light';
@@ -717,6 +723,12 @@
                     this.$watch('darkMode', value => {
                         try { localStorage.setItem('soliMedicalTheme_v1', value ? 'dark' : 'light'); } catch (error) {}
                         document.documentElement.classList.toggle('dark', value);
+                    });
+                    window.addEventListener('soli:language-changed', event => {
+                        const language = event.detail?.language === 'en' ? 'en' : 'ar';
+                        this.appLanguage = language;
+                        this.todayFormatted = this.formatTodayForLanguage(language);
+                        this.$nextTick(() => initializeArabicDatePickers(document, language, true));
                     });
 
                     if (!Array.isArray(this.waitingQueue)) this.waitingQueue = [];
@@ -2337,7 +2349,24 @@
                         prescriptionSettings: 'إعدادات الروشتة والطباعة',
                         settings: 'إعدادات النظام والأسعار والقوائم'
                     };
-                    return titles[this.currentView] || '';
+                    return this.translateInterfaceText(titles[this.currentView] || '');
+                },
+
+                translateInterfaceText(value) {
+                    return window.SoliInterface?.translate?.(value, this.appLanguage) || value;
+                },
+
+                formatTodayForLanguage(language = this.appLanguage) {
+                    return new Date().toLocaleDateString(language === 'en' ? 'en-GB' : 'ar-SA', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+                },
+
+                applyAppLanguage(language, persist = true) {
+                    const selectedLanguage = language === 'en' ? 'en' : 'ar';
+                    this.appLanguage = selectedLanguage;
+                    this.todayFormatted = this.formatTodayForLanguage(selectedLanguage);
+                    if (persist) window.SoliInterface?.setLanguage?.(selectedLanguage);
+                    else window.SoliInterface?.applyLanguage?.(selectedLanguage);
+                    this.$nextTick(() => initializeArabicDatePickers(document, selectedLanguage, true));
                 },
 
                 getPatientById(patientId) {
@@ -3972,6 +4001,7 @@
     </script>
 
     <!-- Alpine.js script with defer -->
+    <script src="./soli-interface-enhancements.js" defer></script>
     <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
 
     <style>
@@ -4413,6 +4443,7 @@
       .prescription-settings-panel .grid, .clinic-branches-panel .grid { min-width: 0; }
     }
 </style>
+<link rel="stylesheet" href="./soli-interface-enhancements.css">
 
 </head>
 <body class="h-full bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100 antialiased transition-colors duration-200" x-data="publicRouter">
@@ -5769,6 +5800,21 @@
                                 </div>
                                 <span class="self-start sm:self-auto text-sm font-extrabold text-cyan-800 dark:text-cyan-200 bg-cyan-50 dark:bg-cyan-950/40 px-3 py-2 rounded-lg" x-text="'إصدار ' + appVersion"></span>
                             </div>
+                            <div x-show="currentView === 'settings'" class="soli-language-card bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-blue-200 dark:border-blue-900/70 shadow-sm space-y-4">
+                                <div class="flex items-start gap-3">
+                                    <span class="w-10 h-10 shrink-0 rounded-xl bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 flex items-center justify-center"><i data-lucide="languages" class="w-5 h-5"></i></span>
+                                    <div><h3 class="font-bold text-slate-800 dark:text-white">لغة الواجهة</h3><p class="text-xs leading-5 text-slate-600 dark:text-slate-300 mt-1">بدّل لغة جميع أقسام النظام. تُحفَظ اللغة المختارة على هذا الجهاز وتُطبَّق فوراً.</p></div>
+                                </div>
+                                <div class="grid grid-cols-1 sm:grid-cols-2 gap-3" role="radiogroup" aria-label="لغة الواجهة">
+                                    <button type="button" role="radio" :aria-checked="appLanguage === 'ar'" @click="applyAppLanguage('ar')" class="rounded-xl border px-4 py-3 text-right transition-colors" :class="appLanguage === 'ar' ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/35 text-blue-800 dark:text-blue-200 shadow-sm' : 'border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:border-blue-300'">
+                                        <span class="block font-bold">العربية</span><span class="block mt-1 text-[11px] opacity-75" dir="ltr">Arabic · RTL</span>
+                                    </button>
+                                    <button type="button" role="radio" :aria-checked="appLanguage === 'en'" @click="applyAppLanguage('en')" class="rounded-xl border px-4 py-3 text-right transition-colors" :class="appLanguage === 'en' ? 'border-blue-600 bg-blue-50 dark:bg-blue-950/35 text-blue-800 dark:text-blue-200 shadow-sm' : 'border-slate-200 dark:border-slate-700 text-slate-200 hover:border-blue-300'">
+                                        <span class="block font-bold" dir="ltr">English</span><span class="block mt-1 text-[11px] opacity-75">English · LTR</span>
+                                    </button>
+                                </div>
+                                <p class="text-[11px] font-semibold text-slate-500 dark:text-slate-400" x-text="appLanguage === 'en' ? 'Current language: English' : 'اللغة الحالية: العربية'"></p>
+                            </div>
                             <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
@@ -6846,7 +6892,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                navigator.serviceWorker.register('./sw.js?v=soli-v1.5.3', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.5.4', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });
