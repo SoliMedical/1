@@ -1,0 +1,125 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Membership is established only through an Admin SDK or the Firebase Console.
+    // Browser code can never create or grant clinic membership for itself.
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function membership(clinicId) {
+      return get(/databases/$(database)/documents/clinics/$(clinicId)/members/$(request.auth.uid));
+    }
+
+    function isMember(clinicId) {
+      return signedIn() && membership(clinicId).data.status == 'active';
+    }
+
+    function hasRole(clinicId, allowedRoles) {
+      return isMember(clinicId) && allowedRoles.hasAny([membership(clinicId).data.role]);
+    }
+
+    function canManageClinic(clinicId) {
+      return hasRole(clinicId, ['owner', 'admin']);
+    }
+
+    function canWriteClinicalData(clinicId) {
+      return hasRole(clinicId, ['owner', 'admin', 'clinician', 'assistant']);
+    }
+
+    // The legacy document remains in use while V2 is reviewed. It is deliberately
+    // scoped to the same membership used for V2 and cannot be deleted by a client.
+    match /soliMedicalApp/sharedClinicData {
+      allow read: if isMember('shared-clinic-v1');
+      allow create, update: if canWriteClinicalData('shared-clinic-v1');
+      allow delete: if false;
+    }
+
+    match /clinics/{clinicId} {
+      allow get: if isMember(clinicId);
+      allow list, create, update, delete: if false;
+
+      match /members/{memberUid} {
+        allow get: if isMember(clinicId) && (request.auth.uid == memberUid || canManageClinic(clinicId));
+        allow list: if canManageClinic(clinicId);
+        allow create, update, delete: if false;
+      }
+
+      match /settings/general {
+        allow read: if isMember(clinicId);
+        allow create, update: if canManageClinic(clinicId);
+        allow delete: if false;
+      }
+
+      match /patients/{patientId} {
+        allow read: if isMember(clinicId);
+        allow create, update: if canWriteClinicalData(clinicId);
+        allow delete: if false;
+      }
+
+      match /visits/{visitId} {
+        allow read: if isMember(clinicId);
+        allow create, update: if canWriteClinicalData(clinicId);
+        allow delete: if false;
+      }
+
+      match /prescriptions/{prescriptionId} {
+        allow read: if isMember(clinicId);
+        allow create, update: if canWriteClinicalData(clinicId);
+        allow delete: if false;
+      }
+
+      match /appointments/{appointmentId} {
+        allow read: if isMember(clinicId);
+        allow create, update: if canWriteClinicalData(clinicId);
+        allow delete: if false;
+      }
+
+      match /invoices/{invoiceId} {
+        allow read: if isMember(clinicId);
+        allow create, update: if canWriteClinicalData(clinicId);
+        allow delete: if false;
+      }
+
+      match /expenses/{expenseId} {
+        allow read: if isMember(clinicId);
+        allow create, update: if canWriteClinicalData(clinicId);
+        allow delete: if false;
+      }
+
+      match /catalogs/{catalogName} {
+        allow read: if isMember(clinicId);
+        allow create, update: if canManageClinic(clinicId);
+        allow delete: if false;
+      }
+
+      match /auditLogs/{auditLogId} {
+        allow read: if canManageClinic(clinicId);
+        allow create: if canWriteClinicalData(clinicId);
+        // Audit contents are immutable. The migration may only add mirror metadata.
+        allow update: if canManageClinic(clinicId)
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['mirroredAt', 'migratedAt', 'migrationId', 'schemaVersion']);
+        allow delete: if false;
+      }
+
+      match /archiveManifests/{archiveId} {
+        allow read: if canManageClinic(clinicId);
+        allow create, update: if canManageClinic(clinicId);
+        allow delete: if false;
+      }
+
+      match /migrationManifests/{migrationId} {
+        allow read: if canManageClinic(clinicId);
+        allow create, update: if canManageClinic(clinicId);
+        allow delete: if false;
+      }
+
+      // No implicit permissions for future V2 collections.
+      match /{document=**} {
+        allow read, write: if false;
+      }
+    }
+  }
+}

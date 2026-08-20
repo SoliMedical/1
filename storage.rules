@@ -1,0 +1,40 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Membership is read from the default Firestore database. A deleted or inactive
+    // membership document denies access immediately on the next rule evaluation.
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function membership(clinicId) {
+      return firestore.get(/databases/(default)/documents/clinics/$(clinicId)/members/$(request.auth.uid));
+    }
+
+    function isMember(clinicId) {
+      return signedIn() && membership(clinicId).data.status == 'active';
+    }
+
+    function canManageClinic(clinicId) {
+      return isMember(clinicId)
+        && ['owner', 'admin'].hasAny([membership(clinicId).data.role]);
+    }
+
+    function isClinicLogo() {
+      return request.resource.size < 2 * 1024 * 1024
+        && request.resource.contentType.matches('image/(webp|png|jpeg)');
+    }
+
+    match /clinics/{clinicId}/branding/{fileName} {
+      allow read: if isMember(clinicId);
+      allow create, update: if canManageClinic(clinicId) && isClinicLogo();
+      // Old logos are retained for recovery and never deleted by the browser.
+      allow delete: if false;
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
