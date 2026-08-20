@@ -50,6 +50,7 @@
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-storage-compat.js"></script>
     <script src="./firebase-config.js"></script>
 
     <!-- Alpine JS Application Logic -->
@@ -79,8 +80,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.5';
-        const SOLI_APP_RELEASE = 'إضافة لغة عربية وإنجليزية وتحسين تباين الوضعين النهاري والليلي';
+        const SOLI_APP_VERSION = 'v1.6.0';
+        const SOLI_APP_RELEASE = 'تهيئة ترحيل Firebase الآمن وتخزين شعار العيادة وأرشفة عرض المواعيد';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -97,11 +98,13 @@
 
         let firebaseAuth = null;
         let firestoreDB = null;
+        let firebaseStorage = null;
 
         if (isFirebaseConfigured && !publicBookingMode && !publicPricingMode) {
             firebase.initializeApp(firebaseConfig);
             firebaseAuth = firebase.auth();
             firestoreDB = firebase.firestore();
+            firebaseStorage = firebase.storage();
             // Built-in offline cache: Firestore keeps working (reads + writes queued) with no
             // internet, and syncs automatically the moment the connection returns.
             firestoreDB.enablePersistence({ synchronizeTabs: true }).catch(err => {
@@ -433,7 +436,18 @@
                     printHeaderEnabled: true,
                     printFooterEnabled: true
                 },
+                // The data URL is local-only compatibility/preview state. It is deliberately
+                // excluded from Firestore sync; the shared setting is the Storage download URL.
                 clinicLogoDataUrl: '',
+                clinicLogoUrl: '',
+                clinicLogoStoragePath: '',
+                pendingClinicLogoDataUrl: '',
+                logoUploadInProgress: false,
+                cloudClinicId: 'shared-clinic-v1',
+                dataMigration: { schemaVersion: 1, status: 'not_started', migrationId: '', lastPreviewAt: '', lastCompletedAt: '', lastError: '', counts: null },
+                showArchivedAppointments: false,
+                appointmentArchiveBusy: false,
+                waitingQueueArchiveBusy: false,
 
                 loginForm: {
                     email: '',
@@ -796,6 +810,9 @@
                         }
                     }
                     if (typeof this.clinicLogoDataUrl !== 'string') this.clinicLogoDataUrl = '';
+                    if (typeof this.clinicLogoUrl !== 'string') this.clinicLogoUrl = '';
+                    if (typeof this.clinicLogoStoragePath !== 'string') this.clinicLogoStoragePath = '';
+                    if (typeof this.pendingClinicLogoDataUrl !== 'string') this.pendingClinicLogoDataUrl = '';
                     this.invoices = (this.invoices || []).map(inv => {
                         const amount = Number(inv.amount || 0);
                         const discount = Number(inv.discount || 0);
@@ -871,11 +888,9 @@
                 },
 
                 // ---- FIREBASE / FIRESTORE REALTIME SYNC ----
-                // All clinic data (patients, invoices, prescriptions, users, clinics, settings) is
-                // kept in ONE shared Firestore document so every device/browser stays in sync
-                // instantly. Firestore's own offline cache (enabled above) means this keeps working
-                // seamlessly without internet — writes queue locally and flush automatically once
-                // back online, so the local `persistState()` layer above is a second safety net.
+                // The legacy shared document remains the read/write source during the controlled
+                // V2 rollout. V2 documents are written only after an admin starts the explicit,
+                // resumable migration. No production record is deleted by this code.
                 cloudDocPath: 'soliMedicalApp/sharedClinicData',
                 applyingRemoteUpdate: false,
                 cloudSyncTimer: null,
@@ -1119,6 +1134,18 @@
                             if (snap.metadata.hasPendingWrites) return;
                             const data = snap.data();
                             const remoteMeta = data._syncMeta || {};
+                            // Storage URLs are small and safe to mirror through the legacy
+                            // document during the transition. A legacy Base64 logo is read only
+                            // for compatibility, then can be migrated explicitly by the admin.
+                            if (typeof data.clinicLogoUrl === 'string' && data.clinicLogoUrl) {
+                                this.clinicLogoUrl = data.clinicLogoUrl;
+                            }
+                            if (typeof data.clinicLogoStoragePath === 'string' && data.clinicLogoStoragePath) {
+                                this.clinicLogoStoragePath = data.clinicLogoStoragePath;
+                            }
+                            if (!this.clinicLogoUrl && !this.clinicLogoDataUrl && typeof data.clinicLogoDataUrl === 'string') {
+                                this.clinicLogoDataUrl = data.clinicLogoDataUrl;
+                            }
                             if (Array.isArray(data.users) && !this.usersWriteInFlight && !this.usersLocalChangesPending) {
                                 this.users = this.normalizeUsers(data.users);
                                 this.syncCurrentUserFromUsers();
@@ -1300,6 +1327,246 @@
                         this.cloudWriteInFlight = false;
                         if (this.localChangesPending && navigator.onLine) this.queueCloudSync();
                     });
+                },
+
+                // ---- FIRESTORE V2: CONTROLLED MULTI-DOCUMENT MIGRATION ----
+                // The legacy shared document remains the active read/write source while V2 is
+                // created and reconciled. These functions never delete the legacy document.
+                getV2ClinicRef() {
+                    if (!firestoreDB) throw new Error('Firestore غير متاح حالياً.');
+                    return firestoreDB.collection('clinics').doc(String(this.cloudClinicId));
+                },
+                getV2Collection(name) {
+                    return this.getV2ClinicRef().collection(name);
+                },
+                sanitizeForFirestore(value) {
+                    if (value === undefined) return null;
+                    if (Array.isArray(value)) return value.map(item => this.sanitizeForFirestore(item));
+                    if (value && typeof value === 'object') {
+                        return Object.entries(value).reduce((result, [key, entry]) => {
+                            if (entry !== undefined) result[key] = this.sanitizeForFirestore(entry);
+                            return result;
+                        }, {});
+                    }
+                    return value;
+                },
+                safeFirestoreId(value, fallback) {
+                    const candidate = String(value || fallback || '').trim().replace(/\//g, '_');
+                    return candidate || `generated-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                },
+                getMigrationCounts(state = this.getSyncDataSnapshot()) {
+                    const patients = Array.isArray(state?.patients) ? state.patients : [];
+                    return {
+                        patients: patients.length,
+                        visits: patients.reduce((total, patient) => total + (Array.isArray(patient?.records) ? patient.records.length : 0), 0),
+                        appointments: Array.isArray(state?.appointments) ? state.appointments.length : 0,
+                        invoices: Array.isArray(state?.invoices) ? state.invoices.length : 0,
+                        prescriptions: Array.isArray(state?.prescriptions) ? state.prescriptions.length : 0,
+                        expenses: Array.isArray(state?.expenses) ? state.expenses.length : 0,
+                        waitingQueue: Array.isArray(state?.waitingQueue) ? state.waitingQueue.length : 0
+                    };
+                },
+                buildV2MigrationOperations(state, migrationId) {
+                    const operations = [];
+                    const clinicRef = this.getV2ClinicRef();
+                    const migratedAt = new Date().toISOString();
+                    const add = (collection, id, data) => operations.push({
+                        ref: clinicRef.collection(collection).doc(this.safeFirestoreId(id, `${collection}-${operations.length}`)),
+                        data: this.sanitizeForFirestore({ ...data, schemaVersion: 2, migrationId, migratedAt })
+                    });
+
+                    (state.patients || []).forEach((patient, patientIndex) => {
+                        const { records = [], ...profile } = patient || {};
+                        const patientId = this.safeFirestoreId(patient?.id, `patient-${patientIndex}`);
+                        add('patients', patientId, {
+                            ...profile,
+                            legacyId: String(patient?.id || patientId),
+                            searchName: String(patient?.fullName || '').trim().toLowerCase()
+                        });
+                        (Array.isArray(records) ? records : []).forEach((visit, visitIndex) => {
+                            const visitId = this.safeFirestoreId(visit?.id, `${patientId}-visit-${visitIndex}`);
+                            add('visits', visitId, {
+                                ...visit,
+                                legacyId: String(visit?.id || visitId),
+                                patientId,
+                                patientLegacyId: String(patient?.id || patientId)
+                            });
+                        });
+                    });
+
+                    [
+                        ['appointments', state.appointments],
+                        ['invoices', state.invoices],
+                        ['prescriptions', state.prescriptions],
+                        ['expenses', state.expenses],
+                        ['waitingQueue', state.waitingQueue]
+                    ].forEach(([collection, items]) => (items || []).forEach((item, index) => {
+                        const id = this.safeFirestoreId(item?.id, `${collection}-${index}`);
+                        add(collection, id, { ...item, legacyId: String(item?.id || id) });
+                    }));
+
+                    add('settings', 'general', {
+                        doctorInfo: state.doctorInfo || {},
+                        clinics: state.clinics || [],
+                        visitTypePrices: state.visitTypePrices || {},
+                        idleLockEnabled: Boolean(state.idleLockEnabled),
+                        idleLockMinutes: Number(state.idleLockMinutes || 15),
+                        branding: { logoUrl: this.clinicLogoUrl || '', logoStoragePath: this.clinicLogoStoragePath || '' }
+                    });
+                    add('catalogs', 'clinical', {
+                        symptomsList: state.symptomsList || [],
+                        chronicDiseasesList: state.chronicDiseasesList || [],
+                        diagnosesMasterList: state.diagnosesMasterList || [],
+                        medicinesMasterList: state.medicinesMasterList || [],
+                        labTestsMasterList: state.labTestsMasterList || [],
+                        radiologyMasterList: state.radiologyMasterList || [],
+                        vitalSignsMasterList: state.vitalSignsMasterList || [],
+                        expenseCategories: state.expenseCategories || [],
+                        recordFormSections: state.recordFormSections || []
+                    });
+                    add('catalogs', 'templates', {
+                        recurringPrescriptionLists: state.recurringPrescriptionLists || [],
+                        recurringNotesList: state.recurringNotesList || [],
+                        recurringMedicinesList: state.recurringMedicinesList || []
+                    });
+                    return operations;
+                },
+                prepareV2MigrationPreview() {
+                    if (this.currentUser?.role !== 'admin') { alert('معاينة الترحيل متاحة لمدير النظام فقط.'); return; }
+                    const migrationId = this.dataMigration?.migrationId || `v2-${Date.now()}`;
+                    const counts = this.getMigrationCounts();
+                    this.dataMigration = {
+                        ...this.dataMigration,
+                        schemaVersion: 2,
+                        status: 'preview_ready',
+                        migrationId,
+                        counts,
+                        lastPreviewAt: new Date().toISOString(),
+                        lastError: ''
+                    };
+                    this.persistState();
+                    this.queueCloudSync();
+                    alert(`معاينة آمنة جاهزة: ${counts.patients} مريض و${counts.visits} زيارة و${counts.appointments} موعد. لم تُكتب أو تُحذف أي بيانات.`);
+                },
+                async runV2Migration() {
+                    if (this.currentUser?.role !== 'admin') { alert('الترحيل متاح لمدير النظام فقط.'); return; }
+                    if (!navigator.onLine || !(await this.waitForCloudAuthReady())) {
+                        alert('يلزم اتصال إنترنت ومزامنة Firebase نشطة قبل الترحيل. لا يزال بإمكانك حفظ نسخة احتياطية محلية الآن.');
+                        return;
+                    }
+                    const migrationId = this.dataMigration?.migrationId || `v2-${Date.now()}`;
+                    const state = this.getSyncDataSnapshot();
+                    const counts = this.getMigrationCounts(state);
+                    if (!confirm(`سيُنشأ نسخة V2 مستقلة قابلة لإعادة التشغيل لـ ${counts.patients} مريض و${counts.visits} زيارة. لن يحذف التطبيق الوثيقة القديمة. هل تريد المتابعة؟`)) return;
+
+                    const operations = this.buildV2MigrationOperations(state, migrationId);
+                    const manifestRef = this.getV2Collection('migrationManifests').doc(migrationId);
+                    this.dataMigration = { ...this.dataMigration, schemaVersion: 2, status: 'running', migrationId, counts, lastError: '' };
+                    this.persistState();
+                    try {
+                        await manifestRef.set(this.sanitizeForFirestore({
+                            migrationId,
+                            status: 'running',
+                            source: this.cloudDocPath,
+                            counts,
+                            startedAt: new Date().toISOString(),
+                            legacyDocumentRetained: true
+                        }), { merge: true });
+                        for (let offset = 0; offset < operations.length; offset += 400) {
+                            const batch = firestoreDB.batch();
+                            operations.slice(offset, offset + 400).forEach(operation => batch.set(operation.ref, operation.data, { merge: true }));
+                            await batch.commit();
+                        }
+                        await manifestRef.set({
+                            status: 'completed',
+                            completedAt: new Date().toISOString(),
+                            operationCount: operations.length,
+                            legacyDocumentRetained: true
+                        }, { merge: true });
+                        this.dataMigration = { ...this.dataMigration, status: 'completed', migrationId, counts, lastCompletedAt: new Date().toISOString(), lastError: '' };
+                        this.recordAudit('ترحيل Firestore V2', `اكتملت كتابة ${operations.length} وثيقة في المخطط الجديد دون حذف المصدر القديم.`);
+                        alert('اكتمل إنشاء نسخة V2. يستمر التطبيق بالقراءة من المخطط القديم لحين مراجعة تقرير المطابقة واعتماد تحويل القراءة.');
+                    } catch (error) {
+                        console.error('تعذر إكمال ترحيل Firestore V2:', error);
+                        this.dataMigration = { ...this.dataMigration, status: 'needs_review', migrationId, counts, lastError: String(error?.message || error) };
+                        alert('توقف الترحيل قبل الاكتمال. لم تُحذف البيانات القديمة؛ عالج الاتصال ثم أعد تشغيله بالمعرّف نفسه دون تكرار السجلات.');
+                    } finally {
+                        this.persistState();
+                        this.queueCloudSync();
+                    }
+                },
+                get dataMigrationStatusLabel() {
+                    return ({
+                        not_started: 'لم يبدأ',
+                        preview_ready: 'المعاينة جاهزة',
+                        running: 'جارٍ إنشاء النسخة',
+                        completed: 'اكتملت النسخة للمراجعة',
+                        needs_review: 'يحتاج مراجعة'
+                    })[this.dataMigration?.status] || 'لم يبدأ';
+                },
+
+                // ---- CLINIC LOGO: FIREBASE STORAGE, NOT FIRESTORE BASE64 ----
+                getClinicLogoSrc() {
+                    return this.clinicLogoUrl || this.pendingClinicLogoDataUrl || this.clinicLogoDataUrl || '';
+                },
+                async uploadClinicLogoDataUrl(dataUrl, { silent = false } = {}) {
+                    if (!dataUrl || !String(dataUrl).startsWith('data:image/')) return false;
+                    if (!firebaseStorage || !firestoreDB || !navigator.onLine || !(await this.waitForCloudAuthReady())) {
+                        this.pendingClinicLogoDataUrl = dataUrl;
+                        this.persistState();
+                        if (!silent) alert('حُفظت معاينة الشعار محلياً بانتظار اتصال Firebase؛ لن يُرسل الشعار كنص Base64 إلى Firestore.');
+                        return false;
+                    }
+                    this.logoUploadInProgress = true;
+                    const previousPath = this.clinicLogoStoragePath;
+                    try {
+                        const objectRef = firebaseStorage.ref().child(`clinics/${this.cloudClinicId}/branding/logo-${Date.now()}.webp`);
+                        const snapshot = await objectRef.putString(dataUrl, 'data_url', {
+                            contentType: 'image/webp',
+                            cacheControl: 'private,max-age=86400'
+                        });
+                        const logoUrl = await snapshot.ref.getDownloadURL();
+                        const branding = {
+                            logoUrl,
+                            logoStoragePath: snapshot.ref.fullPath,
+                            logoUpdatedAt: new Date().toISOString(),
+                            previousLogoStoragePath: previousPath || ''
+                        };
+                        await this.getV2Collection('settings').doc('general').set({
+                            branding,
+                            schemaVersion: 2,
+                            updatedAt: new Date().toISOString()
+                        }, { merge: true });
+                        await firestoreDB.doc(this.cloudDocPath).set({
+                            clinicLogoUrl: logoUrl,
+                            clinicLogoStoragePath: snapshot.ref.fullPath,
+                            clinicLogoDataUrl: firebase.firestore.FieldValue.delete(),
+                            _logoStorageMigration: { migratedAt: new Date().toISOString(), storagePath: snapshot.ref.fullPath }
+                        }, { merge: true });
+                        this.clinicLogoUrl = logoUrl;
+                        this.clinicLogoStoragePath = snapshot.ref.fullPath;
+                        this.pendingClinicLogoDataUrl = '';
+                        this.clinicLogoDataUrl = '';
+                        this.persistState();
+                        this.recordAudit('تخزين شعار العيادة', 'تم حفظ رابط الشعار في Firebase Storage دون حفظ Base64 داخل Firestore.');
+                        if (!silent) alert('تم رفع الشعار إلى Firebase Storage وحفظ رابطه بأمان. احتُفظ بملف الشعار السابق في Storage للاسترجاع ولا يُحذف تلقائياً.');
+                        return true;
+                    } catch (error) {
+                        console.error('تعذر رفع شعار العيادة إلى Firebase Storage:', error);
+                        this.pendingClinicLogoDataUrl = dataUrl;
+                        this.persistState();
+                        if (!silent) alert('تعذر رفع الشعار إلى Firebase Storage الآن. بقيت المعاينة محفوظة محلياً، ولن تُحذف البيانات الحالية.');
+                        return false;
+                    } finally {
+                        this.logoUploadInProgress = false;
+                        this.renderIcons();
+                    }
+                },
+                async migrateLegacyClinicLogoToStorage() {
+                    if (this.currentUser?.role !== 'admin') { alert('ترحيل الشعار متاح لمدير النظام فقط.'); return; }
+                    if (!this.clinicLogoDataUrl?.startsWith('data:image/')) { alert('لا يوجد شعار Base64 قديم يحتاج إلى ترحيل.'); return; }
+                    if (!confirm('سيُرفع الشعار الحالي إلى Firebase Storage ويُحذف نص Base64 من وثيقة Firestore فقط بعد نجاح الحفظ. هل تريد المتابعة؟')) return;
+                    await this.uploadClinicLogoDataUrl(this.clinicLogoDataUrl);
                 },
 
                 // ---- CLINIC EXPENSES ("المنصرف") ----
@@ -1806,7 +2073,7 @@
                     usersWriteInFlight: false,
                 usersLocalChangesPending: false,
                 usersChangeSequence: 0,
-                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoDataUrl', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringPrescriptionLists', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes'],
+                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoUrl', 'clinicLogoStoragePath', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringPrescriptionLists', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes', 'dataMigration'],
 
                 loadPersistedState() {
                     try {
@@ -1816,6 +2083,10 @@
                         this.persistentKeys.forEach(key => {
                             if (saved[key] !== undefined) this[key] = saved[key];
                         });
+                        // Retain an existing local Base64 logo only as a temporary preview so an
+                        // admin can move it to Storage; never add it back to cloud persistence.
+                        if (typeof saved.legacyLocalLogo === 'string') this.clinicLogoDataUrl = saved.legacyLocalLogo;
+                        else if (typeof saved.clinicLogoDataUrl === 'string') this.clinicLogoDataUrl = saved.clinicLogoDataUrl;
                         this.recurringPrescriptionLists = this.normalizeRecurringPrescriptionLists(this.recurringPrescriptionLists);
                         if (Array.isArray(saved.users)) this.users = this.normalizeUsers(saved.users);
                     } catch (e) {
@@ -1827,6 +2098,7 @@
                     try {
                         const dataToSave = {};
                         this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
+                        dataToSave.legacyLocalLogo = this.clinicLogoDataUrl || this.pendingClinicLogoDataUrl || '';
                         dataToSave.users = this.normalizeUsers(this.users);
                         localStorage.setItem(this.storageKey, JSON.stringify(dataToSave));
                     } catch (e) {
@@ -1885,7 +2157,7 @@
                     const reader = new FileReader();
                     reader.onload = () => {
                         const image = new Image();
-                        image.onload = () => {
+                        image.onload = async () => {
                             const maxDimension = 512;
                             const scale = Math.min(1, maxDimension / image.width, maxDimension / image.height);
                             const canvas = document.createElement('canvas');
@@ -1895,16 +2167,16 @@
                             context.clearRect(0, 0, canvas.width, canvas.height);
                             context.drawImage(image, 0, 0, canvas.width, canvas.height);
                             const compressedLogo = canvas.toDataURL('image/webp', 0.9);
-                            if (compressedLogo.length > 350_000) {
-                                alert('تعذر حفظ الشعار لأن حجمه بعد الضغط كبير للمزامنة الآمنة. اختر صورة أبسط أو أقل دقة.');
+                            if (compressedLogo.length > 1_250_000) {
+                                alert('تعذر تجهيز الشعار لأن حجمه بعد الضغط كبير. اختر صورة أبسط أو أقل دقة.');
                                 return;
                             }
                             this.clinicLogoDataUrl = compressedLogo;
+                            this.pendingClinicLogoDataUrl = compressedLogo;
                             this.persistState();
-                            this.queueCloudSync();
                             event.target.value = '';
                             this.renderIcons();
-                            alert('تم رفع شعار العيادة وحفظه بنجاح.');
+                            await this.uploadClinicLogoDataUrl(compressedLogo);
                         };
                         image.onerror = () => alert('تعذر قراءة صورة الشعار. جرّب ملف PNG أو JPG آخر.');
                         image.src = reader.result;
@@ -1914,11 +2186,19 @@
                 },
 
                 removeClinicLogo() {
-                    if (!this.clinicLogoDataUrl) return;
+                    if (!this.getClinicLogoSrc()) return;
                     if (!confirm('هل تريد إزالة شعار العيادة من الروشتة؟')) return;
+                    const previousPath = this.clinicLogoStoragePath;
+                    this.clinicLogoUrl = '';
+                    this.clinicLogoStoragePath = '';
                     this.clinicLogoDataUrl = '';
+                    this.pendingClinicLogoDataUrl = '';
                     this.persistState();
                     this.queueCloudSync();
+                    if (firestoreDB && navigator.onLine && this.cloudAuthReady) {
+                        this.getV2Collection('settings').doc('general').set({ branding: { logoUrl: '', logoStoragePath: '', logoRemovedAt: new Date().toISOString(), previousLogoStoragePath: previousPath || '' } }, { merge: true }).catch(error => console.warn('تعذر تحديث إعدادات الشعار الجديدة:', error));
+                        firestoreDB.doc(this.cloudDocPath).set({ clinicLogoUrl: '', clinicLogoStoragePath: '', clinicLogoDataUrl: firebase.firestore.FieldValue.delete() }, { merge: true }).catch(error => console.warn('تعذر إزالة مرجع الشعار القديم:', error));
+                    }
                     this.renderIcons();
                 },
 
@@ -2436,11 +2716,64 @@
                     const query = String(this.appointmentSearch || '').trim().toLowerCase();
                     return (this.appointments || []).filter(item => {
                         const matchesDate = item.date === this.selectedAppointmentDate;
+                        const matchesArchive = this.showArchivedAppointments ? Boolean(item.archivedAt) : !item.archivedAt;
                         const haystack = [item.patientName, item.phone, item.visitType, item.notes].filter(Boolean).join(' ').toLowerCase();
                         const matchesQuery = !query || haystack.includes(query);
                         const matchesStatus = this.appointmentStatusFilter === 'all' || (item.status || 'scheduled') === this.appointmentStatusFilter;
-                        return matchesDate && matchesQuery && matchesStatus;
+                        return matchesDate && matchesArchive && matchesQuery && matchesStatus;
                     }).sort((a, b) => String(a.time || '').localeCompare(String(b.time || '')));
+                },
+                get archivedAppointmentCount() {
+                    return (this.appointments || []).filter(item => Boolean(item.archivedAt)).length;
+                },
+                get archivedWaitingQueueCount() {
+                    return (this.waitingQueue || []).filter(item => Boolean(item.archivedAt)).length;
+                },
+                archiveEligibleAppointments() {
+                    if (this.currentUser?.role !== 'admin') { alert('أرشفة المواعيد متاحة لمدير النظام فقط.'); return; }
+                    if (this.appointmentArchiveBusy) return;
+                    const cutoff = new Date();
+                    cutoff.setMonth(cutoff.getMonth() - 6);
+                    const cutoffDate = cutoff.toISOString().slice(0, 10);
+                    const eligible = (this.appointments || []).filter(item => !item.archivedAt && ['completed', 'cancelled'].includes(item.status) && item.date && item.date < cutoffDate);
+                    if (!eligible.length) { alert('لا توجد مواعيد مكتملة أو ملغاة أقدم من ستة أشهر للأرشفة.'); return; }
+                    if (!confirm(`سيُخفى ${eligible.length} موعداً قديماً من العرض اليومي فقط. لن يُحذف أي موعد أو مريض أو فاتورة. هل تريد المتابعة؟`)) return;
+                    this.appointmentArchiveBusy = true;
+                    const archivedAt = new Date().toISOString();
+                    const eligibleIds = new Set(eligible.map(item => String(item.id)));
+                    this.appointments = (this.appointments || []).map(item => eligibleIds.has(String(item.id)) ? { ...item, archivedAt, archivedBy: this.currentUser?.id || 'admin', archiveReason: 'completed_or_cancelled_older_than_six_months' } : item);
+                    this.recordAudit('أرشفة مواعيد', `تمت أرشفة عرض ${eligible.length} موعداً؛ السجل محفوظ ويمكن استعادته.`);
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.appointmentArchiveBusy = false;
+                },
+                restoreArchivedAppointment(id) {
+                    if (this.currentUser?.role !== 'admin') { alert('استعادة الموعد متاحة لمدير النظام فقط.'); return; }
+                    const appointment = (this.appointments || []).find(item => String(item.id) === String(id));
+                    if (!appointment?.archivedAt) return;
+                    appointment.archivedAt = null;
+                    appointment.archivedBy = null;
+                    appointment.archiveReason = null;
+                    this.recordAudit('استعادة موعد مؤرشف', appointment.patientName || String(id));
+                    this.persistState();
+                    this.queueCloudSync();
+                },
+                archiveStaleWaitingQueue() {
+                    if (this.currentUser?.role !== 'admin') { alert('أرشفة قائمة الانتظار متاحة لمدير النظام فقط.'); return; }
+                    if (this.waitingQueueArchiveBusy) return;
+                    const cutoff = new Date();
+                    cutoff.setDate(cutoff.getDate() - 30);
+                    const eligible = (this.waitingQueue || []).filter(item => !item.archivedAt && item.createdAt && new Date(item.createdAt) < cutoff && !['waiting', 'in_consultation'].includes(item.status));
+                    if (!eligible.length) { alert('لا توجد عناصر قديمة غير نشطة في قائمة الانتظار للأرشفة.'); return; }
+                    if (!confirm(`سيُخفى ${eligible.length} عنصراً غير نشط من قائمة الانتظار. لن يُحذف أي سجل. هل تريد المتابعة؟`)) return;
+                    this.waitingQueueArchiveBusy = true;
+                    const ids = new Set(eligible.map(item => String(item.id)));
+                    const archivedAt = new Date().toISOString();
+                    this.waitingQueue = (this.waitingQueue || []).map(item => ids.has(String(item.id)) ? { ...item, archivedAt, archivedBy: this.currentUser?.id || 'admin', archiveReason: 'inactive_older_than_thirty_days' } : item);
+                    this.recordAudit('أرشفة قائمة الانتظار', `تمت أرشفة عرض ${eligible.length} عنصراً غير نشط دون حذف.`);
+                    this.persistState();
+                    this.queueCloudSync();
+                    this.waitingQueueArchiveBusy = false;
                 },
                 get reportAppointments() {
                     return (this.appointments || []).filter(item => this.isDateInReportPeriod(item.date));
@@ -2535,8 +2868,9 @@
                     this.ensureAppointmentFinancialLink(appointment);
                     const patient = this.ensureAppointmentPatient(appointment);
                     this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.appointmentId || '') !== String(appointment.id));
-                    this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id));
-                    this.recordAudit('إكمال موعد', `${appointment.patientName} — نُقل إلى إدارة المرضى${patient ? ' وتم تثبيت التحصيل' : ''}`);
+                    appointment.status = 'completed';
+                    appointment.completedAt = appointment.completedAt || new Date().toISOString();
+                    this.recordAudit('إكمال موعد', `${appointment.patientName} — اكتمل الموعد وحُفظ في السجل${patient ? ' وتم تثبيت التحصيل' : ''}`);
                     return true;
                 },
                 appointmentStatusBadgeClass(status) {
@@ -4025,12 +4359,13 @@
                 },
 
                 removeFromQueueForPatient(patientId) {
-                    // Completion from the medical record is not a cancellation: keep the invoice,
-                    // complete the linked appointment, and remove only the operational queue entry.
+                    // Completion from the medical record is not a cancellation: retain the
+                    // appointment as completed and remove only the operational queue entry.
                     const linkedAppointments = (this.appointments || []).filter(item => String(item.patientId || '') === String(patientId));
                     linkedAppointments.forEach(appointment => {
                         this.ensureAppointmentFinancialLink(appointment);
-                        this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id));
+                        if (!['cancelled', 'completed'].includes(appointment.status)) appointment.status = 'completed';
+                        appointment.completedAt = appointment.completedAt || new Date().toISOString();
                     });
                     this.waitingQueue = (this.waitingQueue || []).filter(item => String(item.patientId || '') !== String(patientId));
                 },
@@ -4907,8 +5242,8 @@
                                     <button type="button" @click="addAppointment" class="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-2.5 text-sm font-bold" x-text="appointmentForm.status === 'pending_confirmation' ? 'حفظ طلب بانتظار التأكيد' : 'حفظ الموعد'"></button>
                                 </div>
                                 <div class="lg:col-span-2 bg-white dark:bg-slate-900 rounded-2xl border dark:border-slate-800 p-5 shadow-sm space-y-4">
-                                    <div class="flex justify-end"><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
-                                    <div class="space-y-2"><template x-for="appointment in appointmentsForSelectedDay" :key="appointment.id"><article class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40"><div class="min-w-0"><div class="flex items-center gap-2 flex-wrap"><span class="font-mono font-bold text-blue-600" x-text="appointment.time"></span><h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="appointment.patientName"></h4><span class="inline-flex px-2 py-1 rounded-full text-[10px] font-bold" :class="appointmentStatusBadgeClass(appointment.status || 'scheduled')" x-text="appointmentStatusLabel(appointment.status || 'scheduled')"></span></div><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appointment.visitType + (appointment.phone ? ' • ' + appointment.phone : '')"></p><p x-show="appointment.notes" class="text-xs text-slate-400 mt-1" x-text="appointment.notes"></p></div><div class="flex items-center gap-2"><select :value="appointment.status" @change="updateAppointmentStatus(appointment.id, $event.target.value)" class="px-2 py-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs"><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select><button type="button" @click="deleteAppointment(appointment.id)" class="p-2 text-slate-400 hover:text-red-600" title="حذف الموعد"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></article></template><p x-show="appointmentsForSelectedDay.length === 0" class="text-center py-10 text-sm text-slate-400">لا توجد مواعيد مطابقة لهذا اليوم.</p></div>
+                                    <div class="flex flex-wrap justify-end gap-2"><button type="button" @click="showArchivedAppointments = !showArchivedAppointments" class="px-3 py-2.5 rounded-xl border text-xs font-bold" :class="showArchivedAppointments ? 'bg-violet-600 border-violet-600 text-white' : 'bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'" x-text="showArchivedAppointments ? 'عرض المواعيد النشطة' : ('عرض الأرشيف (' + archivedAppointmentCount + ')')"></button><select x-model="appointmentStatusFilter" class="px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm"><option value="all">كل الحالات</option><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select></div>
+                                    <div class="space-y-2"><template x-for="appointment in appointmentsForSelectedDay" :key="appointment.id"><article class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40"><div class="min-w-0"><div class="flex items-center gap-2 flex-wrap"><span class="font-mono font-bold text-blue-600" x-text="appointment.time"></span><h4 class="font-bold text-slate-800 dark:text-white truncate" x-text="appointment.patientName"></h4><span class="inline-flex px-2 py-1 rounded-full text-[10px] font-bold" :class="appointmentStatusBadgeClass(appointment.status || 'scheduled')" x-text="appointmentStatusLabel(appointment.status || 'scheduled')"></span><span x-show="appointment.archivedAt" class="inline-flex px-2 py-1 rounded-full text-[10px] font-bold bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300">مؤرشف</span></div><p class="text-xs text-slate-500 dark:text-slate-400 mt-1" x-text="appointment.visitType + (appointment.phone ? ' • ' + appointment.phone : '')"></p><p x-show="appointment.notes" class="text-xs text-slate-400 mt-1" x-text="appointment.notes"></p></div><div class="flex items-center gap-2"><button type="button" x-show="appointment.archivedAt && currentUser?.role === 'admin'" @click="restoreArchivedAppointment(appointment.id)" class="px-2 py-2 rounded-lg text-xs font-bold text-violet-700 dark:text-violet-300 hover:bg-violet-50 dark:hover:bg-violet-950/30">استعادة</button><select x-show="!appointment.archivedAt" :value="appointment.status" @change="updateAppointmentStatus(appointment.id, $event.target.value)" class="px-2 py-2 rounded-lg border bg-white dark:bg-slate-900 dark:border-slate-700 text-xs"><template x-for="status in appointmentStatusOptions" :key="status.key"><option :value="status.key" x-text="status.label"></option></template></select><button type="button" @click="deleteAppointment(appointment.id)" class="p-2 text-slate-400 hover:text-red-600" title="حذف الموعد"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></article></template><p x-show="appointmentsForSelectedDay.length === 0" class="text-center py-10 text-sm text-slate-400" x-text="showArchivedAppointments ? 'لا توجد مواعيد مؤرشفة مطابقة لهذا اليوم.' : 'لا توجد مواعيد نشطة مطابقة لهذا اليوم.'"></p></div>
                                 </div>
                             </div>
                         </div>
@@ -5934,6 +6269,12 @@
                                 </div>
                                 <p class="text-[11px] font-semibold text-slate-500 dark:text-slate-400" x-text="appLanguage === 'en' ? 'Current language: English' : 'اللغة الحالية: العربية'"></p>
                             </div>
+                            <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-violet-200 dark:border-violet-900/70 shadow-sm space-y-4">
+                                <div class="flex items-start gap-3"><span class="w-10 h-10 shrink-0 rounded-xl bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 flex items-center justify-center"><i data-lucide="database-backup" class="w-5 h-5"></i></span><div><h3 class="font-bold text-slate-800 dark:text-white">ترحيل قاعدة Firebase وأرشفة العرض</h3><p class="text-xs leading-5 text-slate-600 dark:text-slate-300 mt-1">ينشئ الترحيل نسخة مستقلة قابلة للمراجعة ولا يحذف الوثيقة القديمة. لا تتحول القراءة إلى المخطط الجديد تلقائياً.</p></div></div>
+                                <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center"><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">الحالة</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="dataMigrationStatusLabel"></p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">المرضى</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="dataMigration.counts?.patients ?? (patients || []).length"></p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">الزيارات</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="dataMigration.counts?.visits ?? getMigrationCounts().visits"></p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">المواعيد المؤرشفة</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="archivedAppointmentCount"></p></div></div>
+                                <div class="flex flex-wrap gap-2"><button type="button" @click="prepareV2MigrationPreview()" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-violet-600 hover:bg-violet-700 text-white">معاينة الترحيل</button><button type="button" @click="runV2Migration()" :disabled="dataMigration.status === 'running'" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white disabled:opacity-50">إنشاء نسخة V2 للمراجعة</button><button type="button" @click="archiveEligibleAppointments()" :disabled="appointmentArchiveBusy" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-200 disabled:opacity-50">أرشفة المواعيد القديمة</button><button type="button" @click="archiveStaleWaitingQueue()" :disabled="waitingQueueArchiveBusy" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50">أرشفة قائمة الانتظار القديمة</button></div>
+                                <p class="text-[11px] leading-5 text-slate-500 dark:text-slate-400" x-text="dataMigration.lastError ? ('آخر ملاحظة: ' + dataMigration.lastError) : 'الأرشفة تخفي السجلات من العرض التشغيلي فقط. المرضى والزيارات والروشتات والفواتير لا تُحذف تلقائياً.'"></p>
+                            </div>
                             <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
@@ -5958,22 +6299,24 @@
                                     </div>
                                     <div class="flex flex-col sm:flex-row items-start sm:items-center gap-4">
                                         <div class="w-24 h-24 rounded-2xl border-2 border-dashed border-blue-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 flex items-center justify-center overflow-hidden flex-shrink-0">
-                                            <template x-if="clinicLogoDataUrl">
-                                                <img :src="clinicLogoDataUrl" alt="شعار العيادة" class="w-full h-full object-contain p-2">
+                                            <template x-if="getClinicLogoSrc()">
+                                                <img :src="getClinicLogoSrc()" alt="شعار العيادة" class="w-full h-full object-contain p-2">
                                             </template>
-                                            <template x-if="!clinicLogoDataUrl">
+                                            <template x-if="!getClinicLogoSrc()">
                                                 <i data-lucide="image-plus" class="w-8 h-8 text-slate-300 dark:text-slate-600"></i>
                                             </template>
                                         </div>
                                         <div class="flex flex-wrap items-center gap-2">
                                             <label class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-xl text-xs font-bold cursor-pointer inline-flex items-center gap-2">
                                                 <i data-lucide="upload" class="w-4 h-4"></i>
-                                                <span x-text="clinicLogoDataUrl ? 'استبدال الشعار' : 'رفع شعار مخصص'"></span>
+                                                <span x-text="getClinicLogoSrc() ? 'استبدال الشعار' : 'رفع شعار مخصص'"></span>
                                                 <input type="file" accept="image/png,image/jpeg,image/webp" class="hidden" @change="handleClinicLogoUpload($event)">
                                             </label>
-                                            <button type="button" x-show="clinicLogoDataUrl" @click="removeClinicLogo()" class="px-4 py-2.5 rounded-xl text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-950/30 dark:hover:bg-red-950/50">إزالة الشعار</button>
+                                            <button type="button" x-show="getClinicLogoSrc()" @click="removeClinicLogo()" class="px-4 py-2.5 rounded-xl text-xs font-bold text-red-600 bg-red-50 hover:bg-red-100 dark:bg-red-950/30 dark:hover:bg-red-950/50">إزالة الشعار</button>
                                         </div>
                                     </div>
+                                    <p class="text-[11px] font-semibold" :class="clinicLogoUrl ? 'text-emerald-700 dark:text-emerald-300' : 'text-amber-700 dark:text-amber-300'" x-text="clinicLogoUrl ? 'الشعار محفوظ في Firebase Storage؛ لا تُحفظ بيانات الصورة داخل Firestore.' : (pendingClinicLogoDataUrl ? 'الشعار جاهز محلياً وسيُرفع عند اتصال Firebase.' : (clinicLogoDataUrl ? 'لديك شعار قديم بصيغة Base64؛ انقله إلى Storage لتقليل مساحة الوثيقة.' : 'لا يوجد شعار محفوظ.'))"></p>
+                                    <button type="button" x-show="currentUser?.role === 'admin' && clinicLogoDataUrl && !clinicLogoUrl" @click="migrateLegacyClinicLogoToStorage()" :disabled="logoUploadInProgress" class="text-xs font-bold text-blue-700 dark:text-blue-300 hover:underline disabled:opacity-50">ترحيل الشعار القديم إلى Firebase Storage</button>
                                 </div>
                                 <div class="border-t border-slate-100 dark:border-slate-800 pt-6 space-y-4">
                                     <div>
@@ -6863,7 +7206,7 @@
                     <div class="print-page print-primary-page">
                         <!-- Familiar Arabic prescription header: logo at left, centered doctor identity, specialty and phone together. -->
                         <div x-show="doctorInfo.printHeaderEnabled !== false" class="print-rx-header flex items-center justify-between gap-3 border-b-2 border-blue-600 pb-3" style="direction: ltr;">
-                            <img x-show="clinicLogoDataUrl" :src="clinicLogoDataUrl" alt="شعار العيادة" class="w-20 h-20 object-contain rounded-xl border border-slate-200 p-1 bg-white flex-shrink-0">
+                            <img x-show="getClinicLogoSrc()" :src="getClinicLogoSrc()" alt="شعار العيادة" class="w-20 h-20 object-contain rounded-xl border border-slate-200 p-1 bg-white flex-shrink-0">
                             <div class="min-w-0 flex-1 text-center" style="direction: rtl;">
                                 <div class="print-doctor-line flex flex-col items-center justify-center gap-0.5">
                                     <h2 class="print-doctor-name text-3xl font-bold text-blue-700" x-text="doctorInfo.fullName"></h2>
@@ -6871,7 +7214,7 @@
                                     <p class="print-doctor-contact text-[11px] text-slate-500" x-text="doctorInfo.phone || ''"></p>
                                 </div>
                             </div>
-                            <div x-show="!clinicLogoDataUrl" class="w-20 flex-shrink-0"></div>
+                            <div x-show="!getClinicLogoSrc()" class="w-20 flex-shrink-0"></div>
                         </div>
 
                         <div class="print-section grid grid-cols-3 gap-2 bg-slate-50 p-3 rounded-xl text-xs border font-medium mt-3">
@@ -7009,7 +7352,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.5.5', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.0', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

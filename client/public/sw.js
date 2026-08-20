@@ -1,4 +1,4 @@
-const CACHE_NAME = "soli-medical-pwa-v10";
+const CACHE_NAME = "soli-medical-pwa-v11";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",

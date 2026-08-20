@@ -34,9 +34,9 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     const bookingEnd = page.indexOf("Alpine.data('appData'", bookingStart);
     const bookingComponent = page.slice(bookingStart, bookingEnd);
 
-    expect(page).toContain("if (isFirebaseConfigured && !publicBookingMode)");
+    expect(page).toContain("if (isFirebaseConfigured && !publicBookingMode && !publicPricingMode)");
     expect(page).toContain('<template x-if="isPublicBooking">');
-    expect(page).toContain('<template x-if="!isPublicBooking">');
+    expect(page).toContain('<template x-if="!isPublicBooking && !isPublicPricing">');
     expect(bookingComponent).not.toContain("localStorage");
     expect(bookingComponent).not.toContain("firestore");
   });
@@ -206,16 +206,17 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('invoiceId: invoice?.id || null');
   });
 
-  it("ينقل الموعد المكتمل إلى إدارة المرضى ويحذف البطاقة التشغيلية مع إبقاء الفاتورة", () => {
+  it("ينقل الموعد المكتمل إلى إدارة المرضى ويحفظه في السجل مع إبقاء الفاتورة", () => {
     expect(page).toContain('completeAppointment(appointment)');
-    expect(page).toContain("this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id))");
+    expect(page).toContain("appointment.status = 'completed'");
+    expect(page).toContain('appointment.completedAt');
     expect(page).toContain('this.ensureAppointmentFinancialLink(appointment)');
-    expect(page).toContain('نُقل إلى إدارة المرضى');
+    expect(page).toContain('اكتمل الموعد وحُفظ في السجل');
     expect(page).toContain('removeFromQueueForPatient(patientId)');
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.5.5'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.0'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -236,8 +237,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.5.5', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v10');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.0', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v11');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('requestUrl.pathname.endsWith("/")');
     expect(sw).toContain('fetch(event.request)');
