@@ -68,7 +68,16 @@
                 return false;
             }
         };
+        const isPublicPricingUrl = () => {
+            try {
+                const params = new URLSearchParams(window.location.search);
+                return params.has('pricing') || window.location.hash.replace(/^#/, '') === 'pricing';
+            } catch (error) {
+                return false;
+            }
+        };
         const publicBookingMode = isPublicBookingUrl();
+        const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
         const SOLI_APP_VERSION = 'v1.5.5';
         const SOLI_APP_RELEASE = 'إضافة لغة عربية وإنجليزية وتحسين تباين الوضعين النهاري والليلي';
@@ -89,7 +98,7 @@
         let firebaseAuth = null;
         let firestoreDB = null;
 
-        if (isFirebaseConfigured && !publicBookingMode) {
+        if (isFirebaseConfigured && !publicBookingMode && !publicPricingMode) {
             firebase.initializeApp(firebaseConfig);
             firebaseAuth = firebase.auth();
             firestoreDB = firebase.firestore();
@@ -187,7 +196,9 @@
 
         document.addEventListener('alpine:init', () => {
             Alpine.data('publicRouter', () => ({
-                isPublicBooking: publicBookingMode
+                isPublicBooking: publicBookingMode,
+                isPublicPricing: publicPricingMode,
+                showTrialNotice: false
             }));
 
             Alpine.data('bookingApp', () => ({
@@ -4534,7 +4545,82 @@
         </main>
     </template>
 
-    <template x-if="!isPublicBooking">
+    <template x-if="isPublicPricing">
+        <main x-cloak dir="rtl" lang="ar" class="min-h-screen overflow-x-hidden bg-slate-950 text-slate-100">
+            <section class="relative isolate overflow-hidden border-b border-white/10 bg-[#071a2d]">
+                <div class="absolute inset-0 -z-10 bg-[radial-gradient(circle_at_80%_20%,rgba(45,212,191,.18),transparent_30%),radial-gradient(circle_at_15%_80%,rgba(37,99,235,.18),transparent_38%)]"></div>
+                <nav class="mx-auto flex max-w-6xl items-center justify-between px-5 py-5 sm:px-8" aria-label="التنقل في صفحة التسعير">
+                    <a href="./" class="inline-flex items-center gap-2 rounded-xl px-2 py-1 text-sm font-extrabold text-white transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-cyan-300">
+                        <i data-lucide="stethoscope" class="h-5 w-5 text-cyan-300"></i><span>Soli Medical</span>
+                    </a>
+                    <a href="./" class="inline-flex items-center gap-2 rounded-xl border border-white/20 bg-white/5 px-3 py-2 text-xs font-bold text-slate-100 transition hover:bg-white/10 focus:outline-none focus:ring-2 focus:ring-cyan-300"><i data-lucide="log-in" class="h-4 w-4"></i>تسجيل الدخول</a>
+                </nav>
+                <div class="mx-auto grid max-w-6xl gap-10 px-5 pb-16 pt-10 sm:px-8 lg:grid-cols-[1.2fr_.8fr] lg:items-end lg:pb-20">
+                    <div>
+                        <p class="mb-4 inline-flex items-center gap-2 rounded-full border border-cyan-300/25 bg-cyan-300/10 px-3 py-1.5 text-xs font-extrabold text-cyan-100"><i data-lucide="map-pin" class="h-3.5 w-3.5"></i>إطلاق أولي للأطباء في المنصورة</p>
+                        <h1 class="max-w-3xl text-4xl font-black leading-[1.15] tracking-tight text-white sm:text-5xl">إدارة العيادة بوضوح، <span class="text-cyan-300">بسعر يناسب البداية.</span></h1>
+                        <p class="mt-5 max-w-2xl text-base font-medium leading-8 text-slate-300 sm:text-lg">ملف المرضى، المواعيد، الزيارات، الروشتة والطباعة في نظام عربي يعمل على الهاتف والكمبيوتر — مع تجربة كاملة قبل أي قرار.</p>
+                        <div class="mt-7 flex flex-wrap gap-3 text-sm font-bold text-slate-200">
+                            <span class="inline-flex items-center gap-2"><i data-lucide="check-circle-2" class="h-4 w-4 text-cyan-300"></i>14 يوماً بلا بطاقة</span>
+                            <span class="inline-flex items-center gap-2"><i data-lucide="check-circle-2" class="h-4 w-4 text-cyan-300"></i>لا حذف لبيانات المرضى</span>
+                            <span class="inline-flex items-center gap-2"><i data-lucide="check-circle-2" class="h-4 w-4 text-cyan-300"></i>بالجنيه المصري</span>
+                        </div>
+                    </div>
+                    <aside class="rounded-3xl border border-cyan-300/25 bg-slate-950/35 p-6 shadow-2xl shadow-slate-950/30 backdrop-blur-sm">
+                        <p class="text-sm font-bold text-cyan-200">Soli فردي</p>
+                        <div class="mt-2 flex items-end gap-2"><span class="text-5xl font-black text-white">250</span><span class="mb-2 text-sm font-bold text-slate-300">جنيه / شهر</span></div>
+                        <p class="mt-3 text-sm leading-6 text-slate-300">للطبيب المنفرد وعيادة واحدة، بلا التزام طويل وبإلغاء من نهاية الدورة.</p>
+                        <a href="#plans" class="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-cyan-300 px-4 py-3 text-sm font-extrabold text-slate-950 transition hover:bg-cyan-200 focus:outline-none focus:ring-2 focus:ring-white"><i data-lucide="arrow-down" class="h-4 w-4"></i>مقارنة الباقات</a>
+                    </aside>
+                </div>
+            </section>
+
+            <section id="plans" class="mx-auto max-w-6xl px-5 py-14 sm:px-8 sm:py-20" aria-labelledby="pricing-heading">
+                <div class="max-w-2xl">
+                    <p class="text-sm font-extrabold text-cyan-300">خطط واضحة، بلا مفاجآت</p>
+                    <h2 id="pricing-heading" class="mt-2 text-3xl font-black text-white sm:text-4xl">اختر ما يناسب طريقة عمل عيادتك</h2>
+                    <p class="mt-3 leading-7 text-slate-400">يشمل الاشتراك الأساسي الوظائف اليومية للطبيب المنفرد. لا يتطلب تقديم بطاقة خلال التجربة.</p>
+                </div>
+                <div class="mt-10 grid gap-5 lg:grid-cols-3">
+                    <article class="rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-lg shadow-black/10">
+                        <p class="text-sm font-extrabold text-slate-300">تجربة Soli</p>
+                        <p class="mt-5 text-4xl font-black text-white">مجاناً</p>
+                        <p class="mt-2 text-sm font-semibold text-slate-400">لمدة 14 يوماً</p>
+                        <ul class="mt-6 space-y-3 text-sm text-slate-300"><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>كل وظائف الطبيب المنفرد</li><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>لا بطاقة ولا تحصيل</li><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>تظل البيانات قابلة للقراءة والتصدير</li></ul>
+                    </article>
+                    <article class="relative rounded-3xl border-2 border-cyan-300 bg-[#0c2940] p-6 shadow-xl shadow-cyan-950/30">
+                        <span class="absolute -top-3 right-6 rounded-full bg-cyan-300 px-3 py-1 text-xs font-black text-slate-950">الأفضل قيمة</span>
+                        <p class="text-sm font-extrabold text-cyan-100">Soli فردي — سنوي</p>
+                        <div class="mt-5 flex items-end gap-2"><span class="text-4xl font-black text-white">2,500</span><span class="mb-1 text-sm font-bold text-cyan-100">جنيه / سنة</span></div>
+                        <p class="mt-2 text-sm font-semibold text-cyan-100">يعادل 10 أشهر — شهران مجاناً</p>
+                        <ul class="mt-6 space-y-3 text-sm text-slate-100"><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>كل ميزات الباقة الفردية</li><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>إعداد أولي عن بُعد</li><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>دعم أساسي خلال السنة</li></ul>
+                    </article>
+                    <article class="rounded-3xl border border-slate-700 bg-slate-900 p-6 shadow-lg shadow-black/10">
+                        <p class="text-sm font-extrabold text-slate-300">Soli فردي — شهري</p>
+                        <div class="mt-5 flex items-end gap-2"><span class="text-4xl font-black text-white">250</span><span class="mb-1 text-sm font-bold text-slate-400">جنيه / شهر</span></div>
+                        <p class="mt-2 text-sm font-semibold text-slate-400">مرونة كاملة وإلغاء من نهاية الدورة</p>
+                        <ul class="mt-6 space-y-3 text-sm text-slate-300"><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>طبيب واحد وعيادة واحدة</li><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>المواعيد والزيارات والروشتة</li><li class="flex gap-2"><i data-lucide="check" class="h-4 w-4 shrink-0 text-cyan-300"></i>العربية والإنجليزية والتصدير</li></ul>
+                    </article>
+                </div>
+            </section>
+
+            <section class="border-y border-white/10 bg-slate-900/60">
+                <div class="mx-auto grid max-w-6xl gap-8 px-5 py-14 sm:px-8 lg:grid-cols-2 lg:items-center">
+                    <div><p class="text-sm font-extrabold text-cyan-300">ماذا يحدث بعد التجربة؟</p><h2 class="mt-2 text-3xl font-black text-white">قرارك يبقى بيدك.</h2><p class="mt-3 max-w-xl leading-7 text-slate-400">عند انتهاء التجربة أو تأخر التجديد، لا تُحذف بيانات المرضى تلقائياً. ينتقل الحساب إلى القراءة والتصدير فقط إلى أن يُفعّل الاشتراك.</p></div>
+                    <div class="grid grid-cols-3 gap-3 text-center text-xs font-bold text-slate-300"><div class="rounded-2xl border border-slate-700 bg-slate-950 p-4"><span class="mb-2 flex h-7 w-7 items-center justify-center rounded-full bg-cyan-300 text-slate-950">1</span>تجربة كاملة</div><div class="rounded-2xl border border-slate-700 bg-slate-950 p-4"><span class="mb-2 flex h-7 w-7 items-center justify-center rounded-full bg-cyan-300 text-slate-950">2</span>اختيار الباقة</div><div class="rounded-2xl border border-slate-700 bg-slate-950 p-4"><span class="mb-2 flex h-7 w-7 items-center justify-center rounded-full bg-cyan-300 text-slate-950">3</span>تفعيل موثّق</div></div>
+                </div>
+            </section>
+
+            <section id="trial" class="mx-auto max-w-3xl px-5 py-16 text-center sm:px-8 sm:py-20">
+                <p class="text-sm font-extrabold text-cyan-300">بدون تحصيل آلي حالياً</p><h2 class="mt-2 text-3xl font-black text-white">ابدأ بالتجربة عندما يفتح التسجيل</h2><p class="mx-auto mt-3 max-w-xl leading-7 text-slate-400">صفحة التسعير تعرض الباقات الآن. ستتم إضافة طلب التجربة وربطه بحالة الاشتراك والتحقق الإداري قبل تشغيل أي بوابة دفع.</p>
+                <button type="button" @click="showTrialNotice = true" class="mt-7 inline-flex items-center gap-2 rounded-xl bg-cyan-300 px-5 py-3 text-sm font-extrabold text-slate-950 transition hover:bg-cyan-200 focus:outline-none focus:ring-2 focus:ring-white"><i data-lucide="bell" class="h-4 w-4"></i>إظهار حالة التسجيل</button>
+                <p x-show="showTrialNotice" x-transition.opacity class="mx-auto mt-5 max-w-xl rounded-2xl border border-cyan-300/25 bg-cyan-300/10 px-4 py-3 text-sm font-bold leading-6 text-cyan-100">طلب التجربة والدفع لم يُفعّلا بعد. عند إضافتهما، سيُنشأ الطلب من الخادم وتُراجع حالة الاشتراك من مصدر موثوق، وليس من المتصفح.</p>
+            </section>
+            <footer class="border-t border-white/10 px-5 py-7 text-center text-xs leading-6 text-slate-500">Soli Medical · تسعير إطلاق أولي للمنصورة بالجنيه المصري · <a href="./" class="font-bold text-slate-300 hover:text-cyan-200">العودة لتسجيل الدخول</a></footer>
+        </main>
+    </template>
+
+    <template x-if="!isPublicBooking && !isPublicPricing">
         <div x-data="appData">
 
     <!-- Application Root -->
@@ -4582,6 +4668,7 @@
                         <button type="submit" :disabled="isLoading" class="soli-login-cta w-full py-3 text-white font-semibold rounded-xl transition-all">تسجيل الدخول</button>
                     </form>
                     <button type="button" @click="beginPasswordRecovery()" class="mt-4 text-xs font-bold text-blue-600 hover:text-blue-800 dark:text-blue-300">نسيت كلمة مرور المدير؟ استعادة محلية</button>
+                    <a href="?pricing" class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-xs font-extrabold text-slate-700 transition hover:border-cyan-500 hover:bg-cyan-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"><i data-lucide="badge-egyptian-pound" class="h-4 w-4"></i>عرض خطط الاشتراك والتجربة</a>
                     <template x-if="recoveryState.open">
                         <div class="mt-4 rounded-2xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/80 dark:bg-blue-950/30 p-4 text-right space-y-3">
                             <div class="flex items-center justify-between gap-3"><strong class="text-sm text-blue-900 dark:text-blue-200">استعادة كلمة مرور المدير</strong><button type="button" @click="closePasswordRecovery()" class="text-slate-500 hover:text-red-600" aria-label="إغلاق"><i data-lucide="x" class="w-4 h-4"></i></button></div>
