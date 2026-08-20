@@ -129,9 +129,11 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يفرض أحدث نسخة للحساب عند كل دخول متصل ولا يستعيد جلسة قديمة أثناء الاتصال", () => {
-    expect(page).toContain('const latestUsersLoaded = await this.prepareUsersForOnlineLogin()');
-    expect(page).toContain("تعذر التحقق من أحدث بيانات الحسابات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.");
-    expect(page).toContain("وفق أحدث نسخة للحسابات. استخدم البيانات الجديدة بعد أي تعديل من المدير.");
+    expect(page).toContain('firebaseLogin = await this.signInFirebaseForLocalUser(');
+    expect(page).toContain('{ allowAnonymousFallback: localCredentialsMatch, createIfMissing: localCredentialsMatch }');
+    expect(page).toContain('if (firebaseLogin.persistent || localCredentialsMatch)');
+    expect(page).toContain('await this.prepareUsersForOnlineLogin()');
+    expect(page).toContain('if (matchedUser && !matchedUser.password && firebaseLogin.persistent)');
     expect(page).toContain('&& !navigator.onLine)');
     expect(page).toContain('this.clearSession();');
     expect(page).toContain('this.revokeDeviceTrust();');
@@ -167,7 +169,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(persistentKeysMatch?.[1]).toBeTruthy();
     expect(persistentKeysMatch?.[1]).not.toContain("'users'");
     expect(page).toContain('normalizeUsers(users)');
-    expect(page).toContain('this.users = this.normalizeUsers(data.users)');
+    expect(page).toContain('this.users = this.mergeCloudUsersWithLocalCredentials(data.users)');
     expect(page).toContain('async persistUsersToCloudNow()');
     expect(page).toContain('usersWriteInFlight');
     expect(page).toContain("get({ source: 'server' })");
@@ -216,7 +218,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.1'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.2'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -237,8 +239,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.1', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v12');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.2', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v13');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('requestUrl.pathname.endsWith("/")');
     expect(sw).toContain('fetch(event.request)');
@@ -250,7 +252,7 @@ describe("تحديث جلسة المستخدم بعد مزامنة الصلاح�
   it("يحدّث currentUser من users الجديدة قبل فحص صلاحية المواعيد", () => {
     expect(page).toContain("syncCurrentUserFromUsers()");
     expect(page).toContain("if (freshUser) this.currentUser = this.withCompatiblePermissions(freshUser);");
-    expect(page).toContain("this.users = this.normalizeUsers(data.users);\n                                this.syncCurrentUserFromUsers();");
+    expect(page).toContain("this.users = this.mergeCloudUsersWithLocalCredentials(data.users);\n                                this.syncCurrentUserFromUsers();");
   });
 });
 
