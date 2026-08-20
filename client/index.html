@@ -80,7 +80,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.6.0';
+        const SOLI_APP_VERSION = 'v1.6.1';
         const SOLI_APP_RELEASE = 'تهيئة ترحيل Firebase الآمن وتخزين شعار العيادة وأرشفة عرض المواعيد';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -444,7 +444,8 @@
                 pendingClinicLogoDataUrl: '',
                 logoUploadInProgress: false,
                 cloudClinicId: 'shared-clinic-v1',
-                dataMigration: { schemaVersion: 1, status: 'not_started', migrationId: '', lastPreviewAt: '', lastCompletedAt: '', lastError: '', counts: null },
+                dataMigration: { schemaVersion: 1, status: 'not_started', migrationId: '', lastPreviewAt: '', lastCompletedAt: '', lastDualWriteAt: '', dualWriteStatus: 'not_started', lastError: '', counts: null, validation: null },
+                archiveManifests: [],
                 showArchivedAppointments: false,
                 appointmentArchiveBusy: false,
                 waitingQueueArchiveBusy: false,
@@ -762,6 +763,8 @@
                     if (!Array.isArray(this.syncConflicts)) this.syncConflicts = [];
                     if (!Array.isArray(this.egyptianMedicineArchive)) this.egyptianMedicineArchive = [];
                     if (!Array.isArray(this.auditLog)) this.auditLog = [];
+                    if (!Array.isArray(this.archiveManifests)) this.archiveManifests = [];
+                    this.loadV2MirrorFingerprints();
                     if (!Number.isFinite(Number(this.idleLockMinutes))) this.idleLockMinutes = 15;
                     this.lastActivityAt = Date.now();
                     this.startIdleLockMonitor();
@@ -897,6 +900,9 @@
                 cloudRetryTimer: null,
                 cloudRetryAttempts: 0,
                 cloudWriteInFlight: false,
+                v2MirrorTimer: null,
+                v2MirrorInFlight: false,
+                v2MirrorFingerprints: {},
                 syncChangeSequence: 0,
                 cloudUnsubscribe: null,
                 cloudAuthListenerStarted: false,
@@ -1316,6 +1322,7 @@
                         this.localEditBaseRevision = result.revision;
                         this.cloudStatus = 'online';
                         this.cloudRetryAttempts = 0;
+                        this.queueV2MirroredChanges();
                         if (result.conflict) {
                             this.recordSyncConflict(result.conflict.data, result.conflict.meta, 'تم اكتشاف تعديل محفوظ من جهاز آخر قبل رفع التعديل المحلي؛ تم تسجيل تفاصيل التعارض.');
                         }
@@ -1366,10 +1373,9 @@
                         waitingQueue: Array.isArray(state?.waitingQueue) ? state.waitingQueue.length : 0
                     };
                 },
-                buildV2MigrationOperations(state, migrationId) {
+                buildV2MigrationOperations(state, migrationId, migratedAt = this.dataMigration?.lastCompletedAt || new Date().toISOString()) {
                     const operations = [];
                     const clinicRef = this.getV2ClinicRef();
-                    const migratedAt = new Date().toISOString();
                     const add = (collection, id, data) => operations.push({
                         ref: clinicRef.collection(collection).doc(this.safeFirestoreId(id, `${collection}-${operations.length}`)),
                         data: this.sanitizeForFirestore({ ...data, schemaVersion: 2, migrationId, migratedAt })
@@ -1429,7 +1435,104 @@
                         recurringNotesList: state.recurringNotesList || [],
                         recurringMedicinesList: state.recurringMedicinesList || []
                     });
+                    (state.auditLog || []).forEach((entry, index) => {
+                        const auditId = this.safeFirestoreId(entry?.id, `audit-${index}`);
+                        add('auditLogs', auditId, { ...entry, legacyId: String(entry?.id || auditId) });
+                    });
+                    (state.archiveManifests || []).forEach((manifest, index) => {
+                        const archiveId = this.safeFirestoreId(manifest?.id, `archive-${index}`);
+                        add('archiveManifests', archiveId, { ...manifest, legacyId: String(manifest?.id || archiveId) });
+                    });
                     return operations;
+                },
+                getV2MirrorFingerprint(value) {
+                    const serialized = JSON.stringify(this.sanitizeForFirestore(value));
+                    let hash = 2166136261;
+                    for (let index = 0; index < serialized.length; index += 1) {
+                        hash ^= serialized.charCodeAt(index);
+                        hash = Math.imul(hash, 16777619);
+                    }
+                    return `${serialized.length}:${hash >>> 0}`;
+                },
+                getV2MirrorStorageKey() {
+                    return `soliMedicalV2MirrorFingerprints_v1:${this.cloudClinicId}`;
+                },
+                loadV2MirrorFingerprints() {
+                    try {
+                        const saved = JSON.parse(localStorage.getItem(this.getV2MirrorStorageKey()) || '{}');
+                        this.v2MirrorFingerprints = saved && typeof saved === 'object' ? saved : {};
+                    } catch (error) {
+                        this.v2MirrorFingerprints = {};
+                    }
+                },
+                saveV2MirrorFingerprints() {
+                    try { localStorage.setItem(this.getV2MirrorStorageKey(), JSON.stringify(this.v2MirrorFingerprints || {})); } catch (error) {}
+                },
+                queueV2MirroredChanges() {
+                    if (this.dataMigration?.status !== 'completed' || !this.cloudSyncEnabled || !this.cloudAuthReady || !firestoreDB) return;
+                    clearTimeout(this.v2MirrorTimer);
+                    this.v2MirrorTimer = setTimeout(() => this.flushV2MirroredChanges(), 900);
+                },
+                async flushV2MirroredChanges() {
+                    if (this.v2MirrorInFlight || this.dataMigration?.status !== 'completed' || !navigator.onLine || !(await this.waitForCloudAuthReady())) return;
+                    this.v2MirrorInFlight = true;
+                    try {
+                        const state = this.getSyncDataSnapshot();
+                        const operations = this.buildV2MigrationOperations(state, this.dataMigration.migrationId, this.dataMigration.lastCompletedAt);
+                        const changed = operations.filter(operation => {
+                            const key = operation.ref.path;
+                            const fingerprint = this.getV2MirrorFingerprint(operation.data);
+                            operation.fingerprint = fingerprint;
+                            return this.v2MirrorFingerprints[key] !== fingerprint;
+                        });
+                        for (let offset = 0; offset < changed.length; offset += 400) {
+                            const batch = firestoreDB.batch();
+                            changed.slice(offset, offset + 400).forEach(operation => batch.set(operation.ref, operation.data, { merge: true }));
+                            await batch.commit();
+                        }
+                        changed.forEach(operation => { this.v2MirrorFingerprints[operation.ref.path] = operation.fingerprint; });
+                        this.saveV2MirrorFingerprints();
+                        this.dataMigration = {
+                            ...this.dataMigration,
+                            dualWriteStatus: changed.length ? 'synced' : 'up_to_date',
+                            lastDualWriteAt: new Date().toISOString(),
+                            lastError: ''
+                        };
+                        this.persistState();
+                    } catch (error) {
+                        console.error('تعذرت الكتابة المزدوجة إلى Firestore V2:', error);
+                        this.dataMigration = { ...this.dataMigration, dualWriteStatus: 'pending_retry', lastError: `تعذرت مزامنة V2: ${String(error?.message || error)}` };
+                        this.persistState();
+                        setTimeout(() => this.queueV2MirroredChanges(), 4000);
+                    } finally {
+                        this.v2MirrorInFlight = false;
+                    }
+                },
+                async verifyV2MigrationConsistency() {
+                    if (this.currentUser?.role !== 'admin') { alert('التحقق من المطابقة متاح لمدير النظام فقط.'); return; }
+                    if (!navigator.onLine || !(await this.waitForCloudAuthReady())) { alert('يلزم اتصال Firebase للتحقق من المطابقة. لم تتغير أي بيانات.'); return; }
+                    const state = this.getSyncDataSnapshot();
+                    const expected = {
+                        ...this.getMigrationCounts(state),
+                        auditLogs: (state.auditLog || []).length,
+                        archiveManifests: (state.archiveManifests || []).length
+                    };
+                    const collectionNames = ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests'];
+                    try {
+                        const snapshots = await Promise.all(collectionNames.map(name => this.getV2Collection(name).get()));
+                        const actual = snapshots.reduce((result, snapshot, index) => ({ ...result, [collectionNames[index]]: snapshot.size }), {});
+                        const compare = { patients: expected.patients, visits: expected.visits, appointments: expected.appointments, invoices: expected.invoices, prescriptions: expected.prescriptions, expenses: expected.expenses, waitingQueue: expected.waitingQueue, auditLogs: expected.auditLogs, archiveManifests: expected.archiveManifests };
+                        const mismatches = Object.keys(compare).filter(key => Number(actual[key] || 0) < Number(compare[key] || 0));
+                        const validation = { checkedAt: new Date().toISOString(), expected: compare, actual, matches: mismatches.length === 0, mismatches };
+                        this.dataMigration = { ...this.dataMigration, validation, status: validation.matches ? 'completed' : 'needs_review', lastError: validation.matches ? '' : `تحتاج ${mismatches.join('، ')} إلى مراجعة قبل تحويل القراءة.` };
+                        this.persistState();
+                        if (validation.matches) alert('اكتملت مطابقة V2: لا توجد وثائق ناقصة مقارنة بالمصدر القديم. تظل القراءة القديمة هي النشطة إلى أن تعتمد التحويل لاحقاً.');
+                        else alert(`اكتملت المطابقة مع ملاحظات: ${mismatches.join('، ')}. لم تُحذف البيانات ولم تتحول القراءة.`);
+                    } catch (error) {
+                        console.error('تعذر التحقق من مطابقة Firestore V2:', error);
+                        this.dataMigration = { ...this.dataMigration, status: 'needs_review', lastError: `تعذر فحص المطابقة: ${String(error?.message || error)}` };
+                        this.persistState();
+                    }
                 },
                 prepareV2MigrationPreview() {
                     if (this.currentUser?.role !== 'admin') { alert('معاينة الترحيل متاحة لمدير النظام فقط.'); return; }
@@ -1459,7 +1562,8 @@
                     const counts = this.getMigrationCounts(state);
                     if (!confirm(`سيُنشأ نسخة V2 مستقلة قابلة لإعادة التشغيل لـ ${counts.patients} مريض و${counts.visits} زيارة. لن يحذف التطبيق الوثيقة القديمة. هل تريد المتابعة؟`)) return;
 
-                    const operations = this.buildV2MigrationOperations(state, migrationId);
+                    const completedAt = new Date().toISOString();
+                    const operations = this.buildV2MigrationOperations(state, migrationId, completedAt);
                     const manifestRef = this.getV2Collection('migrationManifests').doc(migrationId);
                     this.dataMigration = { ...this.dataMigration, schemaVersion: 2, status: 'running', migrationId, counts, lastError: '' };
                     this.persistState();
@@ -1479,11 +1583,13 @@
                         }
                         await manifestRef.set({
                             status: 'completed',
-                            completedAt: new Date().toISOString(),
+                            completedAt,
                             operationCount: operations.length,
                             legacyDocumentRetained: true
                         }, { merge: true });
-                        this.dataMigration = { ...this.dataMigration, status: 'completed', migrationId, counts, lastCompletedAt: new Date().toISOString(), lastError: '' };
+                        this.dataMigration = { ...this.dataMigration, status: 'completed', migrationId, counts, lastCompletedAt: completedAt, dualWriteStatus: 'ready', validation: null, lastError: '' };
+                        this.v2MirrorFingerprints = {};
+                        this.saveV2MirrorFingerprints();
                         this.recordAudit('ترحيل Firestore V2', `اكتملت كتابة ${operations.length} وثيقة في المخطط الجديد دون حذف المصدر القديم.`);
                         alert('اكتمل إنشاء نسخة V2. يستمر التطبيق بالقراءة من المخطط القديم لحين مراجعة تقرير المطابقة واعتماد تحويل القراءة.');
                     } catch (error) {
@@ -2029,6 +2135,40 @@
                     this.auditLog = [entry, ...(this.auditLog || [])].slice(0, 250);
                     this.persistState();
                     this.queueCloudSync();
+                    this.queueV2AuditEntry(entry);
+                },
+                queueV2AuditEntry(entry) {
+                    if (!entry || this.dataMigration?.status !== 'completed' || !firestoreDB || !navigator.onLine || !this.cloudAuthReady) return;
+                    this.getV2Collection('auditLogs').doc(this.safeFirestoreId(entry.id, `audit-${Date.now()}`)).set(this.sanitizeForFirestore({
+                        ...entry,
+                        schemaVersion: 2,
+                        migrationId: this.dataMigration.migrationId,
+                        mirroredAt: new Date().toISOString()
+                    }), { merge: true }).catch(error => {
+                        console.warn('سيعاد تضمين سجل التدقيق في مزامنة V2 التالية:', error);
+                        this.queueV2MirroredChanges();
+                    });
+                },
+                createArchiveManifest(recordType, records, reason) {
+                    const manifest = {
+                        id: `ARCH-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+                        recordType,
+                        status: 'archived',
+                        reason,
+                        recordIds: (records || []).map(record => String(record?.id || '')).filter(Boolean),
+                        count: (records || []).length,
+                        archivedAt: new Date().toISOString(),
+                        archivedBy: this.currentUser?.id || 'admin',
+                        reversible: true
+                    };
+                    this.archiveManifests = [manifest, ...(this.archiveManifests || [])].slice(0, 250);
+                    return manifest;
+                },
+                markArchiveRecordRestored(recordType, recordId) {
+                    this.archiveManifests = (this.archiveManifests || []).map(manifest => {
+                        if (manifest.recordType !== recordType || !manifest.recordIds?.includes(String(recordId))) return manifest;
+                        return { ...manifest, status: 'partially_restored', restoredAt: new Date().toISOString(), restoredBy: this.currentUser?.id || 'admin' };
+                    });
                 },
                 registerAuditActivityListeners() {
                     if (this._activityListenersRegistered) return;
@@ -2073,7 +2213,7 @@
                     usersWriteInFlight: false,
                 usersLocalChangesPending: false,
                 usersChangeSequence: 0,
-                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoUrl', 'clinicLogoStoragePath', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'diagnosesMasterList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringPrescriptionLists', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'idleLockEnabled', 'idleLockMinutes', 'dataMigration'],
+                persistentKeys: ['patients', 'waitingQueue', 'appointments', 'invoices', 'prescriptions', 'clinics', 'doctorInfo', 'clinicLogoUrl', 'clinicLogoStoragePath', 'visitTypePrices', 'symptomsList', 'chronicDiseasesList', 'medicinesMasterList', 'expenses', 'expenseCategories', 'labTestsMasterList', 'radiologyMasterList', 'vitalSignsMasterList', 'recordFormSections', 'syncConflicts', 'recurringPrescriptionLists', 'recurringNotesList', 'recurringMedicinesList', 'auditLog', 'archiveManifests', 'idleLockEnabled', 'idleLockMinutes', 'dataMigration'],
 
                 loadPersistedState() {
                     try {
@@ -2742,6 +2882,7 @@
                     const archivedAt = new Date().toISOString();
                     const eligibleIds = new Set(eligible.map(item => String(item.id)));
                     this.appointments = (this.appointments || []).map(item => eligibleIds.has(String(item.id)) ? { ...item, archivedAt, archivedBy: this.currentUser?.id || 'admin', archiveReason: 'completed_or_cancelled_older_than_six_months' } : item);
+                    this.createArchiveManifest('appointments', eligible, 'completed_or_cancelled_older_than_six_months');
                     this.recordAudit('أرشفة مواعيد', `تمت أرشفة عرض ${eligible.length} موعداً؛ السجل محفوظ ويمكن استعادته.`);
                     this.persistState();
                     this.queueCloudSync();
@@ -2754,6 +2895,7 @@
                     appointment.archivedAt = null;
                     appointment.archivedBy = null;
                     appointment.archiveReason = null;
+                    this.markArchiveRecordRestored('appointments', id);
                     this.recordAudit('استعادة موعد مؤرشف', appointment.patientName || String(id));
                     this.persistState();
                     this.queueCloudSync();
@@ -2770,6 +2912,7 @@
                     const ids = new Set(eligible.map(item => String(item.id)));
                     const archivedAt = new Date().toISOString();
                     this.waitingQueue = (this.waitingQueue || []).map(item => ids.has(String(item.id)) ? { ...item, archivedAt, archivedBy: this.currentUser?.id || 'admin', archiveReason: 'inactive_older_than_thirty_days' } : item);
+                    this.createArchiveManifest('waitingQueue', eligible, 'inactive_older_than_thirty_days');
                     this.recordAudit('أرشفة قائمة الانتظار', `تمت أرشفة عرض ${eligible.length} عنصراً غير نشط دون حذف.`);
                     this.persistState();
                     this.queueCloudSync();
@@ -6272,8 +6415,8 @@
                             <div x-show="currentView === 'settings' && currentUser?.role === 'admin'" class="bg-white dark:bg-slate-900 p-5 lg:p-6 rounded-2xl border border-violet-200 dark:border-violet-900/70 shadow-sm space-y-4">
                                 <div class="flex items-start gap-3"><span class="w-10 h-10 shrink-0 rounded-xl bg-violet-50 dark:bg-violet-950/40 text-violet-700 dark:text-violet-300 flex items-center justify-center"><i data-lucide="database-backup" class="w-5 h-5"></i></span><div><h3 class="font-bold text-slate-800 dark:text-white">ترحيل قاعدة Firebase وأرشفة العرض</h3><p class="text-xs leading-5 text-slate-600 dark:text-slate-300 mt-1">ينشئ الترحيل نسخة مستقلة قابلة للمراجعة ولا يحذف الوثيقة القديمة. لا تتحول القراءة إلى المخطط الجديد تلقائياً.</p></div></div>
                                 <div class="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center"><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">الحالة</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="dataMigrationStatusLabel"></p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">المرضى</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="dataMigration.counts?.patients ?? (patients || []).length"></p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">الزيارات</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="dataMigration.counts?.visits ?? getMigrationCounts().visits"></p></div><div class="rounded-xl bg-slate-50 dark:bg-slate-800 p-2"><p class="text-[10px] text-slate-500">المواعيد المؤرشفة</p><p class="text-xs font-bold text-slate-800 dark:text-white" x-text="archivedAppointmentCount"></p></div></div>
-                                <div class="flex flex-wrap gap-2"><button type="button" @click="prepareV2MigrationPreview()" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-violet-600 hover:bg-violet-700 text-white">معاينة الترحيل</button><button type="button" @click="runV2Migration()" :disabled="dataMigration.status === 'running'" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white disabled:opacity-50">إنشاء نسخة V2 للمراجعة</button><button type="button" @click="archiveEligibleAppointments()" :disabled="appointmentArchiveBusy" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-200 disabled:opacity-50">أرشفة المواعيد القديمة</button><button type="button" @click="archiveStaleWaitingQueue()" :disabled="waitingQueueArchiveBusy" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50">أرشفة قائمة الانتظار القديمة</button></div>
-                                <p class="text-[11px] leading-5 text-slate-500 dark:text-slate-400" x-text="dataMigration.lastError ? ('آخر ملاحظة: ' + dataMigration.lastError) : 'الأرشفة تخفي السجلات من العرض التشغيلي فقط. المرضى والزيارات والروشتات والفواتير لا تُحذف تلقائياً.'"></p>
+                                <div class="flex flex-wrap gap-2"><button type="button" @click="prepareV2MigrationPreview()" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-violet-600 hover:bg-violet-700 text-white">معاينة الترحيل</button><button type="button" @click="runV2Migration()" :disabled="dataMigration.status === 'running'" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-900 text-white disabled:opacity-50">إنشاء نسخة V2 للمراجعة</button><button type="button" @click="verifyV2MigrationConsistency()" :disabled="dataMigration.status === 'running' || !dataMigration.migrationId" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50">التحقق من المطابقة</button><button type="button" @click="archiveEligibleAppointments()" :disabled="appointmentArchiveBusy" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-amber-100 hover:bg-amber-200 dark:bg-amber-900/30 dark:hover:bg-amber-900/50 text-amber-800 dark:text-amber-200 disabled:opacity-50">أرشفة المواعيد القديمة</button><button type="button" @click="archiveStaleWaitingQueue()" :disabled="waitingQueueArchiveBusy" class="px-4 py-2.5 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 disabled:opacity-50">أرشفة قائمة الانتظار القديمة</button></div>
+                                <p class="text-[11px] leading-5 text-slate-500 dark:text-slate-400" x-text="dataMigration.lastError ? ('آخر ملاحظة: ' + dataMigration.lastError) : ('الكتابة المزدوجة: ' + (dataMigration.dualWriteStatus || 'غير مفعلة') + ' — الأرشفة تخفي السجلات من العرض التشغيلي فقط؛ ولا تُحذف السجلات الطبية تلقائياً.')"></p>
                             </div>
                             <div x-show="currentView === 'prescriptionSettings'" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-6">
                                 <h3 class="text-lg font-bold text-slate-800 dark:text-white border-b border-slate-100 dark:border-slate-800 pb-4">بيانات الطبيب المعالج والعنوان للروشتة</h3>
@@ -7352,7 +7495,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.0', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.1', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

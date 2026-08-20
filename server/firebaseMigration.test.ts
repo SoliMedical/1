@@ -25,10 +25,35 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain('legacyDocumentRetained: true');
   });
 
+  it('يشمل سجلات التدقيق وبيانات الأرشفة المستقلة ضمن نسخة V2', () => {
+    expect(indexHtml).toContain("add('auditLogs', auditId");
+    expect(indexHtml).toContain("add('archiveManifests', archiveId");
+    expect(indexHtml).toMatch(/persistentKeys:\s*\[[^\]]*'auditLog'[^\]]*'archiveManifests'/);
+    expect(indexHtml).toContain('createArchiveManifest(');
+    expect(indexHtml).toContain('markArchiveRecordRestored(');
+  });
+
   it('يمنع تشغيل الترحيل دون اتصال ويبقي قراءة المخطط القديم قائمة بعد النسخ', () => {
     expect(indexHtml).toContain('!navigator.onLine || !(await this.waitForCloudAuthReady())');
     expect(indexHtml).toContain('يستمر التطبيق بالقراءة من المخطط القديم');
     expect(indexHtml).toContain('لم تُحذف البيانات القديمة');
+  });
+
+  it('يستخدم كتابة مزدوجة مؤجلة بعد نجاح المصدر القديم ولا يحول القراءة تلقائياً', () => {
+    expect(indexHtml).toContain('this.queueV2MirroredChanges();');
+    expect(indexHtml).toContain('async flushV2MirroredChanges()');
+    expect(indexHtml).toContain("dualWriteStatus: 'pending_retry'");
+    expect(indexHtml).toContain('this.dataMigration?.status !== \'completed\'');
+    expect(indexHtml).toContain('!navigator.onLine || !(await this.waitForCloudAuthReady())');
+    expect(indexHtml).toContain('this.v2MirrorTimer = setTimeout(() => this.flushV2MirroredChanges(), 900)');
+    expect(indexHtml).toContain('تظل القراءة القديمة هي النشطة');
+  });
+
+  it('يوفر تقرير مطابقة بعد الترحيل قبل أي تحويل قراءة مستقبلي', () => {
+    expect(indexHtml).toContain('async verifyV2MigrationConsistency()');
+    expect(indexHtml).toContain("'auditLogs', 'archiveManifests'");
+    expect(indexHtml).toContain('validation.matches');
+    expect(indexHtml).toContain('التحقق من المطابقة');
   });
 });
 

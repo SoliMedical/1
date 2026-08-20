@@ -216,7 +216,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.0'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.1'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -237,8 +237,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.0', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v11');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.1', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v12');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('requestUrl.pathname.endsWith("/")');
     expect(sw).toContain('fetch(event.request)');
