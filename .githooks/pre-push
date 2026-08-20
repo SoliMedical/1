@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+set -eu
+
+remote_name="${1:-}"
+remote_url="${2:-}"
+
+if [ "$remote_name" != "user_github" ]; then
+  exit 0
+fi
+
+node scripts/release-guard.mjs --remote-name "$remote_name" --remote-url "$remote_url"

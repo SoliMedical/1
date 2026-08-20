@@ -11,6 +11,8 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "check:repository": "node scripts/check-repository.mjs",
+    "release:verify": "node scripts/release-guard.mjs",
+    "release:guard:install": "node scripts/install-release-guard.mjs",
     "db:push": "drizzle-kit generate && drizzle-kit migrate"
   },
   "dependencies": {
