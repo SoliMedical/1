@@ -23,7 +23,10 @@ export function createPublicationRow(entry) {
 
 export function updatePublicationLog(current, entry) {
   const marker = createPublicationMarker(entry);
-  if (current.includes(marker)) return { changed: false, content: current };
+  const versionMarker = `<!-- soli-publication:${entry.version}:`;
+  if (current.includes(marker) || current.includes(versionMarker)) {
+    return { changed: false, content: current };
+  }
 
   const content = current.endsWith("\n") ? current : `${current}\n`;
   return {
