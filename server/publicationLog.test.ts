@@ -29,4 +29,16 @@ describe("publication log", () => {
     expect(second.changed).toBe(false);
     expect(second.content).toBe(first.content);
   });
+
+  it("لا يكرر السجل عندما تأتي نقطة تحقق لاحقة بالإصدار نفسه", () => {
+    const first = updatePublicationLog("# سجل النشر\n", entry);
+    const laterCheckpoint = updatePublicationLog(first.content, {
+      ...entry,
+      commit: "8d116dbd772e2ad1c1b490c8b9c7f4189b67642b",
+      runUrl: "https://github.com/SoliMedical/1/actions/runs/32399270745",
+    });
+
+    expect(laterCheckpoint.changed).toBe(false);
+    expect(laterCheckpoint.content).toBe(first.content);
+  });
 });
