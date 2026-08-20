@@ -104,8 +104,10 @@ describe("لغة الواجهة والتباين", () => {
 
   it("يستبدل الأبيض الناصع بنهاري هادئ ويوضح القراءة على ليل أعمق", () => {
     expect(page).toContain('soli-interface-enhancements.css');
-    expect(interfaceStyles).toContain('--soli-day-canvas: #e8eef2');
-    expect(interfaceStyles).toContain('--soli-day-surface: #f4f7f8');
+    expect(interfaceStyles).toContain('--soli-day-canvas: #dfe7eb');
+    expect(interfaceStyles).toContain('--soli-day-surface: #edf2f3');
+    expect(interfaceStyles).toContain('background-color: #e7eef0 !important;');
+    expect(interfaceStyles).toContain('color: #17273a;');
     expect(interfaceStyles).toContain('--soli-night-canvas: #020711');
     expect(interfaceStyles).toContain('--soli-night-text: #f5f8fc');
     expect(interfaceStyles).toContain('html.dark .dark\\:text-white { color: #fbfdff !important; }');

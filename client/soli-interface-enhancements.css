@@ -1,8 +1,8 @@
 /* Soli Medical v1.5.4: calm light surfaces and deliberate high-contrast dark mode. */
 :root {
-    --soli-day-canvas: #e8eef2;
-    --soli-day-surface: #f4f7f8;
-    --soli-day-subtle: #eaf0f3;
+    --soli-day-canvas: #dfe7eb;
+    --soli-day-surface: #edf2f3;
+    --soli-day-subtle: #e2eaed;
     --soli-day-text: #17273a;
     --soli-night-canvas: #020711;
     --soli-night-surface: #0a1322;
@@ -31,7 +31,7 @@ html:not(.dark) .text-slate-500 { color: #405b72 !important; }
 html:not(.dark) input:not([type='checkbox']):not([type='radio']),
 html:not(.dark) textarea,
 html:not(.dark) select {
-    background-color: #eef3f5 !important;
+    background-color: #e7eef0 !important;
     color: #17273a;
     border-color: #b7c5cf !important;
 }

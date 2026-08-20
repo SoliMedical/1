@@ -70,7 +70,7 @@
         };
         const publicBookingMode = isPublicBookingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.5.4';
+        const SOLI_APP_VERSION = 'v1.5.5';
         const SOLI_APP_RELEASE = 'إضافة لغة عربية وإنجليزية وتحسين تباين الوضعين النهاري والليلي';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -311,6 +311,8 @@
                 syncRevision: 0,
                 localChangesPending: false,
                 localEditBaseRevision: 0,
+                doctorInfoEditing: false,
+                doctorInfoCloudSyncTimer: null,
                 showPassword: false,
 
                 // Local clinic protection tools.
@@ -774,6 +776,14 @@
                         printFooterEnabled: true,
                         ...(this.doctorInfo || {})
                     };
+                    // The discontinued booking QR setting is preserved in local data for
+                    // backwards compatibility, but it is never selected or rendered again.
+                    if (this.doctorInfo.qrMode === 'booking') {
+                        this.doctorInfo.qrMode = 'custom';
+                        if (!this.doctorInfo.alternateQrLink && this.doctorInfo.bookingLink) {
+                            this.doctorInfo.alternateQrLink = this.doctorInfo.bookingLink;
+                        }
+                    }
                     if (typeof this.clinicLogoDataUrl !== 'string') this.clinicLogoDataUrl = '';
                     this.invoices = (this.invoices || []).map(inv => {
                         const amount = Number(inv.amount || 0);
@@ -830,6 +840,10 @@
                                 this.syncChangeSequence = Number(this.syncChangeSequence || 0) + 1;
                             }
                             this.persistState();
+                            // Saving locally is immediate. While the doctor is actively
+                            // typing, defer the whole cloud snapshot so an older response
+                            // cannot re-render this field over the current keystroke.
+                            if (key === 'doctorInfo' && this.doctorInfoEditing) return;
                             this.queueCloudSync();
                         });
                     });
@@ -1100,24 +1114,33 @@
                                 this.persistState();
                             }
                             const remoteRevision = Number(remoteMeta.revision || 0);
-                            const hasForeignPendingConflict = this.localChangesPending &&
+                            const preservePendingLocalSnapshot = this.localChangesPending;
+                            const hasForeignPendingConflict = preservePendingLocalSnapshot &&
                                 remoteMeta.writerId && remoteMeta.writerId !== this.syncDeviceId &&
                                 remoteRevision > Number(this.localEditBaseRevision || 0);
-                            const localSnapshot = hasForeignPendingConflict ? this.getSyncDataSnapshot() : null;
+                            const localSnapshot = preservePendingLocalSnapshot ? this.getSyncDataSnapshot() : null;
                             this.applyingRemoteUpdate = true;
                             this.syncRevision = remoteRevision;
                             this.persistentKeys.forEach(key => {
-                                if (data[key] !== undefined) this[key] = data[key];
+                                // Local changes always win until their queued cloud write
+                                // completes. This prevents delayed remote snapshots from
+                                // erasing local fields or interrupting active text entry.
+                                if (preservePendingLocalSnapshot && localSnapshot?.[key] !== undefined) {
+                                    this[key] = localSnapshot[key];
+                                } else if (data[key] !== undefined) {
+                                    this[key] = data[key];
+                                }
                             });
                             this.persistState();
                             this.renderIcons();
-                            this.localChangesPending = false;
+                            this.localChangesPending = preservePendingLocalSnapshot;
                             this.localEditBaseRevision = remoteRevision;
                             this.$nextTick(() => {
                                 this.applyingRemoteUpdate = false;
                                 if (hasForeignPendingConflict) {
                                     this.recordSyncConflict(data, remoteMeta, 'وصل تعديل من جهاز آخر أثناء وجود تغييرات محلية لم تُرفع بعد؛ تم تسجيل تفاصيل التعارض.', localSnapshot);
                                 }
+                                if (preservePendingLocalSnapshot) this.queueCloudSync();
                             });
                         },
                         (err) => {
@@ -1216,13 +1239,13 @@
 
                 // Debounced push so rapid local edits (typing, checkbox toggles) don't spam Firestore.
                 queueCloudSync() {
-                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate || !firestoreDB) return;
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate || this.doctorInfoEditing || !firestoreDB) return;
                     clearTimeout(this.cloudSyncTimer);
                     this.cloudSyncTimer = setTimeout(() => this.pushStateToCloud(), 600);
                 },
 
                 pushStateToCloud() {
-                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || !firestoreDB || this.cloudWriteInFlight) return;
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.doctorInfoEditing || !firestoreDB || this.cloudWriteInFlight) return;
                     const dataToSave = {};
                     this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
                     const docRef = firestoreDB.doc(this.cloudDocPath);
@@ -3685,6 +3708,19 @@
                     else if (this.showPrescriptionPrintModal) this.$nextTick(() => this.refreshPrescriptionQrCode());
                     // لا تعرض رسالة نجاح علوية عند حفظ إعدادات الطباعة.
                 },
+                beginDoctorInfoEditing() {
+                    this.doctorInfoEditing = true;
+                    clearTimeout(this.doctorInfoCloudSyncTimer);
+                },
+                finishDoctorInfoEditing() {
+                    if (!this.doctorInfoEditing) return;
+                    this.doctorInfoEditing = false;
+                    // The value is already stored locally by the state watcher. Queue one
+                    // calm cloud update after blur so typing never competes with sync.
+                    this.persistState();
+                    clearTimeout(this.doctorInfoCloudSyncTimer);
+                    this.doctorInfoCloudSyncTimer = setTimeout(() => this.queueCloudSync(), 300);
+                },
                 refreshPrintSettingsPreview() {
                     if (this.selectedPrescriptionForPrint) this.updatePrescriptionPrintMode();
                     else this.$nextTick(() => this.refreshPrescriptionQrCode());
@@ -3725,10 +3761,6 @@
                 getClinicQrLink() {
                     const info = this.doctorInfo || {};
                     const mode = info.qrMode || 'whatsapp';
-                    if (mode === 'booking') {
-                        const bookingLink = String(info.bookingLink || '').trim() || this.getBookingShareUrl();
-                        return /^https?:\/\//i.test(bookingLink) ? bookingLink : `https://${bookingLink}`;
-                    }
                     if (mode === 'custom') {
                         const alternateLink = String(info.alternateQrLink || '').trim();
                         if (!alternateLink) return '';
@@ -5820,7 +5852,7 @@
                                 <div class="grid grid-cols-2 gap-3 md:gap-6">
                                     <div>
                                         <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">اسم الطبيب</label>
-                                        <input type="text" x-model="doctorInfo.fullName" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
+                                        <input type="text" x-model="doctorInfo.fullName" @focus="beginDoctorInfoEditing()" @blur="finishDoctorInfoEditing()" @keydown.enter.prevent="$event.target.blur()" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
                                     </div>
                                     <div>
                                         <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">التخصص المكتوب في أعلى الروشتة</label>
@@ -5858,29 +5890,27 @@
                                 </div>
                                 <div class="border-t border-slate-100 dark:border-slate-800 pt-6 space-y-4">
                                     <div>
-                                        <h4 class="text-sm font-bold text-slate-800 dark:text-white">رابط الحجز والتواصل داخل QR</h4>
-                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">اختر المحتوى الذي يفتحه رمز QR المطبوع: واتساب أو صفحة الحجز أو رابط خارجي بديل. لا يحتوي الرمز على بيانات طبية.</p>
+                                        <h4 class="text-sm font-bold text-slate-800 dark:text-white">رابط التواصل داخل QR</h4>
+                                        <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">اختر المحتوى الذي يفتحه رمز QR المطبوع: محادثة واتساب برقم الطبيب أو رابط خارجي بديل مستقبلي. لا يحتوي الرمز على بيانات طبية.</p>
                                     </div>
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <div>
-                                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">نوع الرابط</label>
-                                            <select x-model="doctorInfo.qrMode" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
-                                                <option value="whatsapp">محادثة واتساب</option>
-                                                <option value="booking">صفحة حجز المواعيد</option>
-                                                <option value="custom">رابط بديل مستقبلي</option>
-                                            </select>
-                                        </div>
-                                        <div>
-                                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" x-text="doctorInfo.qrMode === 'whatsapp' ? 'رقم واتساب الاستقبال (اختياري)' : (doctorInfo.qrMode === 'booking' ? 'رابط صفحة الحجز المعتمد' : 'الرابط البديل الذي سيفتحه QR')"></label>
+                                                <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">نوع الرابط</label>
+                                                <select x-model="doctorInfo.qrMode" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm">
+                                                    <option value="whatsapp">محادثة واتساب</option>
+                                                    <option value="custom">رابط بديل مستقبلي</option>
+                                                </select>
+                                            </div>
+                                            <div>
+                                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2" x-text="doctorInfo.qrMode === 'whatsapp' ? 'رقم واتساب الطبيب أو الاستقبال (اختياري)' : 'الرابط البديل الذي سيفتحه QR'"></label>
                                             <input x-show="doctorInfo.qrMode === 'whatsapp'" type="tel" inputmode="numeric" autocomplete="tel-national" x-model="doctorInfo.qrContact" pattern="(?:01(?:0|1|2|5)[0-9]{8}|(?:\\+20|0020|20)1(?:0|1|2|5)[0-9]{8})" title="أدخل رقم محمول مصري صحيحاً، مثل: 01012345678" placeholder="مثال: 01012345678 أو اتركه فارغاً" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm" dir="ltr">
-                                            <input x-show="doctorInfo.qrMode === 'booking'" type="url" inputmode="url" autocomplete="url" x-model="doctorInfo.bookingLink" :placeholder="getBookingShareUrl()" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm" dir="ltr">
                                             <input x-show="doctorInfo.qrMode === 'custom'" type="url" inputmode="url" autocomplete="url" x-model="doctorInfo.alternateQrLink" placeholder="https://example.com/contact" class="w-full px-4 py-2 border rounded-xl bg-slate-50 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-800 dark:text-white text-sm" dir="ltr">
                                         </div>
                                     </div>
                                     <div class="rounded-xl bg-slate-50 dark:bg-slate-800/70 border border-slate-100 dark:border-slate-700 px-3 py-2.5 text-xs">
-                                        <p class="font-bold text-slate-700 dark:text-slate-200">رابط صفحة الحجز الافتراضي</p>
-                                        <p class="mt-1 text-slate-500 dark:text-slate-400 break-all" dir="ltr" x-text="doctorInfo.bookingLink || getBookingShareUrl()"></p>
-                                        <p class="mt-2 text-slate-500 dark:text-slate-400" x-text="getClinicQrLink() ? 'الرابط الذي سيفتحه QR الآن: ' + getClinicQrLink() : 'أدخل الرابط البديل حتى يظهر QR صالح.'"></p>
+                                        <p class="font-bold text-slate-700 dark:text-slate-200">وجهة QR الحالية</p>
+                                        <p class="mt-1 text-slate-500 dark:text-slate-400 break-all" dir="ltr" x-text="getClinicQrLink() || '—'"></p>
+                                        <p class="mt-2 text-slate-500 dark:text-slate-400" x-text="getClinicQrLink() ? 'الرابط الذي سيفتحه QR الآن.' : 'أدخل رقم واتساب صحيحاً أو رابطاً بديلاً حتى يظهر QR صالح.'"></p>
                                     </div>
                                 </div>
                                 <!-- Soli Medical print settings: explicit A5 controls are kept beside the doctor data so they sync together. -->
@@ -6892,7 +6922,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.5.4', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.5.5', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

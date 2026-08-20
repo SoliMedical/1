@@ -51,11 +51,14 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain("{ key: 'pending_confirmation', label: 'بانتظار التأكيد'");
   });
 
-  it("يوفر رابط الحجز داخل إعدادات الروشتة ويدعم رابط QR بديلاً", () => {
-    expect(page).toContain("getBookingShareUrl()");
+  it("يقصر QR الروشتة على واتساب أو رابط بديل ولا يعرض صفحة حجز المواعيد", () => {
     expect(page).toContain("bookingLink: ''");
     expect(page).toContain("alternateQrLink: ''");
+    expect(page).toContain('<option value="whatsapp">محادثة واتساب</option>');
     expect(page).toContain('<option value="custom">رابط بديل مستقبلي</option>');
+    expect(page).not.toContain('<option value="booking">صفحة حجز المواعيد</option>');
+    expect(page).toContain('if (this.doctorInfo.qrMode === \'booking\')');
+    expect(page).toContain("this.doctorInfo.qrMode = 'custom'");
     expect(page).not.toContain('id="appointmentBookingQrCode"');
     expect(page).toContain('id="appointmentPhoneInput"');
     expect(page).toContain('autocomplete="tel-national"');
@@ -212,7 +215,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.5.4'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.5.5'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -233,8 +236,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.5.4', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v9');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.5.5', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v10');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('requestUrl.pathname.endsWith("/")');
     expect(sw).toContain('fetch(event.request)');
