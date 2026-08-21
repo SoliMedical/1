@@ -80,8 +80,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.6.8';
-        const SOLI_APP_RELEASE = 'حاجز نشر رسمي مستقل يمنع الدفع إلى مستودع غير معتمد';
+        const SOLI_APP_VERSION = 'v1.7.0';
+        const SOLI_APP_RELEASE = 'إعادة ضبط تجريبية صريحة ومحمية لمخطط Firestore V2';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -318,6 +318,7 @@
                 showCloudResetModal: false,
                 cloudResetPasswordInput: '',
                 cloudResetConfirmation: '',
+                cloudResetDemoAcknowledgement: '',
                 cloudResetBusy: false,
                 cloudResetAcknowledgedToken: '',
                 syncConflicts: [],
@@ -1020,7 +1021,7 @@
                     });
                 },
                 getCloudSyncSnapshot() {
-                    if (this.isV2OperationalSyncActive()) return this.getLegacyOperationalSnapshot();
+                    if (this.isOperationalDocumentSyncActive()) return this.getLegacyOperationalSnapshot();
                     const snapshot = {};
                     this.persistentKeys.forEach(key => {
                         snapshot[key] = key === 'users' ? this.getCloudSafeUsers(this.users) : this[key];
@@ -1239,7 +1240,7 @@
                             const localSnapshot = preservePendingLocalSnapshot ? this.getSyncDataSnapshot() : null;
                             const verifiedRemoteMigration = data?.dataMigration?.status === 'completed' &&
                                 Boolean(data?.dataMigration?.migrationId);
-                            const operationalV2 = verifiedRemoteMigration || this.isV2OperationalSyncActive();
+                            const operationalDocumentStore = verifiedRemoteMigration || this.isOperationalDocumentSyncActive();
                             this.applyingRemoteUpdate = true;
                             this.syncRevision = remoteRevision;
                             this.persistentKeys.forEach(key => {
@@ -1250,7 +1251,7 @@
                                 // Once the administrative verification has completed, medical
                                 // and configuration records are hydrated from their V2 documents.
                                 // The old document is preserved untouched as a recovery copy.
-                                } else if (operationalV2 && this.isV2OperationalKey(key)) {
+                                } else if (operationalDocumentStore && this.isV2OperationalKey(key)) {
                                     return;
                                 // Local changes always win until their queued cloud write
                                 // completes. This prevents delayed remote snapshots from
@@ -1273,7 +1274,7 @@
                                 if (hasForeignPendingConflict) {
                                     this.recordSyncConflict(data, remoteMeta, 'وصل تعديل من جهاز آخر أثناء وجود تغييرات محلية لم تُرفع بعد؛ تم تسجيل تفاصيل التعارض.', localSnapshot);
                                 }
-                                if (operationalV2) this.startV2OperationalSync();
+                                if (operationalDocumentStore) this.startV2OperationalSync();
                                 if (preservePendingLocalSnapshot) this.queueCloudSync();
                             });
                         },
@@ -1379,13 +1380,13 @@
                     if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate || this.doctorInfoEditing || !firestoreDB) return;
                     clearTimeout(this.cloudSyncTimer);
                     this.cloudSyncTimer = setTimeout(() => {
-                        if (this.isV2OperationalSyncActive()) this.pushStateToV2();
+                        if (this.isOperationalDocumentSyncActive()) this.pushStateToV2();
                         else this.pushStateToCloud();
                     }, 600);
                 },
 
                 pushStateToCloud() {
-                    if (this.isV2OperationalSyncActive()) return this.pushStateToV2();
+                    if (this.isOperationalDocumentSyncActive()) return this.pushStateToV2();
                     if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.doctorInfoEditing || !firestoreDB || this.cloudWriteInFlight) return;
                     const dataToSave = this.getCloudSyncSnapshot();
                     const docRef = firestoreDB.doc(this.cloudDocPath);
@@ -1462,6 +1463,29 @@
                 },
                 getV2Collection(name) {
                     return this.getV2ClinicRef().collection(name);
+                },
+                getTopLevelCollection(name) {
+                    if (!firestoreDB) throw new Error('Firestore غير متاح حالياً.');
+                    return firestoreDB.collection(String(name));
+                },
+                getTopLevelDocumentId(name, sourceDocumentId) {
+                    const sourceId = this.safeFirestoreId(sourceDocumentId, `${name}-record`);
+                    return this.safeFirestoreId(`${this.cloudClinicId}__${sourceId}`, `${name}-${sourceId}`);
+                },
+                getTopLevelMigrationState(migration = this.dataMigration) {
+                    return migration?.topLevelCollections || {};
+                },
+                isTopLevelOperationalSyncActive(migration = this.dataMigration) {
+                    const topLevel = this.getTopLevelMigrationState(migration);
+                    return Boolean(topLevel?.status === 'completed' && topLevel?.migrationId && topLevel?.dualWriteEnabled !== false);
+                },
+                isOperationalDocumentSyncActive(migration = this.dataMigration) {
+                    return this.isTopLevelOperationalSyncActive(migration) || this.isV2OperationalSyncActive(migration);
+                },
+                getOperationalCollectionQuery(name) {
+                    return this.isTopLevelOperationalSyncActive()
+                        ? this.getTopLevelCollection(name).where('clinicId', '==', String(this.cloudClinicId))
+                        : this.getV2Collection(name);
                 },
                 sanitizeForFirestore(value) {
                     if (value === undefined) return null;
@@ -1562,6 +1586,24 @@
                     });
                     return operations;
                 },
+                buildTopLevelMigrationOperations(state, migrationId, migratedAt = this.getTopLevelMigrationState().lastCompletedAt || new Date().toISOString()) {
+                    const sourceMigrationId = this.dataMigration?.migrationId || 'legacy-v2-recovery';
+                    return this.buildV2MigrationOperations(state, sourceMigrationId, migratedAt).map(operation => {
+                        const collection = operation.ref.parent.id;
+                        const sourceDocumentId = operation.ref.id;
+                        return {
+                            ref: this.getTopLevelCollection(collection).doc(this.getTopLevelDocumentId(collection, sourceDocumentId)),
+                            data: this.sanitizeForFirestore({
+                                ...operation.data,
+                                clinicId: String(this.cloudClinicId),
+                                sourceDocumentId,
+                                schemaVersion: 3,
+                                topLevelMigrationId: migrationId,
+                                topLevelMigratedAt: migratedAt
+                            })
+                        };
+                    });
+                },
                 getV2MirrorFingerprint(value) {
                     const serialized = JSON.stringify(this.sanitizeForFirestore(value));
                     let hash = 2166136261;
@@ -1572,7 +1614,8 @@
                     return `${serialized.length}:${hash >>> 0}`;
                 },
                 getV2MirrorStorageKey() {
-                    return `soliMedicalV2MirrorFingerprints_v1:${this.cloudClinicId}`;
+                    const schema = this.isTopLevelOperationalSyncActive() ? 'v3-top-level' : 'v2-nested';
+                    return `soliMedicalDocumentMirrorFingerprints_v1:${schema}:${this.cloudClinicId}`;
                 },
                 loadV2MirrorFingerprints() {
                     try {
@@ -1595,7 +1638,7 @@
                     return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests', 'settings', 'catalogs'];
                 },
                 stripV2Metadata(value) {
-                    const { schemaVersion, migrationId, migratedAt, legacyId, updatedAt, ...record } = value || {};
+                    const { schemaVersion, migrationId, migratedAt, legacyId, updatedAt, clinicId, sourceDocumentId, topLevelMigrationId, topLevelMigratedAt, ...record } = value || {};
                     return record;
                 },
                 hydrateV2StateFromCollectionCache() {
@@ -1611,12 +1654,14 @@
                     });
                     const patients = patientDocs.map(doc => {
                         const profile = this.stripV2Metadata(doc);
-                        const id = profile.id ?? profile.legacyId ?? doc._documentId;
-                        return { ...profile, id, records: visitsByPatient.get(String(doc._documentId || id)) || [] };
+                        const sourceDocumentId = doc.sourceDocumentId || doc._sourceDocumentId || doc._documentId;
+                        const id = profile.id ?? profile.legacyId ?? sourceDocumentId;
+                        return { ...profile, id, records: visitsByPatient.get(String(sourceDocumentId || id)) || [] };
                     });
-                    const setting = (cache.settings || []).find(item => item._documentId === 'general');
-                    const clinicalCatalog = (cache.catalogs || []).find(item => item._documentId === 'clinical');
-                    const templatesCatalog = (cache.catalogs || []).find(item => item._documentId === 'templates');
+                    const isSourceDocument = (item, id) => (item?.sourceDocumentId || item?._sourceDocumentId || item?._documentId) === id;
+                    const setting = (cache.settings || []).find(item => isSourceDocument(item, 'general'));
+                    const clinicalCatalog = (cache.catalogs || []).find(item => isSourceDocument(item, 'clinical'));
+                    const templatesCatalog = (cache.catalogs || []).find(item => isSourceDocument(item, 'templates'));
                     const general = this.stripV2Metadata(setting);
                     const clinical = this.stripV2Metadata(clinicalCatalog);
                     const templates = this.stripV2Metadata(templatesCatalog);
@@ -1654,14 +1699,14 @@
                     this.v2OperationalInitialLoadInFlight = true;
                     try {
                         const names = this.getV2OperationalCollectionNames();
-                        const snapshots = await Promise.all(names.map(name => this.getV2Collection(name).get()));
+                        const snapshots = await Promise.all(names.map(name => this.getOperationalCollectionQuery(name).get()));
                         this.v2OperationalCollectionCache = snapshots.reduce((cache, snapshot, index) => {
                             cache[names[index]] = snapshot.docs.map(doc => ({ ...doc.data(), _documentId: doc.id }));
                             return cache;
                         }, {});
                         this.v2OperationalReady = true;
                         this.applyV2RemoteState('التحميل الأول من مخطط V2');
-                        this.v2OperationalUnsubscribers = names.map(name => this.getV2Collection(name).onSnapshot(
+                        this.v2OperationalUnsubscribers = names.map(name => this.getOperationalCollectionQuery(name).onSnapshot(
                             { includeMetadataChanges: true },
                             snapshot => {
                                 if (snapshot.metadata.hasPendingWrites) return;
@@ -1701,7 +1746,10 @@
                     this.v2MirrorInFlight = true;
                     try {
                         const state = this.getSyncDataSnapshot();
-                        const operations = this.buildV2MigrationOperations(state, this.dataMigration.migrationId, this.dataMigration.lastCompletedAt);
+                    const topLevel = this.getTopLevelMigrationState();
+                    const operations = this.isTopLevelOperationalSyncActive()
+                        ? this.buildTopLevelMigrationOperations(state, topLevel.migrationId, topLevel.lastCompletedAt)
+                        : this.buildV2MigrationOperations(state, this.dataMigration.migrationId, this.dataMigration.lastCompletedAt);
                         const changed = operations.filter(operation => {
                             const key = operation.ref.path;
                             const fingerprint = this.getV2MirrorFingerprint(operation.data);
@@ -1717,12 +1765,11 @@
                         this.saveV2MirrorFingerprints();
                         const wasApplyingRemoteUpdate = this.applyingRemoteUpdate;
                         this.applyingRemoteUpdate = true;
-                        this.dataMigration = {
-                            ...this.dataMigration,
-                            dualWriteStatus: changed.length ? 'synced' : 'up_to_date',
-                            lastDualWriteAt: new Date().toISOString(),
-                            lastError: ''
-                        };
+                        const statusKey = this.isTopLevelOperationalSyncActive() ? 'topLevelCollections' : null;
+                        const syncState = { dualWriteStatus: changed.length ? 'synced' : 'up_to_date', lastDualWriteAt: new Date().toISOString(), lastError: '' };
+                        this.dataMigration = statusKey
+                            ? { ...this.dataMigration, [statusKey]: { ...this.getTopLevelMigrationState(), ...syncState } }
+                            : { ...this.dataMigration, ...syncState };
                         this.persistState();
                         this.$nextTick(() => { this.applyingRemoteUpdate = wasApplyingRemoteUpdate; });
                         return { ok: true, changed: changed.length };
@@ -1730,7 +1777,11 @@
                         console.error('تعذرت الكتابة المزدوجة إلى Firestore V2:', error);
                         const wasApplyingRemoteUpdate = this.applyingRemoteUpdate;
                         this.applyingRemoteUpdate = true;
-                        this.dataMigration = { ...this.dataMigration, dualWriteStatus: 'pending_retry', lastError: `تعذرت مزامنة V2: ${String(error?.message || error)}` };
+                        const statusKey = this.isTopLevelOperationalSyncActive() ? 'topLevelCollections' : null;
+                        const syncState = { dualWriteStatus: 'pending_retry', lastError: `تعذرت مزامنة وثائق البيانات: ${String(error?.message || error)}` };
+                        this.dataMigration = statusKey
+                            ? { ...this.dataMigration, [statusKey]: { ...this.getTopLevelMigrationState(), ...syncState } }
+                            : { ...this.dataMigration, ...syncState };
                         this.persistState();
                         this.$nextTick(() => { this.applyingRemoteUpdate = wasApplyingRemoteUpdate; });
                         if (!operationalWrite) setTimeout(() => this.queueV2MirroredChanges(), 4000);
@@ -2190,6 +2241,7 @@
                     }
                     this.cloudResetPasswordInput = '';
                     this.cloudResetConfirmation = '';
+                    this.cloudResetDemoAcknowledgement = '';
                     this.showCloudResetModal = true;
                     this.$nextTick(() => this.renderIcons());
                 },
@@ -2203,6 +2255,10 @@
                         snapshot[key] = [];
                     });
                     return snapshot;
+                },
+
+                getDemoResetV2CollectionNames() {
+                    return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests'];
                 },
 
                 applyCloudResetSnapshot(snapshot, token) {
@@ -2231,11 +2287,15 @@
                         alert('الرقم السري للمدير غير صحيح.');
                         return;
                     }
+                    if (String(this.cloudResetDemoAcknowledgement || '').trim() !== 'بيانات تجريبية') {
+                        alert('هذه العملية محجوبة لحماية بيانات المرضى. اكتب «بيانات تجريبية» لتأكيد أن العيادة لا تحتوي بيانات حقيقية.');
+                        return;
+                    }
                     if (String(this.cloudResetConfirmation || '').trim() !== 'حذف') {
                         alert('اكتب كلمة «حذف» في خانة التأكيد قبل المتابعة.');
                         return;
                     }
-                    if (!confirm('تحذير نهائي: سيتم حذف المرضى والزيارات والوصفات والفواتير والمصروفات وقائمة الانتظار وسجل التعارضات من النسخة المحلية والسحابة، ثم تُفرغ على جميع الأجهزة المتصلة. ستبقى حسابات المستخدمين وإعدادات العيادة محفوظة. هل تريد المتابعة؟')) return;
+                    if (!confirm('تحذير نهائي للبيانات التجريبية فقط: سيتم حذف المرضى والزيارات والوصفات والفواتير والمصروفات وقائمة الانتظار وسجل التعارضات من النسخة المحلية والسحابة، ثم تُفرغ على جميع الأجهزة المتصلة. ستبقى حسابات المستخدمين وإعدادات العيادة محفوظة. هل تؤكد أن هذه بيانات تجريبية فقط؟')) return;
 
                     this.cloudResetBusy = true;
                     const token = `RESET-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -2244,26 +2304,36 @@
                         token,
                         requestedAt: new Date().toISOString(),
                         requestedBy: this.currentUser?.fullName || 'المدير',
-                        scope: 'clinical-and-financial-records'
+                        scope: 'explicit-demo-clinical-and-financial-records',
+                        demoDataAcknowledged: true
                     };
                     try {
                         if (this.cloudSyncEnabled && this.cloudAuthReady && firestoreDB) {
                             const docRef = firestoreDB.doc(this.cloudDocPath);
-                            const result = await firestoreDB.runTransaction(async transaction => {
-                                const snap = await transaction.get(docRef);
-                                const remoteMeta = snap.exists ? (snap.data()._syncMeta || {}) : {};
-                                const revision = Number(remoteMeta.revision || this.syncRevision || 0) + 1;
-                                const syncMeta = {
-                                    revision,
-                                    writerId: this.syncDeviceId,
-                                    writerName: this.currentUser?.fullName || 'المدير',
-                                    updatedAt: new Date().toISOString(),
-                                    operation: 'cloud-reset'
-                                };
-                                transaction.set(docRef, { ...resetData, _syncMeta: syncMeta }, { merge: false });
-                                return { revision };
-                            });
-                            resetData._syncMeta = { ...resetData._syncMeta, revision: result.revision };
+                            const isV2Operational = this.isV2OperationalSyncActive();
+                            const [legacySnapshot, ...v2Snapshots] = await Promise.all([
+                                docRef.get({ source: 'server' }),
+                                ...(isV2Operational ? this.getDemoResetV2CollectionNames().map(name => this.getV2Collection(name).get()) : [])
+                            ]);
+                            const v2Documents = v2Snapshots.flatMap(snapshot => snapshot.docs);
+                            if (v2Documents.length > 400) {
+                                throw new Error('demo-reset-document-limit');
+                            }
+                            const remoteMeta = legacySnapshot.exists ? (legacySnapshot.data()._syncMeta || {}) : {};
+                            const revision = Number(remoteMeta.revision || this.syncRevision || 0) + 1;
+                            resetData._syncMeta = {
+                                revision,
+                                writerId: this.syncDeviceId,
+                                writerName: this.currentUser?.fullName || 'المدير',
+                                updatedAt: new Date().toISOString(),
+                                operation: 'explicit-demo-reset'
+                            };
+                            const batch = firestoreDB.batch();
+                            batch.set(docRef, resetData, { merge: false });
+                            v2Documents.forEach(document => batch.delete(document.ref));
+                            await batch.commit();
+                            this.v2MirrorFingerprints = {};
+                            this.saveV2MirrorFingerprints();
                             this.cloudStatus = 'online';
                         } else {
                             this.cloudStatus = 'offline';
@@ -2274,11 +2344,16 @@
                         this.showCloudResetModal = false;
                         this.cloudResetPasswordInput = '';
                         this.cloudResetConfirmation = '';
-                        alert('تم حذف السجلات الطبية والمالية من السحابة وتفريغها على الأجهزة المتصلة بنجاح.');
+                        this.cloudResetDemoAcknowledgement = '';
+                        alert('تم حذف السجلات التجريبية الطبية والمالية من السحابة وتفريغها على الأجهزة المتصلة بنجاح.');
                     } catch (error) {
                         console.error('تعذر تنفيذ إعادة الضبط السحابية:', error);
                         this.cloudStatus = 'offline';
-                        alert('تعذر تنفيذ الحذف السحابي. لم تُمسح البيانات المحلية؛ تحقق من الاتصال وقواعد Firestore ثم أعد المحاولة.');
+                        if (error?.message === 'demo-reset-document-limit') {
+                            alert('تم إيقاف الإجراء لأن عدد وثائق V2 أكبر من الحد الآمن لإعادة ضبط بيانات تجريبية من زر واحد. لم تُمسح أي بيانات؛ نزّل نسخة احتياطية وراجع الخطة الإدارية أولاً.');
+                        } else {
+                            alert('تعذر تنفيذ الحذف السحابي. لم تُمسح البيانات المحلية؛ تحقق من الاتصال وقواعد Firestore ثم أعد المحاولة.');
+                        }
                     } finally {
                         this.cloudResetBusy = false;
                     }
@@ -7656,7 +7731,7 @@
                                 <p class="text-xs text-red-600 dark:text-red-400">إعادة الضبط المحلية تمسح نسخة هذا المتصفح فقط. أما إعادة الضبط السحابية فتحذف السجلات الطبية والمالية من Firestore وتبث التفريغ إلى جميع الأجهزة المتصلة، مع إبقاء حسابات المستخدمين وإعدادات العيادة.</p>
                                 <div class="flex flex-wrap gap-2">
                                     <button type="button" @click="resetLocalData()" class="bg-red-600 hover:bg-red-700 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow">إعادة ضبط هذا الجهاز</button>
-                                    <button type="button" @click="openCloudResetModal()" class="bg-red-950 hover:bg-black text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow inline-flex items-center gap-2"><i data-lucide="cloud-off" class="w-4 h-4"></i>حذف البيانات من السحابة وكل الأجهزة</button>
+                                    <button type="button" @click="openCloudResetModal()" class="bg-red-950 hover:bg-black text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow inline-flex items-center gap-2"><i data-lucide="cloud-off" class="w-4 h-4"></i>إعادة ضبط بيانات تجريبية من السحابة</button>
                                 </div>
                             </div>
                             </details>
@@ -7676,13 +7751,15 @@
                 <div class="flex items-start gap-3">
                     <div class="rounded-full bg-red-100 dark:bg-red-950/50 text-red-700 dark:text-red-300 p-2"><i data-lucide="triangle-alert" class="w-5 h-5"></i></div>
                     <div>
-                        <h3 id="cloud-reset-title" class="text-lg font-bold text-red-700 dark:text-red-300">تأكيد الحذف من السحابة وكل الأجهزة</h3>
-                        <p class="text-xs text-slate-600 dark:text-slate-300 mt-2 leading-6">هذا الإجراء نهائي للسجلات الطبية والمالية: المرضى، الزيارات، الوصفات، الفواتير، المصروفات، قائمة الانتظار، وسجل التعارضات. لا يمكن التراجع عنه من داخل النظام، لذلك أنشئ نسخة JSON احتياطية قبل المتابعة.</p>
+                        <h3 id="cloud-reset-title" class="text-lg font-bold text-red-700 dark:text-red-300">إعادة ضبط بيانات تجريبية من السحابة وكل الأجهزة</h3>
+                        <p class="text-xs text-slate-600 dark:text-slate-300 mt-2 leading-6">هذه نافذة للبيانات التجريبية المعروفة فقط، وليست لمسح بيانات المرضى الحقيقية. الإجراء نهائي للسجلات الطبية والمالية: المرضى، الزيارات، الوصفات، الفواتير، المصروفات، قائمة الانتظار، وسجل التعارضات. أنشئ نسخة JSON احتياطية قبل المتابعة.</p>
                     </div>
                 </div>
                 <div class="space-y-3">
                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-200">الرقم السري للمدير</label>
                     <input type="password" x-model="cloudResetPasswordInput" autocomplete="current-password" placeholder="اكتب الرقم السري للمدير" class="w-full px-3 py-2.5 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-slate-800 text-sm text-slate-900 dark:text-white">
+                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-200">اكتب العبارة <span class="text-red-600">بيانات تجريبية</span> لتأكيد أنها ليست بيانات مرضى حقيقية</label>
+                    <input type="text" x-model="cloudResetDemoAcknowledgement" autocomplete="off" placeholder="بيانات تجريبية" class="w-full px-3 py-2.5 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-slate-800 text-sm text-slate-900 dark:text-white">
                     <label class="block text-xs font-bold text-slate-700 dark:text-slate-200">اكتب كلمة <span class="text-red-600">حذف</span> للتأكيد</label>
                     <input type="text" x-model="cloudResetConfirmation" autocomplete="off" placeholder="حذف" class="w-full px-3 py-2.5 rounded-xl border border-red-200 dark:border-red-900 bg-red-50/50 dark:bg-slate-800 text-sm text-slate-900 dark:text-white">
                 </div>
@@ -8039,7 +8116,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.7', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.0', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 const projectRoot = resolve(import.meta.dirname, '..');
 const indexHtml = readFileSync(resolve(projectRoot, 'client/index.html'), 'utf8');
 const adminMigrationScript = readFileSync(resolve(projectRoot, 'scripts/migrate-firestore-v2.mjs'), 'utf8');
+const topLevelMigrationScript = readFileSync(resolve(projectRoot, 'scripts/migrate-firestore-top-level-v3.mjs'), 'utf8');
 
 describe('ترحيل Firebase V2 غير المدمر', () => {
   it('يوفر أداة إدارية للمعاينة الافتراضية والتنفيذ الصريح بلا اعتماد على تسجيل دخول التطبيق', () => {
@@ -49,17 +50,49 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain('لم تُحذف البيانات القديمة');
   });
 
-  it('يعتمد V2 تشغيلياً بعد تحقق المصدر القديم ويجعل الوثيقة القديمة بيانات وصفية فقط', () => {
+  it('يعتمد مخزن الوثائق التشغيلي بعد تحقق المصدر القديم ويجعل الوثيقة القديمة بيانات وصفية فقط', () => {
     expect(indexHtml).toContain('isV2OperationalSyncActive(migration = this.dataMigration)');
+    expect(indexHtml).toContain('isTopLevelOperationalSyncActive(migration = this.dataMigration)');
+    expect(indexHtml).toContain('isOperationalDocumentSyncActive(migration = this.dataMigration)');
     expect(indexHtml).toContain('async startV2OperationalSync()');
     expect(indexHtml).toContain('async pushStateToV2()');
-    expect(indexHtml).toContain('if (this.isV2OperationalSyncActive()) return this.getLegacyOperationalSnapshot();');
-    expect(indexHtml).toContain("if (this.isV2OperationalSyncActive()) this.pushStateToV2();");
+    expect(indexHtml).toContain('if (this.isOperationalDocumentSyncActive()) return this.getLegacyOperationalSnapshot();');
+    expect(indexHtml).toContain("if (this.isOperationalDocumentSyncActive()) this.pushStateToV2();");
     expect(indexHtml).toContain('hydrateV2StateFromCollectionCache()');
     expect(indexHtml).toContain("dualWriteStatus: 'pending_retry'");
     expect(indexHtml).toContain('this.dataMigration?.status !== \'completed\'');
     expect(indexHtml).toContain("return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests', 'settings', 'catalogs']");
     expect(indexHtml).toContain('this.stopV2OperationalSync();');
+  });
+
+  it('يوفر ترحيلاً مستقلاً غير مدمر إلى مجموعات المستوى الأعلى بعزل طبيب واحد لكل clinicId', () => {
+    expect(topLevelMigrationScript).toContain("target: 'top-level-collections'");
+    expect(topLevelMigrationScript).toContain("tenantModel: 'one-doctor-one-clinic'");
+    expect(topLevelMigrationScript).toContain('clinicId, sourceDocumentId, schemaVersion: 3');
+    expect(topLevelMigrationScript).toContain("where('clinicId', '==', clinicId)");
+    expect(topLevelMigrationScript).toContain('legacyDocumentRetained: true');
+    expect(topLevelMigrationScript).toContain('nestedV2Retained: true');
+    expect(topLevelMigrationScript).toContain("const execute = process.argv.includes('--execute')");
+    expect(topLevelMigrationScript).toContain("const finalize = process.argv.includes('--finalize')");
+    expect(topLevelMigrationScript).not.toContain("from 'firebase-admin/auth'");
+  });
+
+  it('يبني معرفات علوية ثابتة ويستعلم دائماً داخل clinicId الحالي عند اعتماد V3', () => {
+    expect(indexHtml).toContain('getTopLevelDocumentId(name, sourceDocumentId)');
+    expect(indexHtml).toContain("this.getTopLevelCollection(name).where('clinicId', '==', String(this.cloudClinicId))");
+    expect(indexHtml).toContain('sourceDocumentId');
+    expect(indexHtml).toContain('topLevelMigrationId');
+  });
+
+  it('يغطي كل أقسام البيانات التشغيلية من دون إنشاء نسخة مكررة لكل صفحة واجهة', () => {
+    const operationalDeclaration = "return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests', 'settings', 'catalogs']";
+    expect(indexHtml).toContain(operationalDeclaration);
+    expect(indexHtml).toContain("add('settings', 'general'");
+    expect(indexHtml).toContain("add('catalogs', 'clinical'");
+    expect(indexHtml).toContain("add('catalogs', 'templates'");
+    expect(indexHtml).toContain("add('visits', visitId");
+    expect(indexHtml).not.toContain("collection('dashboard')");
+    expect(indexHtml).not.toContain("collection('reports')");
   });
 
   it('يوفر تقرير مطابقة بعد الترحيل قبل أي تحويل قراءة مستقبلي', () => {
@@ -103,5 +136,29 @@ describe('أرشفة العرض الآمنة', () => {
     expect(completeSection).toContain("appointment.status = 'completed'");
     expect(completeSection).toContain('appointment.completedAt');
     expect(completeSection).not.toContain("this.appointments = (this.appointments || []).filter(item => String(item.id) !== String(appointment.id))");
+  });
+});
+
+describe('إعادة ضبط البيانات التجريبية الصريحة', () => {
+  it('تطلب تأكيداً مكتوباً بأن البيانات تجريبية وكلمة مرور المدير قبل أي حذف', () => {
+    expect(indexHtml).toContain("cloudResetDemoAcknowledgement: ''");
+    expect(indexHtml).toContain("String(this.cloudResetDemoAcknowledgement || '').trim() !== 'بيانات تجريبية'");
+    expect(indexHtml).toContain("String(this.cloudResetConfirmation || '').trim() !== 'حذف'");
+    expect(indexHtml).toContain('الرقم السري للمدير غير صحيح');
+    expect(indexHtml).toContain('هذه نافذة للبيانات التجريبية المعروفة فقط');
+  });
+
+  it('يمسح سجلات V2 السريرية والمالية في دفعة واحدة بعد التأكيد ويحتفظ بالإعدادات والحسابات', () => {
+    expect(indexHtml).toContain('getDemoResetV2CollectionNames()');
+    expect(indexHtml).toContain("return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests']");
+    expect(indexHtml).toContain('v2Documents.forEach(document => batch.delete(document.ref))');
+    expect(indexHtml).toContain("operation: 'explicit-demo-reset'");
+    expect(indexHtml).toContain('demoDataAcknowledged: true');
+  });
+
+  it('يرفض إعادة ضبط كبيرة من الواجهة بدلاً من تنفيذ حذف جزئي غير آمن', () => {
+    expect(indexHtml).toContain('if (v2Documents.length > 400)');
+    expect(indexHtml).toContain("throw new Error('demo-reset-document-limit')");
+    expect(indexHtml).toContain('لم تُمسح أي بيانات');
   });
 });

@@ -16,6 +16,7 @@
     "release:guard:install": "node scripts/install-release-guard.mjs",
     "firebase:sync-members": "node scripts/sync-firebase-clinic-members.mjs",
     "firebase:migrate-v2": "node scripts/migrate-firestore-v2.mjs",
+    "firebase:migrate-top-level-v3": "node scripts/migrate-firestore-top-level-v3.mjs",
     "db:push": "drizzle-kit generate && drizzle-kit migrate"
   },
   "dependencies": {

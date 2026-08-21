@@ -121,5 +121,105 @@ service cloud.firestore {
         allow read, write: if false;
       }
     }
+
+    // V3 keeps the same one-doctor-one-clinic boundary while presenting each
+    // operational area as a top-level collection in the Firebase Console.
+    // Every query must constrain clinicId, otherwise Firestore rejects it.
+    function topLevelMember() {
+      return resource.data.clinicId is string && isMember(resource.data.clinicId);
+    }
+
+    function topLevelClinicalWrite() {
+      return request.resource.data.clinicId is string
+        && canWriteClinicalData(request.resource.data.clinicId);
+    }
+
+    function topLevelManagerWrite() {
+      return request.resource.data.clinicId is string
+        && canManageClinic(request.resource.data.clinicId);
+    }
+
+    function keepsSameClinic() {
+      return resource.data.clinicId == request.resource.data.clinicId;
+    }
+
+      match /patients/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelClinicalWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /visits/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelClinicalWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /prescriptions/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelClinicalWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /appointments/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelClinicalWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /invoices/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelClinicalWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /expenses/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelClinicalWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /waitingQueue/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelClinicalWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /settings/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelManagerWrite();
+        allow update: if topLevelManagerWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /catalogs/{recordId} {
+        allow read: if topLevelMember();
+        allow create: if topLevelManagerWrite();
+        allow update: if topLevelManagerWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
+
+      match /auditLogs/{recordId} {
+        allow read: if topLevelMember() && canManageClinic(resource.data.clinicId);
+        allow create: if topLevelClinicalWrite();
+        allow update: if topLevelManagerWrite() && keepsSameClinic()
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['mirroredAt', 'migratedAt', 'migrationId', 'schemaVersion', 'topLevelMigratedAt', 'topLevelMigrationId']);
+        allow delete: if false;
+      }
+
+      match /archiveManifests/{recordId} {
+        allow read: if topLevelMember() && canManageClinic(resource.data.clinicId);
+        allow create: if topLevelManagerWrite();
+        allow update: if topLevelManagerWrite() && keepsSameClinic();
+        allow delete: if false;
+      }
   }
 }
