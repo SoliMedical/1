@@ -16,3 +16,5 @@
 | v1.6.6 | [`bdd3af7`](https://github.com/SoliMedical/1/commit/bdd3af7cce673ef282752a75415b9cb2ef8a0e2d) | ناجح | 2026-08-21T05:16:46.663Z | [فتح التشغيل](https://github.com/SoliMedical/1/actions/runs/32449946086) |
 <!-- soli-publication:v1.6.8:7afe3a50a7e2103fc87a29a3c03c8fae7c539ecf -->
 | v1.6.8 | [`7afe3a5`](https://github.com/SoliMedical/1/commit/7afe3a50a7e2103fc87a29a3c03c8fae7c539ecf) | ناجح | 2026-08-21T06:44:04.340Z | [فتح التشغيل](https://github.com/SoliMedical/1/actions/runs/32455571366) |
+<!-- soli-publication:v1.7.0:a026c341507a67b0356a7000dd3655189d627dc3 -->
+| v1.7.0 | [`a026c34`](https://github.com/SoliMedical/1/commit/a026c341507a67b0356a7000dd3655189d627dc3) | ناجح | 2026-08-21T07:29:13.146Z | [فتح التشغيل](https://github.com/SoliMedical/1/actions/runs/32458786839) |
