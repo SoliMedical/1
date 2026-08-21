@@ -7,6 +7,7 @@ const root = resolve(process.cwd());
 const allowedHtml = new Set([
   "index.html",
   "sales/index.html",
+  "claude-v175/index.html",
   "client/index.html",
   "client/src/SoliMedical-source.html",
 ]);
