@@ -81,8 +81,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.7.7';
-        const SOLI_APP_RELEASE = 'إدارة ذاتية آمنة لحسابات فريق العيادة عبر مسار إداري موثوق';
+        const SOLI_APP_VERSION = 'v1.7.8';
+        const SOLI_APP_RELEASE = 'ربط آمن لبطاقة مدير النظام بالعضوية السحابية القائمة';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -517,6 +517,7 @@
                 firebaseIdentityStatus: 'غير متصل',
                 firebaseIdentityMessage: '',
                 firebaseIdentityIssueCode: '',
+                firebaseLinkPassword: '',
                 cloudMembershipReady: false,
                 firebaseMembershipStatus: 'غير مفحوصة',
                 firebaseMembershipRole: '',
@@ -1197,8 +1198,14 @@
                                 // transient issue in one empty/secondary collection must not make
                                 // the whole clinic appear offline.
                                 this.cloudStatus = isActiveMember && navigator.onLine ? 'online' : 'offline';
-                                if (isActiveMember) this.startCloudSync();
-                                else this.stopV2OperationalSync();
+                                if (isActiveMember) {
+                                    this.startCloudSync();
+                                    // لا نربط البطاقات بجلستها الحالية عشوائياً. نقرأ فقط
+                                    // وثائق العضوية التي تحمل localUserId مطابقاً لكل بطاقة معلّقة.
+                                    this.refreshPendingLocalMembershipCards().catch(error => {
+                                        console.warn('تعذر تحديث بطاقات العضوية المحلية المعلّقة:', error);
+                                    });
+                                } else this.stopV2OperationalSync();
                             });
                             return;
                         }
@@ -2757,10 +2764,12 @@
                     return 'تعذر التحقق من هوية Firebase الدائمة الآن؛ سيستمر النظام محلياً إلى أن تعود الخدمة.';
                 },
                 async signInFirebaseForLocalUser(localUser, options = {}) {
-                    const { allowAnonymousFallback = true, createIfMissing = false } = options;
+                    const { allowAnonymousFallback = true, createIfMissing = false, firebasePassword: suppliedFirebasePassword = '' } = options;
                     if (!firebaseAuth || !navigator.onLine || !localUser?.email) return { ok: false, persistent: false };
                     const firebaseEmail = this.firebaseEmailForUser(localUser.email);
-                    const firebasePassword = String(localUser.password || '');
+                    // كلمة المرور المُدخلة لربط جهاز جديد تبقى في الذاكرة لهذه العملية فقط،
+                    // ولا تستبدل كلمة المرور المحلية ولا تدخل في أي لقطة Firestore.
+                    const firebasePassword = String(suppliedFirebasePassword || localUser.password || '');
                     if (!firebasePassword) {
                         this.firebaseIdentityMessage = 'لا توجد كلمة مرور محلية محفوظة لهذا الجهاز لإثبات هوية Firebase. سجّل دخولاً من جهاز موثوق أو اطلب من المدير إعادة تهيئة الحساب.';
                         return { ok: false, persistent: false };
@@ -2874,6 +2883,81 @@
                         this.firebaseIdentityBusy = false;
                     }
                 },
+                async refreshPendingLocalMembershipCards() {
+                    if (!firestoreDB || !navigator.onLine || !this.isPermanentFirebaseUser()) return 0;
+                    const candidates = (this.users || []).filter(candidate => candidate?.email && candidate.firebaseAuthStatus !== 'active');
+                    let refreshedCount = 0;
+                    for (const candidate of candidates) {
+                        const localUserId = String(candidate.id ?? '');
+                        if (!localUserId) continue;
+                        const matchingMemberships = await this.getV2ClinicRef().collection('members')
+                            .where('localUserId', '==', localUserId)
+                            .limit(1)
+                            .get({ source: 'server' });
+                        const memberDocument = matchingMemberships.docs.find(document => {
+                            const member = document.data() || {};
+                            return member.status === 'active' && String(member.localUserId ?? '') === localUserId;
+                        });
+                        if (!memberDocument) continue;
+                        this.attachFirebaseUidToLocalUser(candidate, memberDocument.id, 'active');
+                        refreshedCount += 1;
+                    }
+                    return refreshedCount;
+                },
+                async linkPrimaryAdminToExistingFirebase() {
+                    const primaryAdmin = (this.users || []).find(candidate => String(candidate?.id ?? '') === '1');
+                    const firebasePassword = String(this.firebaseLinkPassword || '');
+                    if (!this.isAuthenticated || this.currentUser?.role !== 'admin') {
+                        this.selfServiceAccountMessage = 'سجّل دخول مدير محلياً أولاً قبل ربط بطاقة مدير النظام.';
+                        return false;
+                    }
+                    if (!primaryAdmin) {
+                        this.selfServiceAccountMessage = 'تعذر العثور على بطاقة مدير النظام المحلية. لم تتغير أي بيانات.';
+                        return false;
+                    }
+                    if (!navigator.onLine || !firebaseAuth || !firestoreDB) {
+                        this.selfServiceAccountMessage = 'يتطلب التحقق من العضوية السحابية اتصالاً بالإنترنت.';
+                        return false;
+                    }
+                    if (firebasePassword.length < 6) {
+                        this.selfServiceAccountMessage = 'أدخل كلمة مرور Firebase الحالية لمدير النظام من 6 أحرف أو أرقام على الأقل. لن تُحفظ هذه الكلمة.';
+                        return false;
+                    }
+                    this.selfServiceAccountBusy = true;
+                    this.selfServiceAccountMessage = 'جارٍ التحقق من عضوية مدير النظام السحابية…';
+                    let secondaryApp = null;
+                    try {
+                        const secondaryName = `soli-primary-admin-link-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+                        secondaryApp = firebase.initializeApp(firebaseConfig, secondaryName);
+                        const credential = await secondaryApp.auth().signInWithEmailAndPassword(this.firebaseEmailForUser(primaryAdmin.email), firebasePassword);
+                        const memberSnapshot = await secondaryApp.firestore().collection('clinics').doc(String(this.cloudClinicId))
+                            .collection('members').doc(credential.user.uid).get({ source: 'server' });
+                        const member = memberSnapshot.exists ? memberSnapshot.data() : null;
+                        const matchesPrimaryAdmin = member?.status === 'active' && String(member?.localUserId ?? '') === '1';
+                        if (!matchesPrimaryAdmin) {
+                            this.selfServiceAccountMessage = 'تم التحقق من الهوية، لكنها لا تحمل عضوية نشطة مطابقة لبطاقة مدير النظام المحلية. لم يُربط أي حساب.';
+                            return false;
+                        }
+                        if (primaryAdmin.firebaseUid && primaryAdmin.firebaseUid !== credential.user.uid) {
+                            this.selfServiceAccountMessage = 'بطاقة مدير النظام مرتبطة مسبقاً بهوية سحابية مختلفة؛ لم نغيّر الربط تلقائياً لحماية الحسابات.';
+                            return false;
+                        }
+                        this.attachFirebaseUidToLocalUser(primaryAdmin, credential.user.uid, 'active');
+                        this.selfServiceAccountMessage = 'تم ربط بطاقة مدير النظام بعضوية سحابية نشطة. بقيت كلمة المرور المحلية وبيانات المرضى دون تغيير.';
+                        return true;
+                    } catch (error) {
+                        const code = String(error?.code || '');
+                        this.selfServiceAccountMessage = code.includes('wrong-password') || code.includes('invalid-credential')
+                            ? 'تعذر التحقق: كلمة مرور Firebase غير مطابقة. لم تتغير أي بيانات.'
+                            : 'تعذر التحقق من عضوية مدير النظام حالياً. بقيت البيانات المحلية دون تغيير.';
+                        console.warn('تعذر ربط بطاقة مدير النظام بالهوية السحابية القائمة:', error);
+                        return false;
+                    } finally {
+                        this.firebaseLinkPassword = '';
+                        if (secondaryApp) await secondaryApp.delete().catch(() => {});
+                        this.selfServiceAccountBusy = false;
+                    }
+                },
                 attachFirebaseUidToLocalUser(localUser, uid, membershipStatus = '') {
                     if (!uid || !localUser) return;
                     const localUserId = String(localUser.id ?? '');
@@ -2910,9 +2994,15 @@
                             this.firebaseMembershipStatus = 'نشطة';
                             this.firebaseMembershipRole = member.role || '';
                             this.firebaseMembershipMessage = `عضوية العيادة نشطة بدور ${member.role || 'غير محدد'}.`;
-                            // تُعد هذه القراءة الحية هي المرجع لحالة البطاقة؛ لا تترك
-                            // حالة "بانتظار التفعيل" المحلية بعد نجاح عضوية Firestore.
-                            this.attachFirebaseUidToLocalUser(this.currentUser, user.uid, 'active');
+                            // تُعد هذه القراءة الحية مرجع البطاقة المطابقة للعضوية، لا
+                            // للجلسة المحلية الحالية بالضرورة. يمنع ذلك ترقية بطاقة مدير
+                            // النظام خطأً عندما تكون الهوية المفتوحة لحساب فريق آخر.
+                            const memberLocalUserId = String(member.localUserId ?? '');
+                            const matchingLocalUser = memberLocalUserId
+                                ? (this.users || []).find(candidate => String(candidate.id ?? '') === memberLocalUserId)
+                                : null;
+                            const localUserToUpdate = matchingLocalUser || this.currentUser;
+                            this.attachFirebaseUidToLocalUser(localUserToUpdate, user.uid, 'active');
                             return true;
                         }
                         this.firebaseMembershipStatus = member ? 'موقوفة' : 'غير موجودة';
@@ -7556,8 +7646,16 @@
                                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                     </button>
                                                 </div>
-                                            </div>
-                                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
+	                                            </div>
+	                                            <div x-show="u.id === 1 && u.firebaseAuthStatus !== 'active'" x-cloak class="rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/25">
+	                                                <p class="text-xs font-bold text-amber-900 dark:text-amber-200">ربط بطاقة مدير النظام بالحساب السحابي القائم</p>
+	                                                <p class="mt-1 text-[11px] leading-5 text-amber-800 dark:text-amber-300">إذا كانت كلمة مرور الدخول المحلي القديمة أقل من 6 أحرف، أدخل كلمة مرور Firebase الحالية لمرة واحدة. لا تُحفظ هنا، ولا تغيّر كلمة المرور المحلية أو بيانات المرضى.</p>
+	                                                <div class="mt-3 flex flex-col gap-2 sm:flex-row">
+	                                                    <input type="password" x-model="firebaseLinkPassword" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" name="soli-primary-admin-cloud-link" placeholder="كلمة مرور Firebase الحالية" class="min-w-0 flex-1 rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-amber-900/60 dark:bg-slate-900 dark:text-white">
+	                                                    <button type="button" @click="linkPrimaryAdminToExistingFirebase()" :disabled="selfServiceAccountBusy || !firebaseLinkPassword" class="inline-flex items-center justify-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"><i data-lucide="link" class="h-4 w-4"></i><span>تحقق واربط</span></button>
+	                                                </div>
+	                                            </div>
+	                                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                                                 <div>
                                                     <label class="block text-[11px] font-semibold text-slate-500 mb-1">اسم الموظف</label>
                                                     <input type="text" x-model="u.fullName" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
@@ -8293,7 +8391,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.7', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.8', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

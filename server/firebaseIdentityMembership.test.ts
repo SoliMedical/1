@@ -91,11 +91,27 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('if (this.cloudAuthReady && this.cloudMembershipReady) this.startCloudSync();');
   });
 
-  it('promotes a locally pending account to active after the live membership read succeeds', () => {
+  it('promotes the exact locally pending account named by the live membership rather than the current session', () => {
     expect(appSource).toContain("attachFirebaseUidToLocalUser(localUser, uid, membershipStatus = '')");
-    expect(appSource).toContain("this.attachFirebaseUidToLocalUser(this.currentUser, user.uid, 'active');");
+    expect(appSource).toContain("const memberLocalUserId = String(member.localUserId ?? '');");
+    expect(appSource).toContain("const localUserToUpdate = matchingLocalUser || this.currentUser;");
+    expect(appSource).toContain("this.attachFirebaseUidToLocalUser(localUserToUpdate, user.uid, 'active');");
+    expect(appSource).toContain("async refreshPendingLocalMembershipCards()");
+    expect(appSource).toContain(".where('localUserId', '==', localUserId)");
     expect(appSource).toContain("user.firebaseAuthStatus = nextMembershipStatus;");
-    expect(appSource).toContain('لا تترك');
+    expect(appSource).toContain('لا نربط البطاقات بجلستها الحالية عشوائياً');
+  });
+
+  it('offers a one-time verification route for the legacy primary-admin password without persisting or creating an identity', () => {
+    expect(appSource).toContain("firebaseLinkPassword: ''");
+    expect(appSource).toContain('async linkPrimaryAdminToExistingFirebase()');
+    expect(appSource).toContain("const firebasePassword = String(this.firebaseLinkPassword || '');");
+    expect(appSource).toContain("secondaryApp.auth().signInWithEmailAndPassword(this.firebaseEmailForUser(primaryAdmin.email), firebasePassword)");
+    expect(appSource).toContain("String(member?.localUserId ?? '') === '1'");
+    expect(appSource).toContain("this.firebaseLinkPassword = '';");
+    expect(appSource).toContain('await secondaryApp.delete()');
+    expect(appSource).toContain('لا تُحفظ هنا، ولا تغيّر كلمة المرور المحلية أو بيانات المرضى.');
+    expect(appSource).not.toContain('createUserWithEmailAndPassword(this.firebaseEmailForUser(primaryAdmin.email), firebasePassword)');
   });
 
   it('keeps a new local administrator password aligned with an already authenticated permanent Firebase identity', () => {
