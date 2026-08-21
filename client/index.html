@@ -80,7 +80,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.6.5';
+        const SOLI_APP_VERSION = 'v1.6.6';
         const SOLI_APP_RELEASE = 'تهيئة آمنة لهوية Firebase الدائمة للمدير قبل عضوية العيادة';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -513,6 +513,7 @@
                 firebaseIdentityEmail: '',
                 firebaseIdentityStatus: 'غير متصل',
                 firebaseIdentityMessage: '',
+                firebaseIdentityIssueCode: '',
                 firebaseMembershipStatus: 'غير مفحوصة',
                 firebaseMembershipRole: '',
                 firebaseMembershipMessage: 'سجّل دخولاً دائماً إلى Firebase لفحص عضوية العيادة.',
@@ -1149,9 +1150,14 @@
                             this.firebaseIdentityUid = user.uid || '';
                             this.firebaseIdentityEmail = user.email || '';
                             this.firebaseIdentityStatus = user.isAnonymous ? 'احتياطي مؤقت' : 'هوية دائمة متصلة';
-                            this.firebaseIdentityMessage = user.isAnonymous
-                                ? 'تعمل المزامنة المؤقتة، لكن لا يمكن تطبيق قواعد العضوية الحية بهذه الجلسة.'
-                                : 'تم التحقق من هوية Firebase الدائمة لهذا الجهاز.';
+                            if (user.isAnonymous) {
+                                this.firebaseIdentityMessage = this.firebaseIdentityIssueCode
+                                    ? this.firebaseIdentityErrorMessage({ code: this.firebaseIdentityIssueCode })
+                                    : 'تعمل المزامنة المؤقتة، لكن لا يمكن تطبيق قواعد العضوية الحية بهذه الجلسة.';
+                            } else {
+                                this.firebaseIdentityIssueCode = '';
+                                this.firebaseIdentityMessage = 'تم التحقق من هوية Firebase الدائمة لهذا الجهاز.';
+                            }
                             this.refreshFirebaseMembershipStatus(user);
                             this.startCloudSync();
                             return;
@@ -2439,8 +2445,11 @@
                 },
                 firebaseIdentityErrorMessage(error) {
                     const code = String(error?.code || '');
+                    if (code.includes('local-password-too-short') || code.includes('weak-password')) return 'كلمة مرور المدير المحلية الحالية أقصر من 6 أحرف، ولذلك لا يمكن إنشاء حساب Firebase بها. من بطاقة «إعدادات الاستعادة» أدناه، احفظ كلمة مرور جديدة من 6 أحرف أو أرقام على الأقل، ثم اضغط «تهيئة هوية Firebase الدائمة» مرة أخرى. لا تتغير بيانات المرضى أو السجل الطبي.';
                     if (code.includes('weak-password')) return 'كلمة المرور الحالية أقصر من 6 أحرف؛ حدّث كلمة مرور الدخول المحلي إلى 6 أحرف أو أكثر قبل تفعيل هوية Firebase الدائمة.';
                     if (code.includes('wrong-password') || code.includes('invalid-credential')) return 'كلمة مرور Firebase غير مطابقة. استخدم كلمة المرور الأخيرة للحساب أو حدّثها من المدير.';
+                    if (code.includes('operation-not-allowed') || code.includes('configuration-not-found')) return 'تسجيل الدخول بالبريد وكلمة المرور غير متاح حالياً في إعدادات Firebase لهذا المشروع. فعّله من Firebase Authentication ثم أعد المحاولة.';
+                    if (code.includes('invalid-email')) return 'تعذر إنشاء بريد Firebase من اسم المستخدم المحلي. راجع اسم المستخدم في بطاقة الحسابات ثم أعد المحاولة.';
                     if (code.includes('too-many-requests')) return 'تم إيقاف محاولات الدخول مؤقتاً لأسباب حماية. انتظر قليلاً ثم حاول مرة أخرى.';
                     if (code.includes('network-request-failed')) return 'تعذر الوصول إلى Firebase الآن؛ سيبقى النظام المحلي قابلاً للعمل دون اتصال.';
                     return 'تعذر التحقق من هوية Firebase الدائمة الآن؛ سيستمر النظام محلياً إلى أن تعود الخدمة.';
@@ -2454,8 +2463,30 @@
                         this.firebaseIdentityMessage = 'لا توجد كلمة مرور محلية محفوظة لهذا الجهاز لإثبات هوية Firebase. سجّل دخولاً من جهاز موثوق أو اطلب من المدير إعادة تهيئة الحساب.';
                         return { ok: false, persistent: false };
                     }
+                    if (firebasePassword.length < 6) {
+                        const passwordError = { code: 'local-password-too-short' };
+                        this.firebaseIdentityIssueCode = passwordError.code;
+                        this.firebaseIdentityStatus = 'تحتاج تحديث كلمة المرور';
+                        this.firebaseIdentityMessage = this.firebaseIdentityErrorMessage(passwordError);
+                        if (allowAnonymousFallback) {
+                            try {
+                                const anonymousCredential = await firebaseAuth.signInAnonymously();
+                                this.firebaseIdentityUid = anonymousCredential.user?.uid || '';
+                                this.firebaseIdentityEmail = '';
+                                this.firebaseIdentityStatus = 'احتياطي مؤقت';
+                                this.firebaseMembershipStatus = 'غير صالحة للجلسة المجهولة';
+                                this.firebaseMembershipRole = '';
+                                this.firebaseMembershipMessage = 'تعمل البيانات المحلية الآن، لكن عضوية العيادة لا تُمنح للجلسات المجهولة.';
+                                return { ok: false, persistent: false, fallback: true, error: passwordError };
+                            } catch (anonymousError) {
+                                console.warn('تعذر بدء جلسة Firebase الاحتياطية:', anonymousError);
+                            }
+                        }
+                        return { ok: false, persistent: false, error: passwordError };
+                    }
                     try {
                         const credential = await firebaseAuth.signInWithEmailAndPassword(firebaseEmail, firebasePassword);
+                        this.firebaseIdentityIssueCode = '';
                         this.firebaseIdentityUid = credential.user?.uid || '';
                         this.firebaseIdentityEmail = credential.user?.email || firebaseEmail;
                         this.firebaseIdentityStatus = 'هوية دائمة متصلة';
@@ -2475,6 +2506,7 @@
                         if (mayCreate && firebasePassword.length >= 6) {
                             try {
                                 const credential = await firebaseAuth.createUserWithEmailAndPassword(firebaseEmail, firebasePassword);
+                                this.firebaseIdentityIssueCode = '';
                                 this.firebaseIdentityUid = credential.user?.uid || '';
                                 this.firebaseIdentityEmail = credential.user?.email || firebaseEmail;
                                 this.firebaseIdentityStatus = 'هوية دائمة جديدة';
@@ -2488,6 +2520,7 @@
                                     : createError;
                             }
                         }
+                        this.firebaseIdentityIssueCode = String(signInError?.code || '');
                         this.firebaseIdentityMessage = this.firebaseIdentityErrorMessage(signInError);
                         if (allowAnonymousFallback) {
                             try {
@@ -2498,7 +2531,7 @@
                                 this.firebaseMembershipStatus = 'غير صالحة للجلسة المجهولة';
                                 this.firebaseMembershipRole = '';
                                 this.firebaseMembershipMessage = 'تعمل البيانات المحلية الآن، لكن عضوية العيادة لا تُمنح للجلسات المجهولة.';
-                                return { ok: false, persistent: false, fallback: true };
+                                return { ok: false, persistent: false, fallback: true, error: signInError };
                             } catch (anonymousError) {
                                 console.warn('تعذر بدء جلسة Firebase الاحتياطية:', anonymousError);
                             }
@@ -2686,8 +2719,8 @@
                         alert('اختر سؤال أمان واكتب إجابته (3 أحرف على الأقل).');
                         return;
                     }
-                    if (newPassword && newPassword.length < 4) {
-                        alert('كلمة المرور الجديدة يجب أن تتكون من 4 أحرف أو أرقام على الأقل.');
+                    if (newPassword && newPassword.length < 6) {
+                        alert('كلمة المرور الجديدة يجب أن تتكون من 6 أحرف أو أرقام على الأقل لتتوافق مع هوية Firebase الدائمة.');
                         return;
                     }
                     const admin = this.users.find(user => user.id === 1);
@@ -2703,7 +2736,9 @@
                     }
                     this.securityForm.answer = '';
                     this.securityForm.newPassword = '';
-                    this.securitySaveFeedback = 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً.';
+                    this.securitySaveFeedback = newPassword
+                        ? 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً. يمكنك الآن تهيئة هوية Firebase الدائمة.'
+                        : 'تم حفظ إعدادات الاستعادة محلياً.';
                     setTimeout(() => { this.securitySaveFeedback = ''; }, 3500);
                 },
 
@@ -7044,19 +7079,20 @@
 	                                        <div class="rounded-xl bg-white/80 dark:bg-slate-900/70 px-3 py-2 text-slate-700 dark:text-slate-200"><b>العضوية:</b> <span x-text="firebaseMembershipStatus + (firebaseMembershipRole ? ' — ' + firebaseMembershipRole : '')"></span></div>
 	                                    </div>
 	                                    <p class="text-[11px] leading-5 text-indigo-800 dark:text-indigo-200" x-text="firebaseIdentityMessage"></p>
+	                                    <p x-show="firebaseIdentityIssueCode === 'local-password-too-short'" class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">الإجراء المطلوب: في بطاقة «إعدادات الاستعادة» أدناه، اختر سؤال الأمان وأدخل إجابته ثم احفظ كلمة مرور جديدة من 6 أحرف أو أرقام على الأقل. بعد الحفظ اضغط زر تهيئة الهوية مرة أخرى. لا يمس هذا الإجراء بيانات المرضى أو الزيارات.</p>
 	                                    <p class="text-[11px] leading-5 text-slate-600 dark:text-slate-300" x-text="firebaseMembershipMessage"></p>
                                     <div class="flex gap-2 flex-wrap"><button type="button" @click="refreshFirebaseMembershipStatus()" :disabled="firebaseMembershipBusy || firebaseIdentityBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-200 disabled:opacity-50">تحديث الحالة</button><button type="button" @click="provisionPersistentFirebaseIdentityForCurrentUser()" x-show="!isPermanentFirebaseUser()" :disabled="firebaseIdentityBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"><span x-text="firebaseIdentityBusy ? 'جارٍ تهيئة الهوية…' : 'تهيئة هوية Firebase الدائمة'"></span></button><button type="button" @click="ensureClinicMembership()" :disabled="firebaseMembershipBusy || firebaseIdentityBusy || !isPermanentFirebaseUser()" class="text-xs font-bold px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50"><span x-text="firebaseMembershipBusy ? 'جارٍ التهيئة…' : 'تهيئة عضوية المدير الأولى'"></span></button></div>
 	                                    <p class="text-[10px] leading-5 text-slate-500 dark:text-slate-400">إذا كانت القواعد الحية منشورة بالفعل، يرفض Firebase هذا الزر عمداً لأن المتصفح لا يملك صلاحية تصعيد الأدوار؛ استخدم أداة المدير الموثوقة لاستعادة العضوية.</p>
 	                                </div>
 	                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
-                        <div class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
+                            <div id="admin-security" class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
                             <strong>حماية كلمات المرور:</strong> كلمات المرور مخفية افتراضياً. استخدم زر العين لإظهارها مؤقتاً عند الحاجة. لا تعتمد على هذه الحماية إذا كان شخص آخر يملك وصولاً تقنياً كاملاً إلى الجهاز.
                         </div>
                         <div class="rounded-2xl border border-violet-200 dark:border-violet-900/60 bg-violet-50/70 dark:bg-violet-950/20 p-4 space-y-3">
                             <div class="flex items-center justify-between gap-3"><div><h4 class="font-extrabold text-sm text-violet-900 dark:text-violet-200">استعادة كلمة مرور المدير دون إنترنت</h4><p class="text-[11px] mt-1 text-violet-800/80 dark:text-violet-300">احفظ سؤالاً وإجابة لا يعرفهما غير المدير. تُحفظ الإجابة كتجزئة محلية.</p></div><i data-lucide="key-round" class="w-5 h-5 text-violet-600"></i></div>
                             <select x-model="securityForm.question" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm"><option value="">اختر سؤال الأمان</option><option value="ما اسم أول مدرسة درست فيها؟">ما اسم أول مدرسة درست فيها؟</option><option value="ما اسم أول عيادة عملت بها؟">ما اسم أول عيادة عملت بها؟</option><option value="ما اسم مدينتك الأولى؟">ما اسم مدينتك الأولى؟</option><option value="ما إجابتك الخاصة؟">ما إجابتك الخاصة؟</option></select>
                             <input type="text" x-model="securityForm.answer" autocomplete="off" placeholder="إجابة سؤال الأمان" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm">
-                            <div class="relative"><input :type="showRecoveryPassword ? 'text' : 'password'" x-model="securityForm.newPassword" autocomplete="new-password" placeholder="كلمة مرور جديدة اختيارية" class="w-full px-3 py-2 pl-11 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm"><button type="button" @click="showRecoveryPassword = !showRecoveryPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showRecoveryPassword ? 'إخفاء كلمة المرور الجديدة' : 'إظهار كلمة المرور الجديدة'"><i :data-lucide="showRecoveryPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
+                            <div class="relative"><input :type="showRecoveryPassword ? 'text' : 'password'" x-model="securityForm.newPassword" autocomplete="new-password" minlength="6" placeholder="كلمة مرور جديدة اختيارية — 6 أحرف أو أرقام على الأقل" class="w-full px-3 py-2 pl-11 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm"><button type="button" @click="showRecoveryPassword = !showRecoveryPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showRecoveryPassword ? 'إخفاء كلمة المرور الجديدة' : 'إظهار كلمة المرور الجديدة'"><i :data-lucide="showRecoveryPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
                             <div class="flex items-center gap-3 flex-wrap"><button type="button" @click="saveAdminSecuritySettings()" class="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-xl text-xs font-bold">حفظ إعدادات الاستعادة</button><span x-show="securitySaveFeedback" x-text="securitySaveFeedback" class="text-emerald-700 dark:text-emerald-300 text-xs font-semibold"></span></div>
                         </div>
                         <div class="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20 px-4 py-3">
@@ -7821,7 +7857,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.5', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.6', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

@@ -27,6 +27,15 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('!isPermanentFirebaseUser()');
   });
 
+  it('identifies the local four-character administrator password as a Firebase setup prerequisite without disabling local or anonymous operation', () => {
+    expect(appSource).toContain("const passwordError = { code: 'local-password-too-short' }");
+    expect(appSource).toContain("this.firebaseIdentityIssueCode = passwordError.code");
+    expect(appSource).toContain('كلمة مرور المدير المحلية الحالية أقصر من 6 أحرف');
+    expect(appSource).toContain('return { ok: false, persistent: false, fallback: true, error: passwordError }');
+    expect(appSource).toContain('newPassword && newPassword.length < 6');
+    expect(appSource).toContain('تهيئة هوية Firebase الدائمة');
+  });
+
   it('keeps Firebase passwords and recovery answers out of Firestore snapshots', () => {
     expect(appSource).toContain('getCloudSafeUsers(users = this.users)');
     expect(appSource).toContain('const { password, securityAnswerHash, securityQuestion, ...cloudUser } = user;');
