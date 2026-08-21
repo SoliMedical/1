@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -86,5 +86,10 @@ describe("release guard", () => {
 
     expect(result.ok).toBe(false);
     expect(result.errors.join("\n")).toContain("github.com/solimedical/2");
+  });
+
+  it("يفرض حاجز تطابق ملفات Pages داخل مسار النشر الخادمي", async () => {
+    const pagesWorkflow = await readFile(join(process.cwd(), ".github/workflows/pages.yml"), "utf8");
+    expect(pagesWorkflow).toContain("node scripts/release-guard.mjs --remote-name origin");
   });
 });

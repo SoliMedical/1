@@ -27,6 +27,8 @@ jobs:
         uses: actions/checkout@v4
       - name: Repository guard
         run: node scripts/check-repository.mjs
+      - name: Official release parity guard
+        run: node scripts/release-guard.mjs --remote-name origin
       - name: Configure Pages
         uses: actions/configure-pages@v5
         with:

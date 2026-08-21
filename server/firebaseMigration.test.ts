@@ -63,6 +63,11 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain('this.dataMigration?.status !== \'completed\'');
     expect(indexHtml).toContain("return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests', 'settings', 'catalogs']");
     expect(indexHtml).toContain('this.stopV2OperationalSync();');
+    expect(indexHtml).toContain('if (this.isOperationalDocumentSyncActive()) return this.pushStateToV2();');
+    expect(indexHtml).toContain('applyOperationalCollectionChanges(name, snapshot)');
+    expect(indexHtml).toContain('const changes = snapshot.docChanges();');
+    expect(indexHtml).toContain('if (hasDataChange && this.v2OperationalReady) this.applyV2RemoteState');
+    expect(indexHtml).not.toContain("{ includeMetadataChanges: true },\n                            snapshot => {\n                                if (snapshot.metadata.hasPendingWrites) return;\n                                const hasDataChange = this.applyOperationalCollectionChanges");
   });
 
   it('لا يعلن انقطاعاً محلياً كاذباً إذا تأجلت أو فشلت دفعة V3 بينما مستمعات القراءة الموثقة سليمة', () => {

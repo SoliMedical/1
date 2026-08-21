@@ -81,8 +81,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.7.8';
-        const SOLI_APP_RELEASE = 'ربط آمن لبطاقة مدير النظام بالعضوية السحابية القائمة';
+        const SOLI_APP_VERSION = 'v1.7.9';
+        const SOLI_APP_RELEASE = 'مزامنة تشغيلية تفاضلية وحاجز نشر موثوق للمستودع الرسمي';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -1695,6 +1695,33 @@
                     const { schemaVersion, migrationId, migratedAt, legacyId, updatedAt, clinicId, sourceDocumentId, topLevelMigrationId, topLevelMigratedAt, ...record } = value || {};
                     return record;
                 },
+                applyOperationalCollectionChanges(name, snapshot) {
+                    // لا نعيد بناء كل المجموعة في كل إشعار Firestore. اللقطات الوصفية
+                    // أو المستندات غير المتغيرة لا تستدعي ترطيب الواجهة أو كتابة localStorage.
+                    const changes = snapshot.docChanges();
+                    if (!changes.length) return false;
+                    const currentRecords = this.v2OperationalCollectionCache?.[name] || [];
+                    const recordsById = new Map(currentRecords.map(record => [record._documentId, record]));
+                    let changed = false;
+                    changes.forEach(change => {
+                        const documentId = change.doc.id;
+                        if (change.type === 'removed') {
+                            changed = recordsById.delete(documentId) || changed;
+                            return;
+                        }
+                        const nextRecord = { ...change.doc.data(), _documentId: documentId };
+                        const currentRecord = recordsById.get(documentId);
+                        if (currentRecord && this.getV2MirrorFingerprint(currentRecord) === this.getV2MirrorFingerprint(nextRecord)) return;
+                        recordsById.set(documentId, nextRecord);
+                        changed = true;
+                    });
+                    if (!changed) return false;
+                    this.v2OperationalCollectionCache = {
+                        ...this.v2OperationalCollectionCache,
+                        [name]: Array.from(recordsById.values())
+                    };
+                    return true;
+                },
                 hydrateV2StateFromCollectionCache() {
                     const cache = this.v2OperationalCollectionCache || {};
                     const recordsFor = name => (cache[name] || []).map(item => this.stripV2Metadata(item));
@@ -1768,16 +1795,12 @@
                             console.warn(`تعذر التحميل الأول لبعض مجموعات Firestore: ${failedCollections.join('، ')}. ستستمر المحاولة في الخلفية دون تعطيل الحفظ المحلي أو حالة الاتصال.`);
                         }
                         this.v2OperationalUnsubscribers = names.map(name => this.getOperationalCollectionQuery(name).onSnapshot(
-                            { includeMetadataChanges: true },
                             snapshot => {
                                 if (snapshot.metadata.hasPendingWrites) return;
-                                this.v2OperationalCollectionCache = {
-                                    ...this.v2OperationalCollectionCache,
-                                    [name]: snapshot.docs.map(doc => ({ ...doc.data(), _documentId: doc.id }))
-                                };
+                                const hasDataChange = this.applyOperationalCollectionChanges(name, snapshot);
                                 this.v2OperationalErrors = (this.v2OperationalErrors || []).filter(item => item !== name);
                                 this.v2OperationalReady = this.v2OperationalErrors.length === 0;
-                                if (this.v2OperationalReady) this.applyV2RemoteState('تحديث سحابي من مخطط V2');
+                                if (hasDataChange && this.v2OperationalReady) this.applyV2RemoteState('تحديث سحابي من مخطط V2');
                             },
                             error => {
                                 console.error(`تعذر متابعة مجموعة V2 ${name}:`, error);
@@ -8391,7 +8414,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.8', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.9', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });
