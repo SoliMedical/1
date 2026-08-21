@@ -81,7 +81,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.7.6';
+        const SOLI_APP_VERSION = 'v1.7.7';
         const SOLI_APP_RELEASE = 'إدارة ذاتية آمنة لحسابات فريق العيادة عبر مسار إداري موثوق';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -2874,14 +2874,18 @@
                         this.firebaseIdentityBusy = false;
                     }
                 },
-                attachFirebaseUidToLocalUser(localUser, uid) {
+                attachFirebaseUidToLocalUser(localUser, uid, membershipStatus = '') {
                     if (!uid || !localUser) return;
                     const localUserId = String(localUser.id ?? '');
                     const user = (this.users || []).find(candidate => String(candidate.id ?? '') === localUserId)
                         || (this.users || []).find(candidate => String(candidate.email || '').trim().toLowerCase() === String(localUser.email || '').trim().toLowerCase());
-                    if (user && user.firebaseUid !== uid) {
+                    const uidChanged = user && user.firebaseUid !== uid;
+                    const nextMembershipStatus = membershipStatus || (uidChanged
+                        ? 'membership_pending'
+                        : (user?.firebaseAuthStatus || 'membership_pending'));
+                    if (user && (uidChanged || user.firebaseAuthStatus !== nextMembershipStatus)) {
                         user.firebaseUid = uid;
-                        user.firebaseAuthStatus = 'membership_pending';
+                        user.firebaseAuthStatus = nextMembershipStatus;
                         if (this.currentUser && String(this.currentUser.id ?? '') === String(user.id ?? '')) this.currentUser = this.withCompatiblePermissions(user);
                         this.persistState();
                         this.queueCloudSync();
@@ -2906,7 +2910,9 @@
                             this.firebaseMembershipStatus = 'نشطة';
                             this.firebaseMembershipRole = member.role || '';
                             this.firebaseMembershipMessage = `عضوية العيادة نشطة بدور ${member.role || 'غير محدد'}.`;
-                            this.attachFirebaseUidToLocalUser(this.currentUser, user.uid);
+                            // تُعد هذه القراءة الحية هي المرجع لحالة البطاقة؛ لا تترك
+                            // حالة "بانتظار التفعيل" المحلية بعد نجاح عضوية Firestore.
+                            this.attachFirebaseUidToLocalUser(this.currentUser, user.uid, 'active');
                             return true;
                         }
                         this.firebaseMembershipStatus = member ? 'موقوفة' : 'غير موجودة';
@@ -8287,7 +8293,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.6', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.7', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

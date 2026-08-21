@@ -91,6 +91,13 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('if (this.cloudAuthReady && this.cloudMembershipReady) this.startCloudSync();');
   });
 
+  it('promotes a locally pending account to active after the live membership read succeeds', () => {
+    expect(appSource).toContain("attachFirebaseUidToLocalUser(localUser, uid, membershipStatus = '')");
+    expect(appSource).toContain("this.attachFirebaseUidToLocalUser(this.currentUser, user.uid, 'active');");
+    expect(appSource).toContain("user.firebaseAuthStatus = nextMembershipStatus;");
+    expect(appSource).toContain('لا تترك');
+  });
+
   it('keeps a new local administrator password aligned with an already authenticated permanent Firebase identity', () => {
     expect(appSource).toContain('async syncFirebasePasswordAfterLocalChange(localUser, previousPassword, newPassword)');
     expect(appSource).toContain('await currentIdentity.updatePassword(newPassword)');
