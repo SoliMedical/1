@@ -18,13 +18,13 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain("this.firebaseIdentityStatus = 'احتياطي مؤقت'");
   });
 
-  it('lets a locally authenticated administrator explicitly replace an anonymous fallback with a durable Firebase identity', () => {
+  it('keeps the durable Firebase-identity bridge internal to preserve the local sign-in interface', () => {
     expect(appSource).toContain('async provisionPersistentFirebaseIdentityForCurrentUser()');
     expect(appSource).toContain('firebaseAuth.currentUser?.isAnonymous');
     expect(appSource).toContain('allowAnonymousFallback: false');
     expect(appSource).toContain("signInCode.includes('invalid-credential')");
-    expect(appSource).toContain("'تهيئة هوية Firebase الدائمة'");
-    expect(appSource).toContain('!isPermanentFirebaseUser()');
+    expect(appSource).not.toContain('x-show="!isPermanentFirebaseUser()"');
+    expect(appSource).toContain('isPermanentFirebaseUser(user = firebaseAuth?.currentUser)');
   });
 
   it('identifies the local four-character administrator password as a Firebase setup prerequisite without disabling local or anonymous operation', () => {
@@ -33,14 +33,14 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('كلمة مرور المدير المحلية الحالية أقصر من 6 أحرف');
     expect(appSource).toContain('return { ok: false, persistent: false, fallback: true, error: passwordError }');
     expect(appSource).toContain('newPassword && newPassword.length < 6');
-    expect(appSource).toContain('تهيئة هوية Firebase الدائمة');
+    expect(appSource).not.toContain('الإجراء المطلوب: احفظ كلمة مرور جديدة من 6 أحرف أو أرقام على الأقل');
   });
 
-  it('offers a direct local-only password-update route before persistent Firebase setup', () => {
+  it('keeps Firebase setup helpers out of the doctor settings interface', () => {
     expect(appSource).toContain('focusAdminPasswordUpdateForFirebase()');
     expect(appSource).toContain("document.getElementById('admin-security-new-password')");
-    expect(appSource).toContain('الانتقال الآمن لتحديث كلمة المرور');
-    expect(appSource).toContain('لا يمس هذا الإجراء بيانات المرضى أو الزيارات');
+    expect(appSource).not.toContain('الانتقال الآمن لتحديث كلمة المرور');
+    expect(appSource).not.toContain('id="admin-security-recovery"');
   });
 
   it('keeps Firebase passwords and recovery answers out of Firestore snapshots', () => {
@@ -64,6 +64,15 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('منعت قواعد Firebase إنشاء العضوية من المتصفح');
     expect(rules).toContain('match /members/{memberUid}');
     expect(rules).toContain('allow create, update, delete: if false;');
+  });
+
+  it('does not treat an anonymous Firebase session as cloud-sync ready after membership rules are live', () => {
+    expect(appSource).toContain('cloudMembershipReady: false');
+    expect(appSource).toContain('this.cloudAuthReady = permanentIdentity;');
+    expect(appSource).toContain('if (!permanentIdentity) {');
+    expect(appSource).toContain('this.cloudMembershipReady = Boolean(isActiveMember);');
+    expect(appSource).toContain('!this.cloudMembershipReady');
+    expect(appSource).toContain('allowAnonymousFallback: false');
   });
 
   it('creates or restores memberships only through the trusted Admin SDK script', () => {

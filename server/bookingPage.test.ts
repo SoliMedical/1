@@ -84,10 +84,10 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain("document.addEventListener('focusin'");
   });
 
-  it("يبقي طريقة كلمة المرور المحلية واضحة للمدير دون تحويل حقل الدخول إلى حقل بحث", () => {
-    expect(page).toContain('استعادة كلمة مرور المدير دون إنترنت');
-    expect(page).toContain('كلمات المرور مخفية افتراضياً');
-    expect(page).toContain('احفظ سؤالاً وإجابة لا يعرفهما غير المدير');
+  it("يبقي حقول كلمة المرور المحلية دون بطاقات استعادة أو مزامنة تقنية داخل الإعدادات", () => {
+    expect(page).not.toContain('استعادة كلمة مرور المدير دون إنترنت');
+    expect(page).not.toContain('هوية Firebase وعضوية العيادة');
+    expect(page).toContain("'🟡 وضع محلي - بانتظار الاتصال'");
     expect(page).toContain('x-model="u.password"');
     expect(page).toContain('x-model="loginForm.password"');
   });
@@ -220,7 +220,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.5'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.7.1'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -241,8 +241,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.5', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v16');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.7.1', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v22');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('const SCOPE_PATH = new URL(self.registration.scope).pathname');
     expect(sw).toContain('fetch(event.request)');

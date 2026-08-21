@@ -80,7 +80,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.7.0';
+        const SOLI_APP_VERSION = 'v1.7.1';
         const SOLI_APP_RELEASE = 'إعادة ضبط تجريبية صريحة ومحمية لمخطط Firestore V2';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -515,6 +515,7 @@
                 firebaseIdentityStatus: 'غير متصل',
                 firebaseIdentityMessage: '',
                 firebaseIdentityIssueCode: '',
+                cloudMembershipReady: false,
                 firebaseMembershipStatus: 'غير مفحوصة',
                 firebaseMembershipRole: '',
                 firebaseMembershipMessage: 'سجّل دخولاً دائماً إلى Firebase لفحص عضوية العيادة.',
@@ -1158,10 +1159,11 @@
                 observeFirebaseAuth() {
                     if (!firebaseAuth) return;
                     firebaseAuth.onAuthStateChanged(user => {
-                        this.cloudAuthReady = !!user;
                         this.authError = '';
-                        this.cloudStatus = user && navigator.onLine ? 'online' : 'offline';
                         if (user) {
+                            const permanentIdentity = this.isPermanentFirebaseUser(user);
+                            this.cloudAuthReady = permanentIdentity;
+                            this.cloudMembershipReady = false;
                             this.firebaseIdentityUid = user.uid || '';
                             this.firebaseIdentityEmail = user.email || '';
                             this.firebaseIdentityStatus = user.isAnonymous ? 'احتياطي مؤقت' : 'هوية دائمة متصلة';
@@ -1173,10 +1175,24 @@
                                 this.firebaseIdentityIssueCode = '';
                                 this.firebaseIdentityMessage = 'تم التحقق من هوية Firebase الدائمة لهذا الجهاز.';
                             }
-                            this.refreshFirebaseMembershipStatus(user);
-                            this.startCloudSync();
+                            if (!permanentIdentity) {
+                                this.cloudStatus = 'offline';
+                                this.stopV2OperationalSync();
+                                return;
+                            }
+                            this.cloudStatus = navigator.onLine ? 'connecting' : 'offline';
+                            const expectedUid = user.uid;
+                            this.refreshFirebaseMembershipStatus(user).then(isActiveMember => {
+                                if (firebaseAuth?.currentUser?.uid !== expectedUid) return;
+                                this.cloudMembershipReady = Boolean(isActiveMember);
+                                this.cloudStatus = isActiveMember && navigator.onLine ? 'connecting' : 'offline';
+                                if (isActiveMember) this.startCloudSync();
+                                else this.stopV2OperationalSync();
+                            });
                             return;
                         }
+                        this.cloudAuthReady = false;
+                        this.cloudMembershipReady = false;
                         this.firebaseIdentityUid = '';
                         this.firebaseIdentityEmail = '';
                         this.firebaseIdentityStatus = 'غير متصل';
@@ -1192,8 +1208,13 @@
                 },
 
                 startCloudSync() {
-                    if (this.cloudUnsubscribe || !this.cloudAuthReady || !firestoreDB) {
+                    if (this.cloudUnsubscribe || !this.cloudAuthReady || !this.cloudMembershipReady || !firestoreDB) {
                         if (!firestoreDB) this.cloudStatus = 'offline';
+                        return;
+                    }
+                    if (this.isOperationalDocumentSyncActive()) {
+                        this.cloudStatus = navigator.onLine ? 'connecting' : 'offline';
+                        this.startV2OperationalSync();
                         return;
                     }
                     const docRef = firestoreDB.doc(this.cloudDocPath);
@@ -1304,8 +1325,8 @@
                     }
                     try {
                         const currentIdentity = firebaseAuth.currentUser;
-                        if (!currentIdentity || currentIdentity.isAnonymous) {
-                            await this.signInFirebaseForLocalUser(this.currentUser, { allowAnonymousFallback: true, createIfMissing: true });
+                        if (!this.isPermanentFirebaseUser(currentIdentity)) {
+                            await this.signInFirebaseForLocalUser(this.currentUser, { allowAnonymousFallback: false, createIfMissing: true });
                         }
                     } catch (error) {
                         console.warn('تعذر تجهيز هوية Firebase قبل حفظ الحسابات:', error);
@@ -1315,8 +1336,8 @@
                     while (!this.cloudAuthReady && Date.now() - startedAt < timeoutMs) {
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
-                    if (this.cloudAuthReady) this.startCloudSync();
-                    return !!this.cloudAuthReady;
+                    if (this.cloudAuthReady && this.cloudMembershipReady) this.startCloudSync();
+                    return Boolean(this.cloudAuthReady && this.cloudMembershipReady);
                 },
 
                 async persistUsersToCloudNow() {
@@ -1695,7 +1716,7 @@
                     return true;
                 },
                 async startV2OperationalSync() {
-                    if (!this.isV2OperationalSyncActive() || !this.cloudAuthReady || !firestoreDB || this.v2OperationalInitialLoadInFlight || this.v2OperationalUnsubscribers.length) return;
+                    if (!this.isOperationalDocumentSyncActive() || !this.cloudAuthReady || !this.cloudMembershipReady || !firestoreDB || this.v2OperationalInitialLoadInFlight || this.v2OperationalUnsubscribers.length) return;
                     this.v2OperationalInitialLoadInFlight = true;
                     try {
                         const names = this.getV2OperationalCollectionNames();
@@ -7314,48 +7335,10 @@
                                 </summary>
                                 <!-- User Accounts & Permissions Management (Admin Only) -->
                             <div x-show="currentUser?.role === 'admin'" x-init="loadAdminSecuritySettings()" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-5">
-	                                <div class="flex items-center justify-between border-b dark:border-slate-800 pb-3">
-                                    <h3 class="text-lg font-bold text-slate-800 dark:text-white">حسابات الدخول والصلاحيات</h3>
-                                    <span class="text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5"
-                                          :class="{
-                                              'bg-emerald-100 text-emerald-700': cloudSyncEnabled && cloudStatus === 'online',
-                                              'bg-blue-100 text-blue-700': cloudSyncEnabled && (cloudStatus === 'syncing' || cloudStatus === 'connecting'),
-                                              'bg-amber-100 text-amber-700': cloudSyncEnabled && cloudStatus !== 'online' && cloudStatus !== 'syncing' && cloudStatus !== 'connecting',
-                                              'bg-slate-100 text-slate-500': !cloudSyncEnabled
-                                          }">
-                                        <span x-text="cloudSyncEnabled ? (cloudStatus === 'online' ? '🟢 متصل بالسحابة (Firebase)' : (cloudStatus === 'syncing' ? '🔵 جارٍ المزامنة' : '🟡 وضع محلي - بانتظار الاتصال')) : '⚪ المزامنة السحابية غير مفعّلة'"></span>
-                                    </span>
+	                                <div class="border-b dark:border-slate-800 pb-3">
+	                                    <h3 class="text-lg font-bold text-slate-800 dark:text-white">حسابات الدخول والصلاحيات</h3>
+	                                    <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">إدارة المستخدمين المحليين وصلاحياتهم داخل العيادة.</p>
 	                                </div>
-	                                <div class="rounded-2xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/20 p-4 space-y-3">
-	                                    <div class="flex items-start justify-between gap-3 flex-wrap">
-	                                        <div><h4 class="font-extrabold text-sm text-indigo-900 dark:text-indigo-200">هوية Firebase وعضوية العيادة</h4><p class="text-[11px] mt-1 text-indigo-800/80 dark:text-indigo-300">تربط المزامنة المحمية المستخدم المحلي بهوية Firebase دائمة. الجلسة المجهولة تبقى احتياطاً محلياً فقط ولا تفي بمتطلبات القواعد الحية.</p></div>
-	                                        <span class="text-[11px] font-bold px-2.5 py-1 rounded-full" :class="firebaseIdentityStatus.includes('دائمة') ? 'bg-emerald-100 text-emerald-700' : (firebaseIdentityStatus.includes('احتياطي') ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600')" x-text="firebaseIdentityStatus"></span>
-	                                    </div>
-	                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
-	                                        <div class="rounded-xl bg-white/80 dark:bg-slate-900/70 px-3 py-2 text-slate-700 dark:text-slate-200"><b>Firebase UID:</b> <span class="font-mono break-all" x-text="firebaseIdentityUid || 'غير متاح'"></span></div>
-	                                        <div class="rounded-xl bg-white/80 dark:bg-slate-900/70 px-3 py-2 text-slate-700 dark:text-slate-200"><b>العضوية:</b> <span x-text="firebaseMembershipStatus + (firebaseMembershipRole ? ' — ' + firebaseMembershipRole : '')"></span></div>
-	                                    </div>
-	                                    <p class="text-[11px] leading-5 text-indigo-800 dark:text-indigo-200" x-text="firebaseIdentityMessage"></p>
-	                                    <div x-show="firebaseIdentityIssueCode === 'local-password-too-short'" class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"><p>الإجراء المطلوب: احفظ كلمة مرور جديدة من 6 أحرف أو أرقام على الأقل، ثم اضغط زر تهيئة الهوية مرة أخرى. لا يمس هذا الإجراء بيانات المرضى أو الزيارات.</p><button type="button" @click="focusAdminPasswordUpdateForFirebase()" class="mt-2 rounded-lg border border-amber-300 bg-white px-2.5 py-1.5 text-[11px] font-bold text-amber-900 hover:bg-amber-100 dark:border-amber-800 dark:bg-slate-900 dark:text-amber-200">الانتقال الآمن لتحديث كلمة المرور</button></div>
-	                                    <p class="text-[11px] leading-5 text-slate-600 dark:text-slate-300" x-text="firebaseMembershipMessage"></p>
-                                    <div class="flex gap-2 flex-wrap"><button type="button" @click="refreshFirebaseMembershipStatus()" :disabled="firebaseMembershipBusy || firebaseIdentityBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-200 disabled:opacity-50">تحديث الحالة</button><button type="button" @click="provisionPersistentFirebaseIdentityForCurrentUser()" x-show="!isPermanentFirebaseUser()" :disabled="firebaseIdentityBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"><span x-text="firebaseIdentityBusy ? 'جارٍ تهيئة الهوية…' : 'تهيئة هوية Firebase الدائمة'"></span></button><button type="button" @click="ensureClinicMembership()" :disabled="firebaseMembershipBusy || firebaseIdentityBusy || !isPermanentFirebaseUser()" class="text-xs font-bold px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50"><span x-text="firebaseMembershipBusy ? 'جارٍ التهيئة…' : 'تهيئة عضوية المدير الأولى'"></span></button></div>
-	                                    <p class="text-[10px] leading-5 text-slate-500 dark:text-slate-400">إذا كانت القواعد الحية منشورة بالفعل، يرفض Firebase هذا الزر عمداً لأن المتصفح لا يملك صلاحية تصعيد الأدوار؛ استخدم أداة المدير الموثوقة لاستعادة العضوية.</p>
-	                                </div>
-	                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
-                            <div id="admin-security" class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
-                            <strong>حماية كلمات المرور:</strong> كلمات المرور مخفية افتراضياً. استخدم زر العين لإظهارها مؤقتاً عند الحاجة. لا تعتمد على هذه الحماية إذا كان شخص آخر يملك وصولاً تقنياً كاملاً إلى الجهاز.
-                        </div>
-	                        <div id="admin-security-recovery" tabindex="-1" class="rounded-2xl border border-violet-200 dark:border-violet-900/60 bg-violet-50/70 dark:bg-violet-950/20 p-4 space-y-3">
-                            <div class="flex items-center justify-between gap-3"><div><h4 class="font-extrabold text-sm text-violet-900 dark:text-violet-200">استعادة كلمة مرور المدير دون إنترنت</h4><p class="text-[11px] mt-1 text-violet-800/80 dark:text-violet-300">احفظ سؤالاً وإجابة لا يعرفهما غير المدير. تُحفظ الإجابة كتجزئة محلية.</p></div><i data-lucide="key-round" class="w-5 h-5 text-violet-600"></i></div>
-                            <select x-model="securityForm.question" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm"><option value="">اختر سؤال الأمان</option><option value="ما اسم أول مدرسة درست فيها؟">ما اسم أول مدرسة درست فيها؟</option><option value="ما اسم أول عيادة عملت بها؟">ما اسم أول عيادة عملت بها؟</option><option value="ما اسم مدينتك الأولى؟">ما اسم مدينتك الأولى؟</option><option value="ما إجابتك الخاصة؟">ما إجابتك الخاصة؟</option></select>
-                            <input type="text" x-model="securityForm.answer" autocomplete="off" placeholder="إجابة سؤال الأمان" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm">
-	                            <div class="relative"><input id="admin-security-new-password" :type="showRecoveryPassword ? 'text' : 'password'" x-model="securityForm.newPassword" autocomplete="new-password" minlength="6" placeholder="كلمة مرور جديدة اختيارية — 6 أحرف أو أرقام على الأقل" class="w-full px-3 py-2 pl-11 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm"><button type="button" @click="showRecoveryPassword = !showRecoveryPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showRecoveryPassword ? 'إخفاء كلمة المرور الجديدة' : 'إظهار كلمة المرور الجديدة'"><i :data-lucide="showRecoveryPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
-                            <div class="flex items-center gap-3 flex-wrap"><button type="button" @click="saveAdminSecuritySettings()" class="bg-violet-600 hover:bg-violet-700 text-white px-4 py-2 rounded-xl text-xs font-bold">حفظ إعدادات الاستعادة</button><span x-show="securitySaveFeedback" x-text="securitySaveFeedback" class="text-emerald-700 dark:text-emerald-300 text-xs font-semibold"></span></div>
-                        </div>
-                        <div class="flex items-center justify-between gap-3 flex-wrap rounded-xl border border-amber-200 bg-amber-50 dark:border-amber-900/50 dark:bg-amber-950/20 px-4 py-3">
-                            <p class="text-xs font-bold text-amber-800 dark:text-amber-300"><i data-lucide="triangle-alert" class="w-4 h-4 inline-block align-middle ml-1"></i><span x-show="syncConflicts.length > 0">تم تسجيل <span x-text="syncConflicts.length"></span> تعارضات مزامنة للمراجعة.</span><span x-show="syncConflicts.length === 0">لا توجد تعارضات مزامنة مسجلة حالياً.</span></p>
-                            <button type="button" @click="showSyncConflictsModal = true" class="text-xs font-bold text-amber-800 dark:text-amber-300 underline underline-offset-4">فتح السجل</button>
-                        </div>
 
                                 <!-- Existing Users List -->
                                 <div class="space-y-3">
@@ -8116,7 +8099,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.0', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.1', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });
