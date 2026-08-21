@@ -80,8 +80,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.6.6';
-        const SOLI_APP_RELEASE = 'تهيئة آمنة لهوية Firebase الدائمة للمدير قبل عضوية العيادة';
+        const SOLI_APP_VERSION = 'v1.6.7';
+        const SOLI_APP_RELEASE = 'اعتماد مزامنة Firestore V2 متعددة الوثائق بعد الترحيل المتحقق';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -913,6 +913,10 @@
                 v2MirrorTimer: null,
                 v2MirrorInFlight: false,
                 v2MirrorFingerprints: {},
+                v2OperationalUnsubscribers: [],
+                v2OperationalCollectionCache: {},
+                v2OperationalReady: false,
+                v2OperationalInitialLoadInFlight: false,
                 syncChangeSequence: 0,
                 cloudUnsubscribe: null,
                 cloudAuthListenerStarted: false,
@@ -1016,11 +1020,21 @@
                     });
                 },
                 getCloudSyncSnapshot() {
+                    if (this.isV2OperationalSyncActive()) return this.getLegacyOperationalSnapshot();
                     const snapshot = {};
                     this.persistentKeys.forEach(key => {
                         snapshot[key] = key === 'users' ? this.getCloudSafeUsers(this.users) : this[key];
                     });
                     return snapshot;
+                },
+                getLegacyOperationalSnapshot() {
+                    // Firestore merge adds lightweight metadata only. It deliberately does not
+                    // delete the old arrays, which remain a retained recovery copy.
+                    return {
+                        users: this.getCloudSafeUsers(this.users),
+                        syncConflicts: this.syncConflicts || [],
+                        dataMigration: this.dataMigration || {}
+                    };
                 },
                 getSyncDataSnapshot() {
                     const snapshot = {};
@@ -1171,6 +1185,7 @@
                             this.cloudUnsubscribe();
                             this.cloudUnsubscribe = null;
                         }
+                        this.stopV2OperationalSync();
                         if (!this.isAuthenticated) this.cloudStatus = 'offline';
                     });
                 },
@@ -1222,13 +1237,25 @@
                                 remoteMeta.writerId && remoteMeta.writerId !== this.syncDeviceId &&
                                 remoteRevision > Number(this.localEditBaseRevision || 0);
                             const localSnapshot = preservePendingLocalSnapshot ? this.getSyncDataSnapshot() : null;
+                            const verifiedRemoteMigration = data?.dataMigration?.status === 'completed' &&
+                                Boolean(data?.dataMigration?.migrationId);
+                            const operationalV2 = verifiedRemoteMigration || this.isV2OperationalSyncActive();
                             this.applyingRemoteUpdate = true;
                             this.syncRevision = remoteRevision;
                             this.persistentKeys.forEach(key => {
+                                // لا تسمح لنسخة محلية أقدم أن تعكس حالة ترحيل تم التحقق منها
+                                // إدارياً. يبقى كل من الدخول المحلي ومصدر القراءة كما هما.
+                                if (key === 'dataMigration' && verifiedRemoteMigration) {
+                                    this.dataMigration = data.dataMigration;
+                                // Once the administrative verification has completed, medical
+                                // and configuration records are hydrated from their V2 documents.
+                                // The old document is preserved untouched as a recovery copy.
+                                } else if (operationalV2 && this.isV2OperationalKey(key)) {
+                                    return;
                                 // Local changes always win until their queued cloud write
                                 // completes. This prevents delayed remote snapshots from
                                 // erasing local fields or interrupting active text entry.
-                                if (preservePendingLocalSnapshot && localSnapshot?.[key] !== undefined) {
+                                } else if (preservePendingLocalSnapshot && localSnapshot?.[key] !== undefined) {
                                     this[key] = localSnapshot[key];
                                 } else if (key === 'users' && Array.isArray(data.users)) {
                                     this.users = this.mergeCloudUsersWithLocalCredentials(data.users);
@@ -1246,6 +1273,7 @@
                                 if (hasForeignPendingConflict) {
                                     this.recordSyncConflict(data, remoteMeta, 'وصل تعديل من جهاز آخر أثناء وجود تغييرات محلية لم تُرفع بعد؛ تم تسجيل تفاصيل التعارض.', localSnapshot);
                                 }
+                                if (operationalV2) this.startV2OperationalSync();
                                 if (preservePendingLocalSnapshot) this.queueCloudSync();
                             });
                         },
@@ -1350,10 +1378,14 @@
                 queueCloudSync() {
                     if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.applyingRemoteUpdate || this.doctorInfoEditing || !firestoreDB) return;
                     clearTimeout(this.cloudSyncTimer);
-                    this.cloudSyncTimer = setTimeout(() => this.pushStateToCloud(), 600);
+                    this.cloudSyncTimer = setTimeout(() => {
+                        if (this.isV2OperationalSyncActive()) this.pushStateToV2();
+                        else this.pushStateToCloud();
+                    }, 600);
                 },
 
                 pushStateToCloud() {
+                    if (this.isV2OperationalSyncActive()) return this.pushStateToV2();
                     if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.doctorInfoEditing || !firestoreDB || this.cloudWriteInFlight) return;
                     const dataToSave = this.getCloudSyncSnapshot();
                     const docRef = firestoreDB.doc(this.cloudDocPath);
@@ -1398,6 +1430,27 @@
                         this.cloudWriteInFlight = false;
                         if (this.localChangesPending && navigator.onLine) this.queueCloudSync();
                     });
+                },
+                async pushStateToV2() {
+                    if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.doctorInfoEditing || !firestoreDB || this.cloudWriteInFlight) return;
+                    const writeSequence = Number(this.syncChangeSequence || 0);
+                    this.cloudStatus = 'syncing';
+                    this.cloudWriteInFlight = true;
+                    try {
+                        const result = await this.flushV2MirroredChanges({ operationalWrite: true });
+                        if (!result?.ok) throw (result?.error || new Error('تعذرت مزامنة وثائق V2.'));
+                        this.localChangesPending = Number(this.syncChangeSequence || 0) !== writeSequence;
+                        this.cloudStatus = 'online';
+                        this.cloudRetryAttempts = 0;
+                    } catch (error) {
+                        console.error('تعذر رفع البيانات إلى Firestore V2 (سيُعاد المحاولة عند عودة الاتصال):', error);
+                        this.cloudStatus = 'offline';
+                        this.localChangesPending = true;
+                        this.scheduleCloudRetry();
+                    } finally {
+                        this.cloudWriteInFlight = false;
+                        if (this.localChangesPending && navigator.onLine) this.queueCloudSync();
+                    }
                 },
 
                 // ---- FIRESTORE V2: CONTROLLED MULTI-DOCUMENT MIGRATION ----
@@ -1532,13 +1585,119 @@
                 saveV2MirrorFingerprints() {
                     try { localStorage.setItem(this.getV2MirrorStorageKey(), JSON.stringify(this.v2MirrorFingerprints || {})); } catch (error) {}
                 },
+                isV2OperationalSyncActive(migration = this.dataMigration) {
+                    return Boolean(migration?.status === 'completed' && migration?.migrationId && migration?.dualWriteEnabled !== false);
+                },
+                isV2OperationalKey(key) {
+                    return !['users', 'syncConflicts', 'dataMigration'].includes(key);
+                },
+                getV2OperationalCollectionNames() {
+                    return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests', 'settings', 'catalogs'];
+                },
+                stripV2Metadata(value) {
+                    const { schemaVersion, migrationId, migratedAt, legacyId, updatedAt, ...record } = value || {};
+                    return record;
+                },
+                hydrateV2StateFromCollectionCache() {
+                    const cache = this.v2OperationalCollectionCache || {};
+                    const recordsFor = name => (cache[name] || []).map(item => this.stripV2Metadata(item));
+                    const patientDocs = cache.patients || [];
+                    const visitsByPatient = new Map();
+                    recordsFor('visits').forEach(visit => {
+                        const patientId = String(visit.patientId || visit.patientLegacyId || '');
+                        if (!visitsByPatient.has(patientId)) visitsByPatient.set(patientId, []);
+                        const { patientId: _patientId, patientLegacyId: _patientLegacyId, ...record } = visit;
+                        visitsByPatient.get(patientId).push(record);
+                    });
+                    const patients = patientDocs.map(doc => {
+                        const profile = this.stripV2Metadata(doc);
+                        const id = profile.id ?? profile.legacyId ?? doc._documentId;
+                        return { ...profile, id, records: visitsByPatient.get(String(doc._documentId || id)) || [] };
+                    });
+                    const setting = (cache.settings || []).find(item => item._documentId === 'general');
+                    const clinicalCatalog = (cache.catalogs || []).find(item => item._documentId === 'clinical');
+                    const templatesCatalog = (cache.catalogs || []).find(item => item._documentId === 'templates');
+                    const general = this.stripV2Metadata(setting);
+                    const clinical = this.stripV2Metadata(clinicalCatalog);
+                    const templates = this.stripV2Metadata(templatesCatalog);
+                    return {
+                        patients,
+                        appointments: recordsFor('appointments'),
+                        invoices: recordsFor('invoices'),
+                        prescriptions: recordsFor('prescriptions'),
+                        expenses: recordsFor('expenses'),
+                        waitingQueue: recordsFor('waitingQueue'),
+                        auditLog: recordsFor('auditLogs'),
+                        archiveManifests: recordsFor('archiveManifests'),
+                        ...(general || {}),
+                        ...(clinical || {}),
+                        ...(templates || {})
+                    };
+                },
+                applyV2RemoteState(reason = 'تحديث سحابي من مخطط V2') {
+                    if (!this.v2OperationalReady || this.localChangesPending || this.applyingRemoteUpdate) return false;
+                    const remoteState = this.hydrateV2StateFromCollectionCache();
+                    this.applyingRemoteUpdate = true;
+                    this.persistentKeys.forEach(key => {
+                        if (this.isV2OperationalKey(key) && remoteState[key] !== undefined) this[key] = remoteState[key];
+                    });
+                    this.persistState();
+                    this.renderIcons();
+                    this.$nextTick(() => {
+                        this.applyingRemoteUpdate = false;
+                        this.cloudStatus = navigator.onLine ? 'online' : 'offline';
+                    });
+                    return true;
+                },
+                async startV2OperationalSync() {
+                    if (!this.isV2OperationalSyncActive() || !this.cloudAuthReady || !firestoreDB || this.v2OperationalInitialLoadInFlight || this.v2OperationalUnsubscribers.length) return;
+                    this.v2OperationalInitialLoadInFlight = true;
+                    try {
+                        const names = this.getV2OperationalCollectionNames();
+                        const snapshots = await Promise.all(names.map(name => this.getV2Collection(name).get()));
+                        this.v2OperationalCollectionCache = snapshots.reduce((cache, snapshot, index) => {
+                            cache[names[index]] = snapshot.docs.map(doc => ({ ...doc.data(), _documentId: doc.id }));
+                            return cache;
+                        }, {});
+                        this.v2OperationalReady = true;
+                        this.applyV2RemoteState('التحميل الأول من مخطط V2');
+                        this.v2OperationalUnsubscribers = names.map(name => this.getV2Collection(name).onSnapshot(
+                            { includeMetadataChanges: true },
+                            snapshot => {
+                                if (snapshot.metadata.hasPendingWrites) return;
+                                this.v2OperationalCollectionCache = {
+                                    ...this.v2OperationalCollectionCache,
+                                    [name]: snapshot.docs.map(doc => ({ ...doc.data(), _documentId: doc.id }))
+                                };
+                                this.applyV2RemoteState('تحديث سحابي من مخطط V2');
+                            },
+                            error => {
+                                console.error(`تعذر متابعة مجموعة V2 ${name}:`, error);
+                                this.cloudStatus = 'offline';
+                            }
+                        ));
+                    } catch (error) {
+                        console.error('تعذر تحميل بيانات العيادة من مخطط Firestore V2:', error);
+                        this.v2OperationalReady = false;
+                        this.cloudStatus = 'offline';
+                    } finally {
+                        this.v2OperationalInitialLoadInFlight = false;
+                    }
+                },
+                stopV2OperationalSync() {
+                    (this.v2OperationalUnsubscribers || []).forEach(unsubscribe => unsubscribe());
+                    this.v2OperationalUnsubscribers = [];
+                    this.v2OperationalCollectionCache = {};
+                    this.v2OperationalReady = false;
+                },
                 queueV2MirroredChanges() {
+                    if (this.isV2OperationalSyncActive()) return this.queueCloudSync();
                     if (this.dataMigration?.status !== 'completed' || !this.cloudSyncEnabled || !this.cloudAuthReady || !firestoreDB) return;
                     clearTimeout(this.v2MirrorTimer);
                     this.v2MirrorTimer = setTimeout(() => this.flushV2MirroredChanges(), 900);
                 },
-                async flushV2MirroredChanges() {
-                    if (this.v2MirrorInFlight || this.dataMigration?.status !== 'completed' || !navigator.onLine || !(await this.waitForCloudAuthReady())) return;
+                async flushV2MirroredChanges({ operationalWrite = false } = {}) {
+                    if (this.v2MirrorInFlight || this.dataMigration?.status !== 'completed' || !navigator.onLine || !(await this.waitForCloudAuthReady())) return { ok: false, deferred: true };
                     this.v2MirrorInFlight = true;
                     try {
                         const state = this.getSyncDataSnapshot();
@@ -1556,6 +1715,8 @@
                         }
                         changed.forEach(operation => { this.v2MirrorFingerprints[operation.ref.path] = operation.fingerprint; });
                         this.saveV2MirrorFingerprints();
+                        const wasApplyingRemoteUpdate = this.applyingRemoteUpdate;
+                        this.applyingRemoteUpdate = true;
                         this.dataMigration = {
                             ...this.dataMigration,
                             dualWriteStatus: changed.length ? 'synced' : 'up_to_date',
@@ -1563,11 +1724,17 @@
                             lastError: ''
                         };
                         this.persistState();
+                        this.$nextTick(() => { this.applyingRemoteUpdate = wasApplyingRemoteUpdate; });
+                        return { ok: true, changed: changed.length };
                     } catch (error) {
                         console.error('تعذرت الكتابة المزدوجة إلى Firestore V2:', error);
+                        const wasApplyingRemoteUpdate = this.applyingRemoteUpdate;
+                        this.applyingRemoteUpdate = true;
                         this.dataMigration = { ...this.dataMigration, dualWriteStatus: 'pending_retry', lastError: `تعذرت مزامنة V2: ${String(error?.message || error)}` };
                         this.persistState();
-                        setTimeout(() => this.queueV2MirroredChanges(), 4000);
+                        this.$nextTick(() => { this.applyingRemoteUpdate = wasApplyingRemoteUpdate; });
+                        if (!operationalWrite) setTimeout(() => this.queueV2MirroredChanges(), 4000);
+                        return { ok: false, error };
                     } finally {
                         this.v2MirrorInFlight = false;
                     }
@@ -7857,7 +8024,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.6', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.7', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

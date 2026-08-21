@@ -4,8 +4,17 @@ import { resolve } from 'node:path';
 
 const projectRoot = resolve(import.meta.dirname, '..');
 const indexHtml = readFileSync(resolve(projectRoot, 'client/index.html'), 'utf8');
+const adminMigrationScript = readFileSync(resolve(projectRoot, 'scripts/migrate-firestore-v2.mjs'), 'utf8');
 
 describe('ترحيل Firebase V2 غير المدمر', () => {
+  it('يوفر أداة إدارية للمعاينة الافتراضية والتنفيذ الصريح بلا اعتماد على تسجيل دخول التطبيق', () => {
+    expect(adminMigrationScript).toContain("const execute = process.argv.includes('--execute')");
+    expect(adminMigrationScript).toContain("mode: finalize ? 'finalize' : (execute ? 'execute' : 'dry-run')");
+    expect(adminMigrationScript).toContain('legacyDocumentRetained: true');
+    expect(adminMigrationScript).toContain('loginFlowChanged: false');
+    expect(adminMigrationScript).not.toContain("from 'firebase-admin/auth'");
+  });
+
   it('يحمّل Firebase Storage Compat ولا يعيد مزامنة شعار Base64 ضمن المفاتيح الدائمة', () => {
     expect(indexHtml).toContain('firebase-storage-compat.js');
     expect(indexHtml).toContain('firebaseStorage = firebase.storage()');
@@ -33,20 +42,24 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain('markArchiveRecordRestored(');
   });
 
-  it('يمنع تشغيل الترحيل دون اتصال ويبقي قراءة المخطط القديم قائمة بعد النسخ', () => {
+  it('يمنع تشغيل الترحيل دون اتصال ويحفظ الوثيقة القديمة كنسخة استرداد بعد النسخ', () => {
     expect(indexHtml).toContain('!navigator.onLine || !(await this.waitForCloudAuthReady())');
-    expect(indexHtml).toContain('يستمر التطبيق بالقراءة من المخطط القديم');
+    expect(indexHtml).toContain('getLegacyOperationalSnapshot()');
+    expect(indexHtml).toContain('It deliberately does not');
     expect(indexHtml).toContain('لم تُحذف البيانات القديمة');
   });
 
-  it('يستخدم كتابة مزدوجة مؤجلة بعد نجاح المصدر القديم ولا يحول القراءة تلقائياً', () => {
-    expect(indexHtml).toContain('this.queueV2MirroredChanges();');
-    expect(indexHtml).toContain('async flushV2MirroredChanges()');
+  it('يعتمد V2 تشغيلياً بعد تحقق المصدر القديم ويجعل الوثيقة القديمة بيانات وصفية فقط', () => {
+    expect(indexHtml).toContain('isV2OperationalSyncActive(migration = this.dataMigration)');
+    expect(indexHtml).toContain('async startV2OperationalSync()');
+    expect(indexHtml).toContain('async pushStateToV2()');
+    expect(indexHtml).toContain('if (this.isV2OperationalSyncActive()) return this.getLegacyOperationalSnapshot();');
+    expect(indexHtml).toContain("if (this.isV2OperationalSyncActive()) this.pushStateToV2();");
+    expect(indexHtml).toContain('hydrateV2StateFromCollectionCache()');
     expect(indexHtml).toContain("dualWriteStatus: 'pending_retry'");
     expect(indexHtml).toContain('this.dataMigration?.status !== \'completed\'');
-    expect(indexHtml).toContain('!navigator.onLine || !(await this.waitForCloudAuthReady())');
-    expect(indexHtml).toContain('this.v2MirrorTimer = setTimeout(() => this.flushV2MirroredChanges(), 900)');
-    expect(indexHtml).toContain('تظل القراءة القديمة هي النشطة');
+    expect(indexHtml).toContain("return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests', 'settings', 'catalogs']");
+    expect(indexHtml).toContain('this.stopV2OperationalSync();');
   });
 
   it('يوفر تقرير مطابقة بعد الترحيل قبل أي تحويل قراءة مستقبلي', () => {
@@ -54,6 +67,24 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain("'auditLogs', 'archiveManifests'");
     expect(indexHtml).toContain('validation.matches');
     expect(indexHtml).toContain('التحقق من المطابقة');
+  });
+
+  it('يوفر تحققاً إدارياً للقراءة فقط يطابق أعداد وثائق V2 بمعرّف الترحيل', () => {
+    expect(adminMigrationScript).toContain("const verify = process.argv.includes('--verify')");
+    expect(adminMigrationScript).toContain("where('migrationId', '==', migrationId).get()");
+    expect(adminMigrationScript).toContain("mode: 'verify'");
+    expect(adminMigrationScript).toContain('legacyDocumentRetained: true');
+    expect(adminMigrationScript).toContain('loginFlowChanged: false');
+  });
+
+  it('لا يعتمد حالة الترحيل أو يفعّل الكتابة المزدوجة إلا بعد المطابقة ويحميها من نسخة محلية أقدم', () => {
+    expect(adminMigrationScript).toContain("const finalize = process.argv.includes('--finalize')");
+    expect(adminMigrationScript).toContain('if (!validation.matches)');
+    expect(adminMigrationScript).toContain("status: 'completed'");
+    expect(adminMigrationScript).toContain('dualWriteEnabled: true');
+    expect(indexHtml).toContain('const verifiedRemoteMigration = data?.dataMigration?.status === \'completed\'');
+    expect(indexHtml).toContain("if (key === 'dataMigration' && verifiedRemoteMigration)");
+    expect(indexHtml).toContain('يبقى كل من الدخول المحلي ومصدر القراءة كما هما');
   });
 });
 
