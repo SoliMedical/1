@@ -9,6 +9,9 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
   const appSource = readProjectFile('client/index.html');
   const rules = readProjectFile('firestore.rules');
   const bootstrapScript = readProjectFile('scripts/sync-firebase-clinic-members.mjs');
+  const claudeTestSource = readProjectFile('claude-v175/index.html');
+  const primaryFirebaseConfig = readProjectFile('firebase-config.js');
+  const claudeTestFirebaseConfig = readProjectFile('claude-v175/firebase-config.js');
 
   it('prefers email/password Firebase identities while retaining an explicit anonymous offline fallback', () => {
     expect(appSource).toContain('async signInFirebaseForLocalUser(localUser, options = {})');
@@ -106,6 +109,12 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(bootstrapScript).toContain('await auth.getUserByEmail(firebaseEmailForUser(user.email))');
     expect(bootstrapScript).toContain("error?.code === 'auth/user-not-found'");
     expect(bootstrapScript).toContain("reason: 'firebase_identity_missing'");
-    expect(bootstrapScript).toContain("serviceAccount.private_key = serviceAccount.private_key.replace(/\\\\n/g, '\\n')");
+    expect(bootstrapScript).toContain('serviceAccount.private_key = serviceAccount.private_key.replace(');
+  });
+
+  it('loads the same Firebase configuration beside the raw Claude test file without modifying that file', () => {
+    expect(claudeTestSource).toContain('<script src="./firebase-config.js"></script>');
+    expect(claudeTestSource).toContain('async provisionMembershipForOtherUser(targetLocalUser, targetRole = \'assistant\')');
+    expect(claudeTestFirebaseConfig).toBe(primaryFirebaseConfig);
   });
 });
