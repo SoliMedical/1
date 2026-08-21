@@ -80,8 +80,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.6.1';
-        const SOLI_APP_RELEASE = 'تهيئة ترحيل Firebase الآمن وتخزين شعار العيادة وأرشفة عرض المواعيد';
+        const SOLI_APP_VERSION = 'v1.6.3';
+        const SOLI_APP_RELEASE = 'إصلاح أولوية تسجيل الدخول المحلي مع استمرار تهيئة هوية Firebase الآمنة';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -509,6 +509,14 @@
                 firebaseMigrationUserId: '',
                 firebaseMigrationPassword: '',
                 firebaseMigrationMessage: '',
+                firebaseIdentityUid: '',
+                firebaseIdentityEmail: '',
+                firebaseIdentityStatus: 'غير متصل',
+                firebaseIdentityMessage: '',
+                firebaseMembershipStatus: 'غير مفحوصة',
+                firebaseMembershipRole: '',
+                firebaseMembershipMessage: 'سجّل دخولاً دائماً إلى Firebase لفحص عضوية العيادة.',
+                firebaseMembershipBusy: false,
                 userPermissionDrafts: {},
                 userSaveFeedback: {},
                 securityQuestionOptions: [
@@ -962,8 +970,12 @@
                         return candidateIsPrimaryAdmin && !currentIsPrimaryAdmin ? candidate : current;
                     };
                     source.forEach(rawUser => {
-                        if (!rawUser || !rawUser.email || !rawUser.password) return;
-                        const user = this.withCompatiblePermissions({ ...rawUser, email: String(rawUser.email).trim(), password: String(rawUser.password) });
+                        if (!rawUser || !rawUser.email) return;
+                        const user = this.withCompatiblePermissions({
+                            ...rawUser,
+                            email: String(rawUser.email).trim(),
+                            ...(rawUser.password ? { password: String(rawUser.password) } : {})
+                        });
                         const emailKey = user.email.toLowerCase();
                         const idKey = user.id === undefined || user.id === null ? '' : String(user.id);
                         const existingIndex = (idKey && indexesById.has(idKey)) ? indexesById.get(idKey) : indexesByEmail.get(emailKey);
@@ -979,6 +991,34 @@
                         if (preferred.id !== undefined && preferred.id !== null) indexesById.set(String(preferred.id), existingIndex);
                     });
                     return result;
+                },
+                getCloudSafeUsers(users = this.users) {
+                    return this.normalizeUsers(users).map(user => {
+                        const { password, securityAnswerHash, securityQuestion, ...cloudUser } = user;
+                        return {
+                            ...cloudUser,
+                            firebaseEmail: this.firebaseEmailForUser(cloudUser.email),
+                            firebaseAuthStatus: cloudUser.firebaseAuthStatus || (cloudUser.firebaseUid ? 'membership_pending' : 'not_provisioned')
+                        };
+                    });
+                },
+                mergeCloudUsersWithLocalCredentials(remoteUsers) {
+                    const localUsersByEmail = new Map((this.users || []).map(user => [String(user?.email || '').trim().toLowerCase(), user]));
+                    return this.normalizeUsers(remoteUsers).map(remoteUser => {
+                        const localUser = localUsersByEmail.get(String(remoteUser.email || '').trim().toLowerCase());
+                        const localSecret = localUser?.password ? { password: String(localUser.password) } : {};
+                        const localRecovery = localUser?.securityAnswerHash
+                            ? { securityAnswerHash: localUser.securityAnswerHash, securityQuestion: localUser.securityQuestion || '' }
+                            : {};
+                        return this.withCompatiblePermissions({ ...remoteUser, ...localSecret, ...localRecovery });
+                    });
+                },
+                getCloudSyncSnapshot() {
+                    const snapshot = {};
+                    this.persistentKeys.forEach(key => {
+                        snapshot[key] = key === 'users' ? this.getCloudSafeUsers(this.users) : this[key];
+                    });
+                    return snapshot;
                 },
                 getSyncDataSnapshot() {
                     const snapshot = {};
@@ -1105,9 +1145,21 @@
                         this.authError = '';
                         this.cloudStatus = user && navigator.onLine ? 'online' : 'offline';
                         if (user) {
+                            this.firebaseIdentityUid = user.uid || '';
+                            this.firebaseIdentityEmail = user.email || '';
+                            this.firebaseIdentityStatus = user.isAnonymous ? 'احتياطي مؤقت' : 'هوية دائمة متصلة';
+                            this.firebaseIdentityMessage = user.isAnonymous
+                                ? 'تعمل المزامنة المؤقتة، لكن لا يمكن تطبيق قواعد العضوية الحية بهذه الجلسة.'
+                                : 'تم التحقق من هوية Firebase الدائمة لهذا الجهاز.';
+                            this.refreshFirebaseMembershipStatus(user);
                             this.startCloudSync();
                             return;
                         }
+                        this.firebaseIdentityUid = '';
+                        this.firebaseIdentityEmail = '';
+                        this.firebaseIdentityStatus = 'غير متصل';
+                        this.firebaseMembershipStatus = 'غير مفحوصة';
+                        this.firebaseMembershipRole = '';
                         if (this.cloudUnsubscribe) {
                             this.cloudUnsubscribe();
                             this.cloudUnsubscribe = null;
@@ -1153,7 +1205,7 @@
                                 this.clinicLogoDataUrl = data.clinicLogoDataUrl;
                             }
                             if (Array.isArray(data.users) && !this.usersWriteInFlight && !this.usersLocalChangesPending) {
-                                this.users = this.normalizeUsers(data.users);
+                                this.users = this.mergeCloudUsersWithLocalCredentials(data.users);
                                 this.syncCurrentUserFromUsers();
                                 this.persistState();
                             }
@@ -1171,6 +1223,9 @@
                                 // erasing local fields or interrupting active text entry.
                                 if (preservePendingLocalSnapshot && localSnapshot?.[key] !== undefined) {
                                     this[key] = localSnapshot[key];
+                                } else if (key === 'users' && Array.isArray(data.users)) {
+                                    this.users = this.mergeCloudUsersWithLocalCredentials(data.users);
+                                    this.syncCurrentUserFromUsers();
                                 } else if (data[key] !== undefined) {
                                     this[key] = data[key];
                                 }
@@ -1212,9 +1267,12 @@
                         this.observeFirebaseAuth();
                     }
                     try {
-                        if (!firebaseAuth.currentUser) await firebaseAuth.signInAnonymously();
+                        const currentIdentity = firebaseAuth.currentUser;
+                        if (!currentIdentity || currentIdentity.isAnonymous) {
+                            await this.signInFirebaseForLocalUser(this.currentUser, { allowAnonymousFallback: true, createIfMissing: true });
+                        }
                     } catch (error) {
-                        console.warn('تعذر إنشاء جلسة المزامنة قبل حفظ الحسابات:', error);
+                        console.warn('تعذر تجهيز هوية Firebase قبل حفظ الحسابات:', error);
                         return false;
                     }
                     const startedAt = Date.now();
@@ -1239,7 +1297,7 @@
                     this.users = this.normalizeUsers(this.users);
                     this.syncCurrentUserFromUsers();
                     const usersWriteSequence = Number(this.usersChangeSequence || 0);
-                    const localUsers = JSON.parse(JSON.stringify(this.users || []));
+                    const localUsers = this.getCloudSafeUsers(this.users);
                     this.cloudStatus = 'syncing';
                     this.usersWriteInFlight = true;
                     try {
@@ -1290,8 +1348,7 @@
 
                 pushStateToCloud() {
                     if (!this.cloudSyncEnabled || !this.cloudAuthReady || this.doctorInfoEditing || !firestoreDB || this.cloudWriteInFlight) return;
-                    const dataToSave = {};
-                    this.persistentKeys.forEach(key => { dataToSave[key] = this[key]; });
+                    const dataToSave = this.getCloudSyncSnapshot();
                     const docRef = firestoreDB.doc(this.cloudDocPath);
                     const baseRevision = Number(this.localEditBaseRevision || this.syncRevision || 0);
                     const writeSequence = Number(this.syncChangeSequence || 0);
@@ -2343,8 +2400,8 @@
                 },
 
                 connectFirebaseForLocalUser() {
-                    // Local credentials and permissions remain authoritative. Firebase is opened
-                    // only after local login and is never used to validate the clinic user.
+                    // Local login remains available offline. Online sessions are linked to a
+                    // durable Firebase identity so live membership rules can be enforced.
                     if (!this.cloudSyncEnabled || !firebaseAuth || !this.isAuthenticated) {
                         this.cloudStatus = 'offline';
                         return;
@@ -2353,7 +2410,7 @@
                         this.cloudAuthListenerStarted = true;
                         this.observeFirebaseAuth();
                     }
-                    if (firebaseAuth.currentUser) {
+                    if (firebaseAuth.currentUser && !firebaseAuth.currentUser.isAnonymous) {
                         this.cloudAuthReady = true;
                         this.cloudStatus = navigator.onLine ? 'online' : 'offline';
                         this.startCloudSync();
@@ -2364,10 +2421,164 @@
                         return;
                     }
                     this.cloudStatus = 'connecting';
-                    firebaseAuth.signInAnonymously().catch(err => {
-                        console.warn('تعذر تشغيل المزامنة الصامتة:', err);
+                    this.signInFirebaseForLocalUser(this.currentUser, { allowAnonymousFallback: true, createIfMissing: true }).catch(err => {
+                        console.warn('تعذر تشغيل الهوية الدائمة للمزامنة:', err);
                         this.cloudStatus = 'offline';
                     });
+                },
+
+                firebaseRoleForLocalUser(user) {
+                    if (user?.id === 1 || String(user?.id) === '1') return 'owner';
+                    if (user?.role === 'admin') return 'admin';
+                    const role = String(user?.role || '').toLowerCase();
+                    return role.includes('طبيب') || role.includes('clinician') || role.includes('doctor') ? 'clinician' : 'assistant';
+                },
+                isPermanentFirebaseUser(user = firebaseAuth?.currentUser) {
+                    return Boolean(user && !user.isAnonymous && user.uid);
+                },
+                firebaseIdentityErrorMessage(error) {
+                    const code = String(error?.code || '');
+                    if (code.includes('weak-password')) return 'كلمة المرور الحالية أقصر من 6 أحرف؛ حدّث كلمة مرور الدخول المحلي إلى 6 أحرف أو أكثر قبل تفعيل هوية Firebase الدائمة.';
+                    if (code.includes('wrong-password') || code.includes('invalid-credential')) return 'كلمة مرور Firebase غير مطابقة. استخدم كلمة المرور الأخيرة للحساب أو حدّثها من المدير.';
+                    if (code.includes('too-many-requests')) return 'تم إيقاف محاولات الدخول مؤقتاً لأسباب حماية. انتظر قليلاً ثم حاول مرة أخرى.';
+                    if (code.includes('network-request-failed')) return 'تعذر الوصول إلى Firebase الآن؛ سيبقى النظام المحلي قابلاً للعمل دون اتصال.';
+                    return 'تعذر التحقق من هوية Firebase الدائمة الآن؛ سيستمر النظام محلياً إلى أن تعود الخدمة.';
+                },
+                async signInFirebaseForLocalUser(localUser, options = {}) {
+                    const { allowAnonymousFallback = true, createIfMissing = false } = options;
+                    if (!firebaseAuth || !navigator.onLine || !localUser?.email) return { ok: false, persistent: false };
+                    const firebaseEmail = this.firebaseEmailForUser(localUser.email);
+                    const firebasePassword = String(localUser.password || '');
+                    if (!firebasePassword) {
+                        this.firebaseIdentityMessage = 'لا توجد كلمة مرور محلية محفوظة لهذا الجهاز لإثبات هوية Firebase. سجّل دخولاً من جهاز موثوق أو اطلب من المدير إعادة تهيئة الحساب.';
+                        return { ok: false, persistent: false };
+                    }
+                    try {
+                        const credential = await firebaseAuth.signInWithEmailAndPassword(firebaseEmail, firebasePassword);
+                        this.firebaseIdentityUid = credential.user?.uid || '';
+                        this.firebaseIdentityEmail = credential.user?.email || firebaseEmail;
+                        this.firebaseIdentityStatus = 'هوية دائمة متصلة';
+                        this.firebaseIdentityMessage = 'تم ربط جلسة المستخدم بهوية Firebase دائمة.';
+                        this.attachFirebaseUidToLocalUser(localUser, credential.user?.uid || '');
+                        await this.refreshFirebaseMembershipStatus(credential.user);
+                        return { ok: true, persistent: true, user: credential.user };
+                    } catch (signInError) {
+                        const mayCreate = createIfMissing && String(signInError?.code || '').includes('user-not-found');
+                        if (mayCreate && firebasePassword.length >= 6) {
+                            try {
+                                const credential = await firebaseAuth.createUserWithEmailAndPassword(firebaseEmail, firebasePassword);
+                                this.firebaseIdentityUid = credential.user?.uid || '';
+                                this.firebaseIdentityEmail = credential.user?.email || firebaseEmail;
+                                this.firebaseIdentityStatus = 'هوية دائمة جديدة';
+                                this.firebaseIdentityMessage = 'تم إنشاء هوية Firebase دائمة لهذا الحساب. أكمل فحص عضوية العيادة قبل تطبيق القواعد الحية.';
+                                this.attachFirebaseUidToLocalUser(localUser, credential.user?.uid || '');
+                                await this.refreshFirebaseMembershipStatus(credential.user);
+                                return { ok: true, persistent: true, user: credential.user, created: true };
+                            } catch (createError) {
+                                signInError = createError;
+                            }
+                        }
+                        this.firebaseIdentityMessage = this.firebaseIdentityErrorMessage(signInError);
+                        if (allowAnonymousFallback) {
+                            try {
+                                const anonymousCredential = await firebaseAuth.signInAnonymously();
+                                this.firebaseIdentityUid = anonymousCredential.user?.uid || '';
+                                this.firebaseIdentityEmail = '';
+                                this.firebaseIdentityStatus = 'احتياطي مؤقت';
+                                this.firebaseMembershipStatus = 'غير صالحة للجلسة المجهولة';
+                                this.firebaseMembershipRole = '';
+                                this.firebaseMembershipMessage = 'تعمل البيانات المحلية الآن، لكن عضوية العيادة لا تُمنح للجلسات المجهولة.';
+                                return { ok: false, persistent: false, fallback: true };
+                            } catch (anonymousError) {
+                                console.warn('تعذر بدء جلسة Firebase الاحتياطية:', anonymousError);
+                            }
+                        }
+                        return { ok: false, persistent: false, error: signInError };
+                    }
+                },
+                attachFirebaseUidToLocalUser(localUser, uid) {
+                    if (!uid || !localUser) return;
+                    const localUserId = String(localUser.id ?? '');
+                    const user = (this.users || []).find(candidate => String(candidate.id ?? '') === localUserId)
+                        || (this.users || []).find(candidate => String(candidate.email || '').trim().toLowerCase() === String(localUser.email || '').trim().toLowerCase());
+                    if (user && user.firebaseUid !== uid) {
+                        user.firebaseUid = uid;
+                        user.firebaseAuthStatus = 'membership_pending';
+                        if (this.currentUser && String(this.currentUser.id ?? '') === String(user.id ?? '')) this.currentUser = this.withCompatiblePermissions(user);
+                        this.persistState();
+                        this.queueCloudSync();
+                    }
+                },
+                async refreshFirebaseMembershipStatus(user = firebaseAuth?.currentUser) {
+                    if (!this.isPermanentFirebaseUser(user)) {
+                        this.firebaseMembershipStatus = 'غير صالحة للجلسة المجهولة';
+                        this.firebaseMembershipRole = '';
+                        this.firebaseMembershipMessage = 'لا يمكن فحص العضوية أو تطبيق قواعد Firebase بهوية مجهولة.';
+                        return false;
+                    }
+                    if (!firestoreDB || !navigator.onLine) {
+                        this.firebaseMembershipStatus = 'بانتظار الاتصال';
+                        this.firebaseMembershipMessage = 'سيتم فحص عضوية العيادة عند عودة الإنترنت.';
+                        return false;
+                    }
+                    try {
+                        const memberSnapshot = await this.getV2ClinicRef().collection('members').doc(user.uid).get({ source: 'server' });
+                        const member = memberSnapshot.exists ? memberSnapshot.data() : null;
+                        if (member?.status === 'active') {
+                            this.firebaseMembershipStatus = 'نشطة';
+                            this.firebaseMembershipRole = member.role || '';
+                            this.firebaseMembershipMessage = `عضوية العيادة نشطة بدور ${member.role || 'غير محدد'}.`;
+                            this.attachFirebaseUidToLocalUser(this.currentUser, user.uid);
+                            return true;
+                        }
+                        this.firebaseMembershipStatus = member ? 'موقوفة' : 'غير موجودة';
+                        this.firebaseMembershipRole = member?.role || '';
+                        this.firebaseMembershipMessage = member
+                            ? 'وثيقة العضوية موجودة لكنها ليست نشطة. راجع المدير أو مسار التهيئة الإداري.'
+                            : 'لم تُنشأ وثيقة عضوية لهذا المستخدم بعد. أنشئ عضوية المدير الأولى قبل نشر القواعد الحية.';
+                        return false;
+                    } catch (error) {
+                        this.firebaseMembershipStatus = 'تعذر الفحص';
+                        this.firebaseMembershipMessage = 'تعذر قراءة وثيقة العضوية. إذا كانت القواعد الحية منشورة، استخدم أداة المدير الموثوقة لإنشائها أو استعادتها.';
+                        console.warn('تعذر فحص عضوية Firebase:', error);
+                        return false;
+                    }
+                },
+                async ensureClinicMembership() {
+                    if (this.currentUser?.role !== 'admin') {
+                        alert('تهيئة عضوية العيادة متاحة لمدير النظام فقط.');
+                        return false;
+                    }
+                    const user = firebaseAuth?.currentUser;
+                    if (!this.isPermanentFirebaseUser(user)) {
+                        this.firebaseMembershipMessage = 'سجّل الدخول بهوية Firebase دائمة أولاً. إذا كانت كلمة المرور أقل من 6 أحرف، حدّثها محلياً ثم أعد الدخول.';
+                        return false;
+                    }
+                    if (!firestoreDB || !navigator.onLine) {
+                        this.firebaseMembershipMessage = 'تحتاج تهيئة العضوية إلى اتصال بالإنترنت.';
+                        return false;
+                    }
+                    this.firebaseMembershipBusy = true;
+                    this.firebaseMembershipMessage = 'جارٍ تهيئة وثيقة عضوية المدير...';
+                    try {
+                        await this.getV2ClinicRef().collection('members').doc(user.uid).set({
+                            status: 'active',
+                            role: 'owner',
+                            createdAt: new Date().toISOString(),
+                            createdBy: 'owner-bootstrap-ui',
+                            firebaseEmail: user.email || '',
+                            localUserId: String(this.currentUser?.id || '')
+                        }, { merge: true });
+                        await this.refreshFirebaseMembershipStatus(user);
+                        return true;
+                    } catch (error) {
+                        this.firebaseMembershipStatus = 'بحاجة لمسار إداري';
+                        this.firebaseMembershipMessage = 'منعت قواعد Firebase إنشاء العضوية من المتصفح، وهذا متوقع بعد النشر الحي. شغّل أداة المدير الموثوقة لإنشاء العضوية أو استعادتها.';
+                        console.warn('تعذر تهيئة عضوية المدير من المتصفح:', error);
+                        return false;
+                    } finally {
+                        this.firebaseMembershipBusy = false;
+                    }
                 },
 
                 async prepareUsersForOnlineLogin() {
@@ -2502,21 +2713,36 @@
                 async handleLogin() {
                     this.isLoading = true;
                     this.loginError = '';
-                    if (navigator.onLine && this.cloudSyncEnabled) {
-                        const latestUsersLoaded = await this.prepareUsersForOnlineLogin();
-                        if (!latestUsersLoaded) {
-                            this.loginError = 'تعذر التحقق من أحدث بيانات الحسابات. تأكد من اتصال الإنترنت ثم حاول مرة أخرى.';
-                            this.isLoading = false;
-                            return;
-                        }
-                    }
                     const enteredEmail = (this.loginForm.email || '').trim().toLowerCase();
                     const enteredPassword = (this.loginForm.password || '').trim();
-                    const matchedUser = this.users.find(u => u.email.trim().toLowerCase() === enteredEmail);
+                    let matchedUser = this.users.find(u => u.email.trim().toLowerCase() === enteredEmail);
+                    const localCredentialsMatch = Boolean(matchedUser?.password && matchedUser.password === enteredPassword);
+                    let firebaseLogin = { persistent: false };
 
-                    if (!matchedUser || matchedUser.password !== enteredPassword) {
+                    // لا ننتظر Firebase ولا نبدّل قائمة الحسابات عندما تكون بيانات الجهاز
+                    // المحلي صحيحة. هذا يمنع خطأ الشبكة أو هوية Firebase غير المنشأة بعد
+                    // من رفض دخول المدير إلى بيانات عيادته المحلية.
+                    if (!localCredentialsMatch && navigator.onLine && this.cloudSyncEnabled && firebaseAuth) {
+                        firebaseLogin = await this.signInFirebaseForLocalUser(
+                            { ...(matchedUser || {}), email: enteredEmail, password: enteredPassword },
+                            { allowAnonymousFallback: false, createIfMissing: false }
+                        );
+                        if (firebaseLogin.persistent) {
+                            await this.prepareUsersForOnlineLogin();
+                            matchedUser = this.users.find(u => u.email.trim().toLowerCase() === enteredEmail);
+                            // Firebase has verified the submitted secret. It is retained only in
+                            // this browser's encrypted/local state so future offline logins work;
+                            // getCloudSafeUsers() explicitly omits it from Firestore writes.
+                            if (matchedUser && !matchedUser.password && firebaseLogin.persistent) {
+                                matchedUser.password = enteredPassword;
+                                this.persistState();
+                            }
+                        }
+                    }
+
+                    if (!matchedUser || !(localCredentialsMatch || firebaseLogin.persistent)) {
                         this.loginError = navigator.onLine
-                            ? 'اسم المستخدم أو كلمة المرور غير صحيحة وفق أحدث نسخة للحسابات. استخدم البيانات الجديدة بعد أي تعديل من المدير.'
+                            ? 'تعذر التحقق من اسم المستخدم أو كلمة المرور. استخدم بيانات الدخول الأخيرة، أو اطلب من المدير تهيئة حساب Firebase وعضويته.'
                             : 'اسم المستخدم أو كلمة المرور غير صحيحة، كما أن هذا الجهاز يحتاج إلى أول دخول متصل بالإنترنت.';
                         this.isLoading = false;
                         return;
@@ -2586,10 +2812,19 @@
                     this.users.push(newUser);
                     this.userPermissionDrafts[newUser.id] = { ...newUser.permissions };
                     this.persistState();
+                    const firebaseAccount = await this.createFirebaseIdentityForNewUser(newUser);
                     const cloudResult = await this.persistUsersToCloudNow();
                     if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
                         alert('تم حفظ الحساب محلياً، لكن لم يؤكَّد حفظه في السحابة. لا تغلق الصفحة حتى يعود الاتصال وتظهر حالة «متصل»، ثم أعد المحاولة.');
                         return;
+                    }
+
+                    if (firebaseAccount?.deferred) {
+                        alert('تم حفظ حساب الموظف محلياً. عند عودة الإنترنت سيحتاج المدير إلى إنشاء هوية Firebase وعضويته قبل تمكين المزامنة المحمية لهذا الموظف.');
+                    } else if (firebaseAccount && !firebaseAccount.ok) {
+                        alert(firebaseAccount.message || 'تم حفظ حساب الموظف محلياً، لكن تعذر إنشاء هوية Firebase له. راجع كلمة المرور (6 أحرف على الأقل) ثم أعد المحاولة.');
+                    } else if (firebaseAccount?.ok) {
+                        alert('تم إنشاء هوية Firebase للموظف دون تغيير جلسة المدير. يبقى إنشاء عضوية العيادة من المسار الإداري الموثوق مطلوباً قبل تطبيق القواعد الحية.');
                     }
 
                     this.newUserForm = {
@@ -2720,6 +2955,40 @@
                         .replace(/-+/g, '-')
                         .replace(/^-|-$/g, '') || 'user';
                     return `${safeLocalPart}@solimedical.local`;
+                },
+
+                async createFirebaseIdentityForNewUser(localUser) {
+                    if (!firebase || !firebaseAuth || !navigator.onLine) {
+                        localUser.firebaseAuthStatus = 'not_provisioned';
+                        return { ok: false, deferred: true };
+                    }
+                    const password = String(localUser?.password || '');
+                    if (password.length < 6) {
+                        localUser.firebaseAuthStatus = 'password_update_required';
+                        return { ok: false, message: 'كلمة مرور Firebase يجب أن تكون 6 أحرف أو أرقام على الأقل.' };
+                    }
+                    const firebaseEmail = this.firebaseEmailForUser(localUser.email);
+                    const secondaryName = `secondary-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+                    let secondaryApp = null;
+                    try {
+                        secondaryApp = firebase.initializeApp(firebaseConfig, secondaryName);
+                        const secondaryAuth = secondaryApp.auth();
+                        let credential;
+                        try {
+                            credential = await secondaryAuth.createUserWithEmailAndPassword(firebaseEmail, password);
+                        } catch (createError) {
+                            if (!String(createError?.code || '').includes('email-already-in-use')) throw createError;
+                            credential = await secondaryAuth.signInWithEmailAndPassword(firebaseEmail, password);
+                        }
+                        localUser.firebaseUid = credential.user?.uid || localUser.firebaseUid || '';
+                        localUser.firebaseAuthStatus = 'membership_pending';
+                        return { ok: true, uid: localUser.firebaseUid };
+                    } catch (error) {
+                        localUser.firebaseAuthStatus = 'not_provisioned';
+                        return { ok: false, message: this.firebaseIdentityErrorMessage(error) };
+                    } finally {
+                        if (secondaryApp) await secondaryApp.delete().catch(() => {});
+                    }
                 },
 
                 get firebaseMigrationUser() {
@@ -6710,7 +6979,7 @@
                                 </summary>
                                 <!-- User Accounts & Permissions Management (Admin Only) -->
                             <div x-show="currentUser?.role === 'admin'" x-init="loadAdminSecuritySettings()" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-5">
-                                <div class="flex items-center justify-between border-b dark:border-slate-800 pb-3">
+	                                <div class="flex items-center justify-between border-b dark:border-slate-800 pb-3">
                                     <h3 class="text-lg font-bold text-slate-800 dark:text-white">حسابات الدخول والصلاحيات</h3>
                                     <span class="text-[11px] font-bold px-2.5 py-1 rounded-full flex items-center gap-1.5"
                                           :class="{
@@ -6721,7 +6990,21 @@
                                           }">
                                         <span x-text="cloudSyncEnabled ? (cloudStatus === 'online' ? '🟢 متصل بالسحابة (Firebase)' : (cloudStatus === 'syncing' ? '🔵 جارٍ المزامنة' : '🟡 وضع محلي - بانتظار الاتصال')) : '⚪ المزامنة السحابية غير مفعّلة'"></span>
                                     </span>
-                                </div>
+	                                </div>
+	                                <div class="rounded-2xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/70 dark:bg-indigo-950/20 p-4 space-y-3">
+	                                    <div class="flex items-start justify-between gap-3 flex-wrap">
+	                                        <div><h4 class="font-extrabold text-sm text-indigo-900 dark:text-indigo-200">هوية Firebase وعضوية العيادة</h4><p class="text-[11px] mt-1 text-indigo-800/80 dark:text-indigo-300">تربط المزامنة المحمية المستخدم المحلي بهوية Firebase دائمة. الجلسة المجهولة تبقى احتياطاً محلياً فقط ولا تفي بمتطلبات القواعد الحية.</p></div>
+	                                        <span class="text-[11px] font-bold px-2.5 py-1 rounded-full" :class="firebaseIdentityStatus.includes('دائمة') ? 'bg-emerald-100 text-emerald-700' : (firebaseIdentityStatus.includes('احتياطي') ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600')" x-text="firebaseIdentityStatus"></span>
+	                                    </div>
+	                                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+	                                        <div class="rounded-xl bg-white/80 dark:bg-slate-900/70 px-3 py-2 text-slate-700 dark:text-slate-200"><b>Firebase UID:</b> <span class="font-mono break-all" x-text="firebaseIdentityUid || 'غير متاح'"></span></div>
+	                                        <div class="rounded-xl bg-white/80 dark:bg-slate-900/70 px-3 py-2 text-slate-700 dark:text-slate-200"><b>العضوية:</b> <span x-text="firebaseMembershipStatus + (firebaseMembershipRole ? ' — ' + firebaseMembershipRole : '')"></span></div>
+	                                    </div>
+	                                    <p class="text-[11px] leading-5 text-indigo-800 dark:text-indigo-200" x-text="firebaseIdentityMessage"></p>
+	                                    <p class="text-[11px] leading-5 text-slate-600 dark:text-slate-300" x-text="firebaseMembershipMessage"></p>
+	                                    <div class="flex gap-2 flex-wrap"><button type="button" @click="refreshFirebaseMembershipStatus()" :disabled="firebaseMembershipBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-200 disabled:opacity-50">تحديث الحالة</button><button type="button" @click="ensureClinicMembership()" :disabled="firebaseMembershipBusy || !firebaseIdentityUid" class="text-xs font-bold px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50"><span x-text="firebaseMembershipBusy ? 'جارٍ التهيئة…' : 'تهيئة عضوية المدير الأولى'"></span></button></div>
+	                                    <p class="text-[10px] leading-5 text-slate-500 dark:text-slate-400">إذا كانت القواعد الحية منشورة بالفعل، يرفض Firebase هذا الزر عمداً لأن المتصفح لا يملك صلاحية تصعيد الأدوار؛ استخدم أداة المدير الموثوقة لاستعادة العضوية.</p>
+	                                </div>
 	                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
                         <div class="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-xs text-blue-900 dark:border-blue-900/60 dark:bg-blue-950/30 dark:text-blue-200">
                             <strong>حماية كلمات المرور:</strong> كلمات المرور مخفية افتراضياً. استخدم زر العين لإظهارها مؤقتاً عند الحاجة. لا تعتمد على هذه الحماية إذا كان شخص آخر يملك وصولاً تقنياً كاملاً إلى الجهاز.
@@ -7495,7 +7778,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.1', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.3', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });
