@@ -7,6 +7,7 @@ import {
   normalizeRemoteUrl,
   verifyReleaseGuard,
 } from "../scripts/release-guard.mjs";
+import { OFFICIAL_REMOTE_NAME, prepareOfficialRelease } from "../scripts/publish-official.mjs";
 
 const temporaryRoots: string[] = [];
 
@@ -62,5 +63,28 @@ describe("release guard", () => {
     expect(result.ok).toBe(false);
     expect(result.errors.join("\n")).toContain("github.com/solimedical/2");
     expect(result.errors.join("\n")).toContain("client/public/sw.js ↔ sw.js");
+  });
+
+  it("يجهّز الدفع من remote رسمي ثابت ولا يستخدم user_github المتغير", async () => {
+    const root = await makeReleaseRoot();
+    const result = await prepareOfficialRelease({
+      root,
+      readRemote: (remoteName) => {
+        expect(remoteName).toBe(OFFICIAL_REMOTE_NAME);
+        return "https://github.com/SoliMedical/1.git";
+      },
+    });
+
+    expect(result).toMatchObject({ ok: true, version: "v1.5.5" });
+  });
+
+  it("يرفض أمر النشر الرسمي إذا لم يكن مسار official_repo1 هو المستودع المعتمد", async () => {
+    const result = await prepareOfficialRelease({
+      root: await makeReleaseRoot(),
+      readRemote: () => "https://github.com/SoliMedical/2.git",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.errors.join("\n")).toContain("github.com/solimedical/2");
   });
 });

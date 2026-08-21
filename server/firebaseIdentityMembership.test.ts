@@ -36,6 +36,13 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('تهيئة هوية Firebase الدائمة');
   });
 
+  it('offers a direct local-only password-update route before persistent Firebase setup', () => {
+    expect(appSource).toContain('focusAdminPasswordUpdateForFirebase()');
+    expect(appSource).toContain("document.getElementById('admin-security-new-password')");
+    expect(appSource).toContain('الانتقال الآمن لتحديث كلمة المرور');
+    expect(appSource).toContain('لا يمس هذا الإجراء بيانات المرضى أو الزيارات');
+  });
+
   it('keeps Firebase passwords and recovery answers out of Firestore snapshots', () => {
     expect(appSource).toContain('getCloudSafeUsers(users = this.users)');
     expect(appSource).toContain('const { password, securityAnswerHash, securityQuestion, ...cloudUser } = user;');

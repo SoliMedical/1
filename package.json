@@ -12,6 +12,7 @@
     "test": "vitest run",
     "check:repository": "node scripts/check-repository.mjs",
     "release:verify": "node scripts/release-guard.mjs",
+    "release:official": "node scripts/publish-official.mjs",
     "release:guard:install": "node scripts/install-release-guard.mjs",
     "firebase:sync-members": "node scripts/sync-firebase-clinic-members.mjs",
     "firebase:migrate-v2": "node scripts/migrate-firestore-v2.mjs",
