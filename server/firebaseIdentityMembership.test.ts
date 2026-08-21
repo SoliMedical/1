@@ -18,6 +18,15 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain("this.firebaseIdentityStatus = 'احتياطي مؤقت'");
   });
 
+  it('lets a locally authenticated administrator explicitly replace an anonymous fallback with a durable Firebase identity', () => {
+    expect(appSource).toContain('async provisionPersistentFirebaseIdentityForCurrentUser()');
+    expect(appSource).toContain('firebaseAuth.currentUser?.isAnonymous');
+    expect(appSource).toContain('allowAnonymousFallback: false');
+    expect(appSource).toContain("signInCode.includes('invalid-credential')");
+    expect(appSource).toContain("'تهيئة هوية Firebase الدائمة'");
+    expect(appSource).toContain('!isPermanentFirebaseUser()');
+  });
+
   it('keeps Firebase passwords and recovery answers out of Firestore snapshots', () => {
     expect(appSource).toContain('getCloudSafeUsers(users = this.users)');
     expect(appSource).toContain('const { password, securityAnswerHash, securityQuestion, ...cloudUser } = user;');
