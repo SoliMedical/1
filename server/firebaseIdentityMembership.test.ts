@@ -58,9 +58,14 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('await secondaryApp.delete()');
   });
 
-  it('shows membership state but cannot grant it from a browser after live rules are deployed', () => {
+  it('shows a read-only membership diagnostic but cannot grant membership from a browser after live rules are deployed', () => {
     expect(appSource).toContain('async refreshFirebaseMembershipStatus(user = firebaseAuth?.currentUser)');
     expect(appSource).toContain('async ensureClinicMembership()');
+    expect(appSource).toContain('diagnoseCloudConnection()');
+    expect(appSource).toContain('cloudDiagnosticsVisible: false');
+    expect(appSource).toContain('المسار الموثوق فقط (Firebase Admin SDK أو Firebase Console)');
+    expect(appSource).not.toContain('provisionMembershipForOtherUser(');
+    expect(appSource).not.toContain("members').doc(targetLocalUser.firebaseUid).set(");
     expect(appSource).toContain('منعت قواعد Firebase إنشاء العضوية من المتصفح');
     expect(rules).toContain('match /members/{memberUid}');
     expect(rules).toContain('allow create, update, delete: if false;');
@@ -90,5 +95,10 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(bootstrapScript).toContain("db.collection('clinics').doc(clinicId).collection('members').doc(authUser.uid)");
     expect(bootstrapScript).toContain("status: existing?.status || 'active'");
     expect(bootstrapScript).toContain("createdBy: existing?.createdBy || 'scripts/sync-firebase-clinic-members.mjs'");
+    expect(bootstrapScript).toContain("const existingOnly = process.argv.includes('--existing-only')");
+    expect(bootstrapScript).toContain('await auth.getUserByEmail(firebaseEmailForUser(user.email))');
+    expect(bootstrapScript).toContain("error?.code === 'auth/user-not-found'");
+    expect(bootstrapScript).toContain("reason: 'firebase_identity_missing'");
+    expect(bootstrapScript).toContain("serviceAccount.private_key = serviceAccount.private_key.replace(/\\\\n/g, '\\n')");
   });
 });

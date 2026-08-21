@@ -4,13 +4,14 @@ import { getAuth } from 'firebase-admin/auth';
 import { readFileSync } from 'node:fs';
 
 describe('اعتماد Firebase الإداري للترحيل', () => {
-  const credentialValidation = process.env.RUN_FIREBASE_ADMIN_CREDENTIAL_TEST === 'true' ? it : it.skip;
-
-  credentialValidation('يتحقق من الوصول بمطالعة صفحة مستخدمين واحدة فقط دون إنشاء أو تعديل أي هوية', async () => {
+  it('يتحقق من الوصول بمطالعة صفحة مستخدمين واحدة فقط دون إنشاء أو تعديل أي هوية', async () => {
     const credentialFile = process.env.FIREBASE_SERVICE_ACCOUNT_FILE;
     const raw = credentialFile ? readFileSync(credentialFile, 'utf8') : (process.env.FIREBASE_SERVICE_ACCOUNT_JSON || '');
-    expect(raw, 'يلزم اعتماد Firebase الإداري لتشغيل ترحيل V2').toBeTruthy();
+    expect(raw, 'يلزم اعتماد Firebase الإداري للتحقق من العضويات').toBeTruthy();
     const serviceAccount = JSON.parse(raw!);
+    if (typeof serviceAccount.private_key === 'string') {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
     const app = getApps().find(candidate => candidate.name === 'migration-credential-check')
       || initializeApp({
         credential: cert(serviceAccount),

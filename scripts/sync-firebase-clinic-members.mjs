@@ -28,7 +28,11 @@ function initializeAdmin() {
   if (getApps().length) return getApps()[0];
   const rawServiceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
   if (rawServiceAccount) {
-    return initializeApp({ credential: cert(JSON.parse(rawServiceAccount)), projectId });
+    const serviceAccount = JSON.parse(rawServiceAccount);
+    if (typeof serviceAccount.private_key === 'string') {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
+    return initializeApp({ credential: cert(serviceAccount), projectId });
   }
   return initializeApp({ credential: applicationDefault(), projectId });
 }
@@ -51,6 +55,7 @@ async function main() {
   initializeAdmin();
   const auth = getAuth();
   const db = getFirestore();
+  const existingOnly = process.argv.includes('--existing-only');
   const legacySnapshot = await db.doc(cloudDocPath).get();
   if (!legacySnapshot.exists) throw new Error(`لم توجد وثيقة البيانات القديمة: ${cloudDocPath}`);
   const users = Array.isArray(legacySnapshot.data()?.users) ? legacySnapshot.data().users : [];
@@ -58,8 +63,20 @@ async function main() {
   if (!activeUsers.length) throw new Error('لم توجد حسابات محلية نشطة يمكن ربطها بـ Firebase Authentication.');
 
   const summary = [];
+  const skipped = [];
   for (const user of activeUsers) {
-    const authUser = await findOrCreateAuthUser(auth, user);
+    let authUser;
+    try {
+      authUser = existingOnly
+        ? await auth.getUserByEmail(firebaseEmailForUser(user.email))
+        : await findOrCreateAuthUser(auth, user);
+    } catch (error) {
+      if (existingOnly && error?.code === 'auth/user-not-found') {
+        skipped.push({ localUserId: String(user.id ?? ''), reason: 'firebase_identity_missing' });
+        continue;
+      }
+      throw error;
+    }
     const role = membershipRoleForUser(user);
     const memberRef = db.collection('clinics').doc(clinicId).collection('members').doc(authUser.uid);
     await db.runTransaction(async transaction => {
@@ -78,7 +95,7 @@ async function main() {
     summary.push({ localUserId: String(user.id ?? ''), role, uid: authUser.uid });
   }
 
-  console.log(JSON.stringify({ projectId, clinicId, processed: summary.length, memberships: summary }, null, 2));
+  console.log(JSON.stringify({ projectId, clinicId, existingOnly, processed: summary.length, skipped, memberships: summary }, null, 2));
 }
 
 main().catch(error => {
