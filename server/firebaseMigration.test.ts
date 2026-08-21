@@ -68,9 +68,9 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
   it('لا يعلن انقطاعاً محلياً كاذباً إذا تأجلت أو فشلت دفعة V3 بينما مستمعات القراءة الموثقة سليمة', () => {
     expect(indexHtml).toContain("const syncError = result?.error || new Error('تعذرت مزامنة وثائق V3.')");
     expect(indexHtml).toContain('syncError.deferred = Boolean(result?.deferred);');
-    expect(indexHtml).toContain('const operationalReadReady = Boolean(');
-    expect(indexHtml).toContain('this.cloudMembershipReady && this.v2OperationalReady');
-    expect(indexHtml).toContain("this.cloudStatus = operationalReadReady ? 'online' : 'offline';");
+    expect(indexHtml).toContain('const authenticatedCloudSessionReady = Boolean(');
+    expect(indexHtml).toContain('navigator.onLine && this.cloudAuthReady && this.cloudMembershipReady');
+    expect(indexHtml).toContain("this.cloudStatus = authenticatedCloudSessionReady ? 'online' : 'offline';");
     expect(indexHtml).toContain('تم تأجيل مزامنة مجموعات Firestore ${schemaLabel}');
   });
 
