@@ -75,6 +75,15 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('allowAnonymousFallback: false');
   });
 
+  it('keeps a new local administrator password aligned with an already authenticated permanent Firebase identity', () => {
+    expect(appSource).toContain('async syncFirebasePasswordAfterLocalChange(localUser, previousPassword, newPassword)');
+    expect(appSource).toContain('await currentIdentity.updatePassword(newPassword)');
+    expect(appSource).toContain('firebase.auth.EmailAuthProvider.credential(firebaseEmail, previousPassword)');
+    expect(appSource).toContain('await currentIdentity.reauthenticateWithCredential(credential)');
+    expect(appSource).toContain('const firebasePasswordResult = newPassword');
+    expect(appSource).toContain('const firebasePasswordResult = await this.syncFirebasePasswordAfterLocalChange(admin, previousPassword, newPassword);');
+  });
+
   it('creates or restores memberships only through the trusted Admin SDK script', () => {
     expect(bootstrapScript).toContain("from 'firebase-admin/app'");
     expect(bootstrapScript).toContain('getAuth()');

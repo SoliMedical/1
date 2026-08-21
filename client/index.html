@@ -80,7 +80,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.7.1';
+        const SOLI_APP_VERSION = 'v1.7.2';
         const SOLI_APP_RELEASE = 'إعادة ضبط تجريبية صريحة ومحمية لمخطط Firestore V2';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -1460,13 +1460,28 @@
                     this.cloudWriteInFlight = true;
                     try {
                         const result = await this.flushV2MirroredChanges({ operationalWrite: true });
-                        if (!result?.ok) throw (result?.error || new Error('تعذرت مزامنة وثائق V2.'));
+                        if (!result?.ok) {
+                            const syncError = result?.error || new Error('تعذرت مزامنة وثائق V3.');
+                            syncError.deferred = Boolean(result?.deferred);
+                            throw syncError;
+                        }
                         this.localChangesPending = Number(this.syncChangeSequence || 0) !== writeSequence;
                         this.cloudStatus = 'online';
                         this.cloudRetryAttempts = 0;
                     } catch (error) {
-                        console.error('تعذر رفع البيانات إلى Firestore V2 (سيُعاد المحاولة عند عودة الاتصال):', error);
-                        this.cloudStatus = 'offline';
+                        const operationalReadReady = Boolean(
+                            navigator.onLine && this.cloudAuthReady && this.cloudMembershipReady && this.v2OperationalReady
+                        );
+                        const schemaLabel = this.isTopLevelOperationalSyncActive() ? 'V3' : 'V2';
+                        if (error?.deferred) {
+                            console.info(`تم تأجيل مزامنة مجموعات Firestore ${schemaLabel} لأن دفعة أخرى أو التحقق من الهوية ما زال جارياً؛ ستستأنف تلقائياً.`, error);
+                        } else {
+                            console.error(`تعذر رفع البيانات إلى Firestore ${schemaLabel} (سيُعاد المحاولة تلقائياً):`, error);
+                        }
+                        // A failed or deferred batch must never turn a working authenticated
+                        // V3 listener into a false "local/offline" status. The local change
+                        // remains queued, and the migration record keeps the detailed error.
+                        this.cloudStatus = operationalReadReady ? 'online' : 'offline';
                         this.localChangesPending = true;
                         this.scheduleCloudRetry();
                     } finally {
@@ -2988,21 +3003,57 @@
                     }
                     const admin = this.users.find(user => user.id === 1);
                     if (!admin) return;
+                    const previousPassword = String(admin.password || '');
                     admin.securityQuestion = question;
                     admin.securityAnswerHash = await this.hashSecurityValue(answer);
                     if (newPassword) admin.password = newPassword;
                     if (this.currentUser.id === admin.id) this.currentUser = admin;
                     this.persistState();
+                    const firebasePasswordResult = newPassword
+                        ? await this.syncFirebasePasswordAfterLocalChange(admin, previousPassword, newPassword)
+                        : { attempted: false, ok: true };
                     const cloudResult = await this.persistUsersToCloudNow();
-                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                    if (navigator.onLine && this.cloudSyncEnabled && (!cloudResult.ok || (firebasePasswordResult.attempted && !firebasePasswordResult.ok && !firebasePasswordResult.deferred))) {
                         alert('تم حفظ التغيير محلياً فقط ولم يؤكَّد في السحابة. تحقق من الاتصال قبل الاعتماد على كلمة المرور الجديدة من جهاز آخر.');
                     }
                     this.securityForm.answer = '';
                     this.securityForm.newPassword = '';
                     this.securitySaveFeedback = newPassword
-                        ? 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً. يمكنك الآن تهيئة هوية Firebase الدائمة.'
+                        ? (firebasePasswordResult.ok
+                            ? 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً، وتحديث هوية Firebase للجلسة الدائمة.'
+                            : 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً أولاً. ستظل المزامنة تعمل عند اكتمال التحقق من هوية Firebase.')
                         : 'تم حفظ إعدادات الاستعادة محلياً.';
                     setTimeout(() => { this.securitySaveFeedback = ''; }, 3500);
+                },
+
+                async syncFirebasePasswordAfterLocalChange(localUser, previousPassword, newPassword) {
+                    const currentIdentity = firebaseAuth?.currentUser;
+                    const firebaseEmail = this.firebaseEmailForUser(localUser?.email || '');
+                    if (!newPassword || !this.cloudSyncEnabled || !navigator.onLine || !this.isPermanentFirebaseUser(currentIdentity) || !firebaseEmail || String(currentIdentity.email || '').toLowerCase() !== firebaseEmail.toLowerCase()) {
+                        return { attempted: false, ok: false, deferred: true };
+                    }
+                    try {
+                        await currentIdentity.updatePassword(newPassword);
+                        this.firebaseIdentityIssueCode = '';
+                        return { attempted: true, ok: true };
+                    } catch (initialError) {
+                        const requiresRecentLogin = String(initialError?.code || '').includes('requires-recent-login');
+                        if (!requiresRecentLogin || !previousPassword) {
+                            console.warn('تعذر تحديث كلمة مرور Firebase بعد حفظ كلمة المرور المحلية؛ ستبقى البيانات محفوظة محلياً.', initialError);
+                            return { attempted: true, ok: false, error: initialError };
+                        }
+                        try {
+                            const credential = firebase.auth.EmailAuthProvider.credential(firebaseEmail, previousPassword);
+                            await currentIdentity.reauthenticateWithCredential(credential);
+                            await firebaseAuth.currentUser.updatePassword(newPassword);
+                            this.firebaseIdentityIssueCode = '';
+                            return { attempted: true, ok: true, reauthenticated: true };
+                        } catch (reauthenticationError) {
+                            console.warn('تعذر إعادة التحقق لتحديث كلمة مرور Firebase؛ ستبقى كلمة المرور المحلية والبيانات محفوظة.', reauthenticationError);
+                            this.firebaseIdentityIssueCode = String(reauthenticationError?.code || initialError?.code || 'firebase-password-update-failed');
+                            return { attempted: true, ok: false, error: reauthenticationError };
+                        }
+                    }
                 },
 
                 focusAdminPasswordUpdateForFirebase() {
@@ -3042,8 +3093,8 @@
                         this.recoveryState.error = 'لا توجد بيانات استعادة مكتملة لهذا الحساب.';
                         return;
                     }
-                    if (answer.length < 3 || newPassword.length < 4) {
-                        this.recoveryState.error = 'اكتب إجابة الأمان وكلمة مرور جديدة صحيحة.';
+                    if (answer.length < 3 || newPassword.length < 6) {
+                        this.recoveryState.error = 'اكتب إجابة الأمان وكلمة مرور جديدة من 6 أحرف أو أرقام على الأقل.';
                         return;
                     }
                     const answerHash = await this.hashSecurityValue(answer);
@@ -3051,10 +3102,12 @@
                         this.recoveryState.error = 'إجابة الأمان غير صحيحة.';
                         return;
                     }
+                    const previousPassword = String(admin.password || '');
                     admin.password = newPassword;
                     this.persistState();
+                    const firebasePasswordResult = await this.syncFirebasePasswordAfterLocalChange(admin, previousPassword, newPassword);
                     const cloudResult = await this.persistUsersToCloudNow();
-                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                    if (navigator.onLine && this.cloudSyncEnabled && (!cloudResult.ok || (firebasePasswordResult.attempted && !firebasePasswordResult.ok && !firebasePasswordResult.deferred))) {
                         this.recoveryState.error = 'تم التغيير محلياً، لكن لم يُؤكَّد في السحابة. تحقق من الاتصال ثم أعد المحاولة.';
                         return;
                     }
@@ -8099,7 +8152,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.1', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.2', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

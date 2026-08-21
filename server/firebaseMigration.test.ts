@@ -65,6 +65,15 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain('this.stopV2OperationalSync();');
   });
 
+  it('لا يعلن انقطاعاً محلياً كاذباً إذا تأجلت أو فشلت دفعة V3 بينما مستمعات القراءة الموثقة سليمة', () => {
+    expect(indexHtml).toContain("const syncError = result?.error || new Error('تعذرت مزامنة وثائق V3.')");
+    expect(indexHtml).toContain('syncError.deferred = Boolean(result?.deferred);');
+    expect(indexHtml).toContain('const operationalReadReady = Boolean(');
+    expect(indexHtml).toContain('this.cloudMembershipReady && this.v2OperationalReady');
+    expect(indexHtml).toContain("this.cloudStatus = operationalReadReady ? 'online' : 'offline';");
+    expect(indexHtml).toContain('تم تأجيل مزامنة مجموعات Firestore ${schemaLabel}');
+  });
+
   it('يوفر ترحيلاً مستقلاً غير مدمر إلى مجموعات المستوى الأعلى بعزل طبيب واحد لكل clinicId', () => {
     expect(topLevelMigrationScript).toContain("target: 'top-level-collections'");
     expect(topLevelMigrationScript).toContain("tenantModel: 'one-doctor-one-clinic'");
