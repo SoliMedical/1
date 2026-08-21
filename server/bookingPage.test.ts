@@ -157,7 +157,9 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('async removeUser(userId)');
     expect(page).toContain('async saveUserPermissions(userId)');
     expect(page).toContain('const cloudResult = await this.persistUsersToCloudNow()');
-    expect(page).toContain('تم حفظ الحساب محلياً، لكن لم يؤكَّد حفظه في السحابة');
+    expect(page).toContain("async callClinicAccountGateway(action, user)");
+    expect(page).toContain("await this.callClinicAccountGateway('upsert', user)");
+    expect(page).toContain("await this.callClinicAccountGateway('delete', user)");
   });
 
   it("يغطي مسارات المزامنة الأساسية للأجهزة الجديدة والانقطاع والتعارض", () => {
@@ -221,7 +223,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.7.5'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.7.6'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -242,8 +244,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.7.5', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v26');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.7.6', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v27');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('const SCOPE_PATH = new URL(self.registration.scope).pathname');
     expect(sw).toContain('fetch(event.request)');

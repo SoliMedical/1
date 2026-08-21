@@ -58,6 +58,7 @@
         // إعداد Firebase يُحمّل من firebase-config.js لكي يحصل كل عميل على مشروع مستقل.
         // حسابات الدخول والصلاحيات تبقى محلية داخل Soli Medical؛ Firebase للمزامنة الصامتة فقط.
         const firebaseConfig = window.SOLI_FIREBASE_CONFIG || {};
+        const clinicAccountGatewayUrl = String(window.SOLI_CLINIC_ACCOUNT_GATEWAY_URL || '').trim();
 
         // لا تبدأ المزامنة إلا مع إعداد Firebase فعلي؛ وإلا يعمل النظام بالبيانات المحلية فقط.
         const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.apiKey !== 'YOUR_API_KEY');
@@ -80,8 +81,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.7.5';
-        const SOLI_APP_RELEASE = 'إعادة ضبط تجريبية صريحة ومحمية لمخطط Firestore V2';
+        const SOLI_APP_VERSION = 'v1.7.6';
+        const SOLI_APP_RELEASE = 'إدارة ذاتية آمنة لحسابات فريق العيادة عبر مسار إداري موثوق';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -522,6 +523,8 @@
                 firebaseMembershipMessage: 'سجّل دخولاً دائماً إلى Firebase لفحص عضوية العيادة.',
                 firebaseMembershipBusy: false,
                 firebaseIdentityBusy: false,
+                selfServiceAccountBusy: false,
+                selfServiceAccountMessage: '',
                 cloudDiagnosticsReport: null,
                 cloudDiagnosticsVisible: false,
                 userPermissionDrafts: {},
@@ -3246,9 +3249,70 @@
                     }
                 },
 
+                async callClinicAccountGateway(action, user) {
+                    if (!clinicAccountGatewayUrl) throw new Error('مسار الإدارة الذاتية غير مهيأ بعد.');
+                    if (!navigator.onLine) throw new Error('تحتاج إدارة حسابات الفريق إلى اتصال بالإنترنت. تبقى بيانات العيادة محفوظة محلياً.');
+                    const identity = firebaseAuth?.currentUser;
+                    if (!this.isPermanentFirebaseUser(identity)) {
+                        throw new Error('سجّل دخول مالك العيادة بهوية Firebase دائمة أولاً ثم أعد المحاولة.');
+                    }
+                    const token = await identity.getIdToken(true);
+                    const response = await fetch(clinicAccountGatewayUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({
+                            action,
+                            member: {
+                                localUserId: String(user.id ?? ''),
+                                fullName: String(user.fullName || '').trim(),
+                                email: String(user.email || '').trim(),
+                                password: action === 'upsert' ? String(user.password || '') : undefined,
+                                role: String(user.role || '').trim(),
+                                active: user.active !== false,
+                                firebaseUid: String(user.firebaseUid || '').trim() || undefined
+                            }
+                        })
+                    });
+                    const payload = await response.json().catch(() => ({}));
+                    if (!response.ok || !payload?.ok) throw new Error(payload?.message || 'تعذر تنفيذ إدارة الحساب بأمان.');
+                    return payload.result;
+                },
+
+                async syncUserMembership(userId, options = {}) {
+                    const user = this.users.find(candidate => String(candidate.id) === String(userId));
+                    if (!user) return false;
+                    this.selfServiceAccountBusy = true;
+                    this.selfServiceAccountMessage = 'جارٍ إنشاء أو تحديث هوية المستخدم وعضوية العيادة بشكل آمن…';
+                    try {
+                        const result = await this.callClinicAccountGateway('upsert', user);
+                        user.firebaseUid = result.uid;
+                        user.firebaseAuthStatus = result.status;
+                        this.persistState();
+                        const cloudResult = await this.persistUsersToCloudNow();
+                        if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
+                            this.selfServiceAccountMessage = 'تم تفعيل الحساب، وستُعاد مزامنة قائمة المستخدمين تلقائياً عند استقرار الاتصال.';
+                        } else {
+                            this.selfServiceAccountMessage = options.silent ? '' : 'تم تفعيل حساب الفريق وعضويته السحابية بنجاح.';
+                        }
+                        this.renderIcons();
+                        return true;
+                    } catch (error) {
+                        user.firebaseAuthStatus = 'membership_pending';
+                        this.persistState();
+                        this.selfServiceAccountMessage = error?.message || 'تعذر تفعيل الحساب. لم تُحذف أية بيانات.';
+                        return false;
+                    } finally {
+                        this.selfServiceAccountBusy = false;
+                    }
+                },
+
                 async addUser() {
                     if (!this.newUserForm.fullName.trim() || !this.newUserForm.email.trim() || !this.newUserForm.password.trim()) {
                         alert('يرجى إدخال الاسم والبريد/اسم المستخدم وكلمة المرور');
+                        return;
+                    }
+                    if (this.newUserForm.password.trim().length < 6) {
+                        alert('كلمة مرور الحساب الجديد يجب ألا تقل عن 6 أحرف لحماية تسجيل الدخول.');
                         return;
                     }
                     if (this.users.some(u => u.email === this.newUserForm.email.trim())) {
@@ -3267,19 +3331,9 @@
                     this.users.push(newUser);
                     this.userPermissionDrafts[newUser.id] = { ...newUser.permissions };
                     this.persistState();
-                    const firebaseAccount = await this.createFirebaseIdentityForNewUser(newUser);
-                    const cloudResult = await this.persistUsersToCloudNow();
-                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
-                        alert('تم حفظ الحساب محلياً، لكن لم يؤكَّد حفظه في السحابة. لا تغلق الصفحة حتى يعود الاتصال وتظهر حالة «متصل»، ثم أعد المحاولة.');
-                        return;
-                    }
-
-                    if (firebaseAccount?.deferred) {
-                        alert('تم حفظ حساب الموظف محلياً. عند عودة الإنترنت سيحتاج المدير إلى إنشاء هوية Firebase وعضويته قبل تمكين المزامنة المحمية لهذا الموظف.');
-                    } else if (firebaseAccount && !firebaseAccount.ok) {
-                        alert(firebaseAccount.message || 'تم حفظ حساب الموظف محلياً، لكن تعذر إنشاء هوية Firebase له. راجع كلمة المرور (6 أحرف على الأقل) ثم أعد المحاولة.');
-                    } else if (firebaseAccount?.ok) {
-                        alert('تم إنشاء هوية Firebase للموظف دون تغيير جلسة المدير. يبقى إنشاء عضوية العيادة من المسار الإداري الموثوق مطلوباً قبل تطبيق القواعد الحية.');
+                    const provisioned = await this.syncUserMembership(newUser.id, { silent: true });
+                    if (!provisioned) {
+                        alert('حُفظ الحساب محلياً، لكن لم تُستكمل العضوية السحابية. من بطاقة الحساب نفسه اختر «إعادة محاولة التفعيل» عند توفر الإنترنت.');
                     }
 
                     this.newUserForm = {
@@ -3298,13 +3352,27 @@
                         return;
                     }
                     if (!confirm('هل تريد حذف هذا الحساب؟')) return;
+                    const user = this.users.find(candidate => candidate.id === userId);
+                    if (!user) return;
+                    this.selfServiceAccountBusy = true;
+                    this.selfServiceAccountMessage = 'جارٍ حذف هوية الحساب وعضويته فقط. لا تُحذف بيانات المرضى أو الزيارات.';
+                    try {
+                        await this.callClinicAccountGateway('delete', user);
+                    } catch (error) {
+                        this.selfServiceAccountMessage = error?.message || 'تعذر حذف الحساب. بقيت البيانات دون تغيير.';
+                        this.selfServiceAccountBusy = false;
+                        return;
+                    }
                     this.users = this.users.filter(u => u.id !== userId);
                     delete this.userPermissionDrafts[userId];
                     this.persistState();
                     const cloudResult = await this.persistUsersToCloudNow();
                     if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
-                        alert('تم حذف الحساب محلياً فقط ولم يؤكَّد الحذف في السحابة. تحقق من الاتصال ثم أعد المحاولة.');
+                        this.selfServiceAccountMessage = 'حُذفت هوية الحساب وعضويته، وستُعاد مزامنة القائمة المحلية تلقائياً عند استقرار الاتصال.';
+                    } else {
+                        this.selfServiceAccountMessage = 'تم حذف حساب الفريق وعضويته فقط. بيانات المرضى والزيارات لم تُمس.';
                     }
+                    this.selfServiceAccountBusy = false;
                 },
 
                 async toggleUserActive(userId) {
@@ -3314,32 +3382,33 @@
                     }
                     const user = this.users.find(u => u.id === userId);
                     if (!user) return;
+                    const previousActive = user.active;
                     user.active = !user.active;
-                    if (!user.active && this.currentUser && this.currentUser.id === userId) {
-                        // If the admin suspends the account they're currently using elsewhere, log it out.
-                        this.logout();
-                    }
+                    const updated = await this.syncUserMembership(userId, { silent: true });
+                    if (!updated) user.active = previousActive;
                     this.persistState();
-                    const cloudResult = await this.persistUsersToCloudNow();
-                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
-                        alert('تم تعديل حالة الحساب محلياً فقط ولم يؤكَّد التعديل في السحابة.');
-                    }
                 },
 
                 async promoteToAdmin(userId) {
                     const user = this.users.find(u => u.id === userId);
                     if (!user) return;
                     if (!confirm(`هل تريد منح "${user.fullName}" صلاحيات إدارة كاملة (مدير آخر)؟`)) return;
+                    const previousRole = user.role;
+                    const previousPermissions = { ...user.permissions };
                     user.role = 'admin';
                     const fullPermissions = {};
                     this.permissionModules.forEach(m => { fullPermissions[m.key] = true; });
                     user.permissions = fullPermissions;
                     this.userPermissionDrafts[userId] = { ...fullPermissions };
-                    this.persistState();
-                    const cloudResult = await this.persistUsersToCloudNow();
-                    if (navigator.onLine && this.cloudSyncEnabled && !cloudResult.ok) {
-                        alert('تم تعديل الصلاحيات محلياً فقط ولم يؤكَّد حفظها في السحابة.');
+                    const updated = await this.syncUserMembership(userId, { silent: true });
+                    if (!updated) {
+                        user.role = previousRole;
+                        user.permissions = previousPermissions;
+                        this.userPermissionDrafts[userId] = { ...previousPermissions };
+                        this.persistState();
+                        return;
                     }
+                    this.persistState();
                 },
 
                 async saveUserPermissions(userId) {
@@ -7452,8 +7521,9 @@
                             <div x-show="currentUser?.role === 'admin'" x-init="loadAdminSecuritySettings()" class="bg-white dark:bg-slate-900 p-6 lg:p-8 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm space-y-5">
 	                                <div class="border-b dark:border-slate-800 pb-3">
 	                                    <h3 class="text-lg font-bold text-slate-800 dark:text-white">حسابات الدخول والصلاحيات</h3>
-	                                    <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">إدارة المستخدمين المحليين وصلاحياتهم داخل العيادة.</p>
+	                                    <p class="mt-1 text-xs text-slate-400 dark:text-slate-500">إدارة ذاتية للحسابات والعضويات عبر مسار إداري موثوق. لا تُحذف بيانات المرضى أو الزيارات عند حذف الحساب.</p>
 	                                </div>
+	                                <p x-show="selfServiceAccountMessage" x-cloak x-text="selfServiceAccountMessage" class="text-xs font-semibold rounded-xl px-3 py-2 bg-blue-50 text-blue-800 border border-blue-100 dark:bg-blue-950/30 dark:text-blue-200 dark:border-blue-900/50"></p>
 
                                 <!-- Existing Users List -->
                                 <div class="space-y-3">
@@ -7463,6 +7533,8 @@
                                                 <div class="flex items-center gap-2">
                                                     <p class="font-bold text-sm text-slate-800 dark:text-white" x-text="u.fullName + (u.role === 'admin' ? ' (مدير النظام)' : '')"></p>
                                                     <span x-show="u.active === false" class="text-[10px] font-bold bg-red-100 text-red-700 px-2 py-0.5 rounded-full">متوقف</span>
+	                                                    <span x-show="u.firebaseAuthStatus === 'active'" class="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">عضوية سحابية نشطة</span>
+	                                                    <span x-show="u.firebaseAuthStatus === 'membership_pending'" class="text-[10px] font-bold bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">بانتظار التفعيل</span>
                                                 </div>
                                                 <div class="flex items-center gap-3">
                                                     <button type="button" x-show="u.role !== 'admin'" @click="promoteToAdmin(u.id)" class="text-purple-600 hover:text-purple-700 text-xs font-bold flex items-center gap-1">
@@ -7473,7 +7545,8 @@
                                                         <i :data-lucide="u.active === false ? 'play-circle' : 'pause-circle'" class="w-4 h-4"></i>
                                                         <span x-text="u.active === false ? 'تفعيل الحساب' : 'إيقاف الحساب'"></span>
                                                     </button>
-                                                    <button type="button" @click="removeUser(u.id)" class="text-red-500 hover:text-red-700" :class="u.id === 1 ? 'opacity-30 cursor-not-allowed' : ''">
+	                                                    <button type="button" x-show="u.id !== 1 && u.firebaseAuthStatus !== 'active'" @click="syncUserMembership(u.id)" :disabled="selfServiceAccountBusy" class="text-blue-600 hover:text-blue-700 text-xs font-bold flex items-center gap-1 disabled:opacity-40"><i data-lucide="cloud" class="w-4 h-4"></i><span>إعادة محاولة التفعيل</span></button>
+	                                                    <button type="button" @click="removeUser(u.id)" :disabled="selfServiceAccountBusy" class="text-red-500 hover:text-red-700 disabled:opacity-40" :class="u.id === 1 ? 'opacity-30 cursor-not-allowed' : ''">
                                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                     </button>
                                                 </div>
@@ -7514,7 +7587,7 @@
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <input type="text" x-model="newUserForm.fullName" placeholder="اسم الموظف الكامل" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                         <input type="text" x-model="newUserForm.email" placeholder="اسم المستخدم / البريد (لتسجيل الدخول)" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <div class="relative"><input :type="showNewUserPassword ? 'text' : 'password'" x-model="newUserForm.password" autocomplete="new-password" placeholder="كلمة المرور" class="w-full px-3 py-2 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showNewUserPassword = !showNewUserPassword" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showNewUserPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showNewUserPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
+                                        <div class="relative"><input :type="showNewUserPassword ? 'text' : 'password'" x-model="newUserForm.password" autocomplete="new-password" minlength="6" placeholder="كلمة المرور (6 أحرف على الأقل)" class="w-full px-3 py-2 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showNewUserPassword = !showNewUserPassword" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showNewUserPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showNewUserPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
                                     </div>
                                     <input type="text" x-model="newUserForm.role" placeholder="المسمى الوظيفي (مثال: موظف استقبال، ممرضة...)" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs">
@@ -7525,7 +7598,7 @@
                                             </label>
                                         </template>
                                     </div>
-                                    <button type="button" @click="addUser" class="bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow">إضافة الحساب</button>
+	                                    <button type="button" @click="addUser" :disabled="selfServiceAccountBusy" class="bg-blue-600 text-white px-5 py-2.5 rounded-xl text-sm font-bold shadow disabled:opacity-50"><span x-text="selfServiceAccountBusy ? 'جارٍ إنشاء الحساب…' : 'إضافة الحساب وتفعيله'"></span></button>
                                 </div>
                             </div>
                             </details>
@@ -8214,7 +8287,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.5', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.6', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

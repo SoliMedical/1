@@ -9,6 +9,7 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
   const appSource = readProjectFile('client/index.html');
   const rules = readProjectFile('firestore.rules');
   const bootstrapScript = readProjectFile('scripts/sync-firebase-clinic-members.mjs');
+  const accountGateway = readProjectFile('server/clinicAccountGateway.ts');
   const claudeTestSource = readProjectFile('claude-v175/index.html');
   const primaryFirebaseConfig = readProjectFile('firebase-config.js');
   const claudeTestFirebaseConfig = readProjectFile('claude-v175/firebase-config.js');
@@ -99,7 +100,7 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(appSource).toContain('const firebasePasswordResult = await this.syncFirebasePasswordAfterLocalChange(admin, previousPassword, newPassword);');
   });
 
-  it('creates or restores memberships only through the trusted Admin SDK script', () => {
+  it('creates or restores memberships only through trusted Admin SDK paths', () => {
     expect(bootstrapScript).toContain("from 'firebase-admin/app'");
     expect(bootstrapScript).toContain('getAuth()');
     expect(bootstrapScript).toContain("db.collection('clinics').doc(clinicId).collection('members').doc(authUser.uid)");
@@ -110,6 +111,12 @@ describe('Firebase permanent identity and clinic-membership bridge', () => {
     expect(bootstrapScript).toContain("error?.code === 'auth/user-not-found'");
     expect(bootstrapScript).toContain("reason: 'firebase_identity_missing'");
     expect(bootstrapScript).toContain('serviceAccount.private_key = serviceAccount.private_key.replace(');
+    expect(accountGateway).toContain('auth.verifyIdToken(idToken, true)');
+    expect(accountGateway).toContain("membership.data()?.role !== \"owner\"");
+    expect(accountGateway).toContain('await auth.createUser(');
+    expect(accountGateway).toContain('await auth.deleteUser(authUser.uid)');
+    expect(accountGateway).toContain('await memberRef.delete()');
+    expect(accountGateway).not.toContain('collection("patients")');
   });
 
   it('loads the same Firebase configuration beside the raw Claude test file without modifying that file', () => {

@@ -13,3 +13,6 @@ window.SOLI_FIREBASE_CONFIG = {
     appId: "1:247606627712:web:036d99bdd70ed1bc550565",
     measurementId: "G-04YECK5TVN"
 };
+
+// عنوان عام فقط لمسار إداري موثوق. لا يحتوي على مفتاح Admin SDK أو كلمة مرور.
+window.SOLI_CLINIC_ACCOUNT_GATEWAY_URL = "https://medicenter-h9mjj4tn.manus.space/api/clinic-members";
