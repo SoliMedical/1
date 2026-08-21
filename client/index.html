@@ -80,8 +80,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.6.2';
-        const SOLI_APP_RELEASE = 'تهيئة ترحيل Firebase الآمن وتخزين شعار العيادة وأرشفة عرض المواعيد';
+        const SOLI_APP_VERSION = 'v1.6.3';
+        const SOLI_APP_RELEASE = 'إصلاح أولوية تسجيل الدخول المحلي مع استمرار تهيئة هوية Firebase الآمنة';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -2719,12 +2719,15 @@
                     const localCredentialsMatch = Boolean(matchedUser?.password && matchedUser.password === enteredPassword);
                     let firebaseLogin = { persistent: false };
 
-                    if (navigator.onLine && this.cloudSyncEnabled && firebaseAuth) {
+                    // لا ننتظر Firebase ولا نبدّل قائمة الحسابات عندما تكون بيانات الجهاز
+                    // المحلي صحيحة. هذا يمنع خطأ الشبكة أو هوية Firebase غير المنشأة بعد
+                    // من رفض دخول المدير إلى بيانات عيادته المحلية.
+                    if (!localCredentialsMatch && navigator.onLine && this.cloudSyncEnabled && firebaseAuth) {
                         firebaseLogin = await this.signInFirebaseForLocalUser(
                             { ...(matchedUser || {}), email: enteredEmail, password: enteredPassword },
-                            { allowAnonymousFallback: localCredentialsMatch, createIfMissing: localCredentialsMatch }
+                            { allowAnonymousFallback: false, createIfMissing: false }
                         );
-                        if (firebaseLogin.persistent || localCredentialsMatch) {
+                        if (firebaseLogin.persistent) {
                             await this.prepareUsersForOnlineLogin();
                             matchedUser = this.users.find(u => u.email.trim().toLowerCase() === enteredEmail);
                             // Firebase has verified the submitted secret. It is retained only in
@@ -7775,7 +7778,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.2', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.3', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

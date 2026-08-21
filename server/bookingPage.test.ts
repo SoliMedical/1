@@ -125,13 +125,15 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain("get({ source: 'server' })");
     expect(page).toContain('waitForCloudAuthReady');
     expect(page).toContain('persistUsersToCloudNow');
+    expect(page).toContain('if (!localCredentialsMatch && navigator.onLine && this.cloudSyncEnabled && firebaseAuth)');
     expect(page).toContain('await this.prepareUsersForOnlineLogin()');
   });
 
-  it("يفرض أحدث نسخة للحساب عند كل دخول متصل ولا يستعيد جلسة قديمة أثناء الاتصال", () => {
+  it("يقبل الحساب المحلي الصحيح أولاً ولا يسمح لفشل Firebase بتعطيل دخول المدير", () => {
     expect(page).toContain('firebaseLogin = await this.signInFirebaseForLocalUser(');
-    expect(page).toContain('{ allowAnonymousFallback: localCredentialsMatch, createIfMissing: localCredentialsMatch }');
-    expect(page).toContain('if (firebaseLogin.persistent || localCredentialsMatch)');
+    expect(page).toContain('if (!localCredentialsMatch && navigator.onLine && this.cloudSyncEnabled && firebaseAuth)');
+    expect(page).toContain('{ allowAnonymousFallback: false, createIfMissing: false }');
+    expect(page).toContain('if (firebaseLogin.persistent)');
     expect(page).toContain('await this.prepareUsersForOnlineLogin()');
     expect(page).toContain('if (matchedUser && !matchedUser.password && firebaseLogin.persistent)');
     expect(page).toContain('&& !navigator.onLine)');
@@ -218,7 +220,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.2'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.6.3'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -239,8 +241,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.2', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v13');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.6.3', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v14');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('requestUrl.pathname.endsWith("/")');
     expect(sw).toContain('fetch(event.request)');
