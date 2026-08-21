@@ -80,7 +80,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.7.2';
+        const SOLI_APP_VERSION = 'v1.7.3';
         const SOLI_APP_RELEASE = 'إعادة ضبط تجريبية صريحة ومحمية لمخطط Firestore V2';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -281,6 +281,7 @@
                 cloudSyncEnabled: isFirebaseConfigured,
                 cloudStatus: isFirebaseConfigured ? 'connecting' : 'offline', // 'connecting' | 'online' | 'offline'
                 cloudAuthReady: false,
+                v2OperationalErrors: [],
                 authError: '',
                 showPassword: false,
                 loginError: '',
@@ -1185,7 +1186,12 @@
                             this.refreshFirebaseMembershipStatus(user).then(isActiveMember => {
                                 if (firebaseAuth?.currentUser?.uid !== expectedUid) return;
                                 this.cloudMembershipReady = Boolean(isActiveMember);
-                                this.cloudStatus = isActiveMember && navigator.onLine ? 'connecting' : 'offline';
+                                // A permanent identity plus a server-verified active membership is
+                                // sufficient evidence that Firestore is reachable. Loading the 11
+                                // operational collections remains a separate health concern, so a
+                                // transient issue in one empty/secondary collection must not make
+                                // the whole clinic appear offline.
+                                this.cloudStatus = isActiveMember && navigator.onLine ? 'online' : 'offline';
                                 if (isActiveMember) this.startCloudSync();
                                 else this.stopV2OperationalSync();
                             });
@@ -1735,13 +1741,20 @@
                     this.v2OperationalInitialLoadInFlight = true;
                     try {
                         const names = this.getV2OperationalCollectionNames();
-                        const snapshots = await Promise.all(names.map(name => this.getOperationalCollectionQuery(name).get()));
-                        this.v2OperationalCollectionCache = snapshots.reduce((cache, snapshot, index) => {
-                            cache[names[index]] = snapshot.docs.map(doc => ({ ...doc.data(), _documentId: doc.id }));
+                        const results = await Promise.allSettled(names.map(name => this.getOperationalCollectionQuery(name).get()));
+                        const failedCollections = results
+                            .map((result, index) => result.status === 'rejected' ? names[index] : null)
+                            .filter(Boolean);
+                        this.v2OperationalErrors = failedCollections;
+                        this.v2OperationalCollectionCache = results.reduce((cache, result, index) => {
+                            if (result.status === 'fulfilled') cache[names[index]] = result.value.docs.map(doc => ({ ...doc.data(), _documentId: doc.id }));
                             return cache;
                         }, {});
-                        this.v2OperationalReady = true;
-                        this.applyV2RemoteState('التحميل الأول من مخطط V2');
+                        this.v2OperationalReady = failedCollections.length === 0;
+                        if (this.v2OperationalReady) this.applyV2RemoteState('التحميل الأول من مخطط V2');
+                        if (failedCollections.length) {
+                            console.warn(`تعذر التحميل الأول لبعض مجموعات Firestore: ${failedCollections.join('، ')}. ستستمر المحاولة في الخلفية دون تعطيل الحفظ المحلي أو حالة الاتصال.`);
+                        }
                         this.v2OperationalUnsubscribers = names.map(name => this.getOperationalCollectionQuery(name).onSnapshot(
                             { includeMetadataChanges: true },
                             snapshot => {
@@ -1750,17 +1763,22 @@
                                     ...this.v2OperationalCollectionCache,
                                     [name]: snapshot.docs.map(doc => ({ ...doc.data(), _documentId: doc.id }))
                                 };
-                                this.applyV2RemoteState('تحديث سحابي من مخطط V2');
+                                this.v2OperationalErrors = (this.v2OperationalErrors || []).filter(item => item !== name);
+                                this.v2OperationalReady = this.v2OperationalErrors.length === 0;
+                                if (this.v2OperationalReady) this.applyV2RemoteState('تحديث سحابي من مخطط V2');
                             },
                             error => {
                                 console.error(`تعذر متابعة مجموعة V2 ${name}:`, error);
-                                this.cloudStatus = 'offline';
+                                this.v2OperationalErrors = [...new Set([...(this.v2OperationalErrors || []), name])];
+                                this.v2OperationalReady = false;
+                                if (!this.cloudAuthReady || !this.cloudMembershipReady || !navigator.onLine) this.cloudStatus = 'offline';
                             }
                         ));
                     } catch (error) {
                         console.error('تعذر تحميل بيانات العيادة من مخطط Firestore V2:', error);
                         this.v2OperationalReady = false;
-                        this.cloudStatus = 'offline';
+                        this.v2OperationalErrors = this.getV2OperationalCollectionNames();
+                        if (!this.cloudAuthReady || !this.cloudMembershipReady || !navigator.onLine) this.cloudStatus = 'offline';
                     } finally {
                         this.v2OperationalInitialLoadInFlight = false;
                     }
@@ -1770,6 +1788,7 @@
                     this.v2OperationalUnsubscribers = [];
                     this.v2OperationalCollectionCache = {};
                     this.v2OperationalReady = false;
+                    this.v2OperationalErrors = [];
                 },
                 queueV2MirroredChanges() {
                     if (this.isV2OperationalSyncActive()) return this.queueCloudSync();
@@ -8152,7 +8171,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.2', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.7.3', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });
