@@ -80,8 +80,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.6.3';
-        const SOLI_APP_RELEASE = 'إصلاح أولوية تسجيل الدخول المحلي مع استمرار تهيئة هوية Firebase الآمنة';
+        const SOLI_APP_VERSION = 'v1.6.5';
+        const SOLI_APP_RELEASE = 'تهيئة آمنة لهوية Firebase الدائمة للمدير قبل عضوية العيادة';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -517,6 +517,7 @@
                 firebaseMembershipRole: '',
                 firebaseMembershipMessage: 'سجّل دخولاً دائماً إلى Firebase لفحص عضوية العيادة.',
                 firebaseMembershipBusy: false,
+                firebaseIdentityBusy: false,
                 userPermissionDrafts: {},
                 userSaveFeedback: {},
                 securityQuestionOptions: [
@@ -2463,7 +2464,14 @@
                         await this.refreshFirebaseMembershipStatus(credential.user);
                         return { ok: true, persistent: true, user: credential.user };
                     } catch (signInError) {
-                        const mayCreate = createIfMissing && String(signInError?.code || '').includes('user-not-found');
+                        // Firebase's email-enumeration protection can deliberately collapse a
+                        // missing user into invalid-credential.  For a locally authenticated
+                        // administrator we may safely try a one-time account creation; an
+                        // existing account remains protected because Firebase rejects duplicates.
+                        const initialSignInError = signInError;
+                        const signInCode = String(signInError?.code || '');
+                        const mayCreate = createIfMissing
+                            && (signInCode.includes('user-not-found') || signInCode.includes('invalid-credential'));
                         if (mayCreate && firebasePassword.length >= 6) {
                             try {
                                 const credential = await firebaseAuth.createUserWithEmailAndPassword(firebaseEmail, firebasePassword);
@@ -2475,7 +2483,9 @@
                                 await this.refreshFirebaseMembershipStatus(credential.user);
                                 return { ok: true, persistent: true, user: credential.user, created: true };
                             } catch (createError) {
-                                signInError = createError;
+                                signInError = String(createError?.code || '').includes('email-already-in-use')
+                                    ? initialSignInError
+                                    : createError;
                             }
                         }
                         this.firebaseIdentityMessage = this.firebaseIdentityErrorMessage(signInError);
@@ -2494,6 +2504,39 @@
                             }
                         }
                         return { ok: false, persistent: false, error: signInError };
+                    }
+                },
+                async provisionPersistentFirebaseIdentityForCurrentUser() {
+                    if (!this.isAuthenticated || !this.currentUser) {
+                        this.firebaseIdentityMessage = 'سجّل دخول المدير محلياً أولاً قبل تهيئة هوية Firebase.';
+                        return false;
+                    }
+                    if (this.firebaseRoleForLocalUser(this.currentUser) !== 'owner' && this.currentUser?.role !== 'admin') {
+                        this.firebaseIdentityMessage = 'تهيئة هوية Firebase الدائمة متاحة لمدير النظام فقط.';
+                        return false;
+                    }
+                    if (!navigator.onLine || !firebaseAuth) {
+                        this.firebaseIdentityMessage = 'تحتاج تهيئة الهوية الدائمة إلى اتصال بالإنترنت.';
+                        return false;
+                    }
+                    this.firebaseIdentityBusy = true;
+                    this.firebaseIdentityMessage = 'جارٍ تهيئة هوية Firebase الدائمة للمدير…';
+                    try {
+                        if (firebaseAuth.currentUser?.isAnonymous) await firebaseAuth.signOut();
+                        const result = await this.signInFirebaseForLocalUser(this.currentUser, {
+                            allowAnonymousFallback: false,
+                            createIfMissing: true
+                        });
+                        if (!result.persistent) {
+                            this.firebaseIdentityMessage = result.error
+                                ? this.firebaseIdentityErrorMessage(result.error)
+                                : 'لم تكتمل تهيئة هوية Firebase الدائمة. بقيت بيانات العيادة المحلية دون تغيير.';
+                            return false;
+                        }
+                        await this.refreshFirebaseMembershipStatus(result.user);
+                        return true;
+                    } finally {
+                        this.firebaseIdentityBusy = false;
                     }
                 },
                 attachFirebaseUidToLocalUser(localUser, uid) {
@@ -7002,7 +7045,7 @@
 	                                    </div>
 	                                    <p class="text-[11px] leading-5 text-indigo-800 dark:text-indigo-200" x-text="firebaseIdentityMessage"></p>
 	                                    <p class="text-[11px] leading-5 text-slate-600 dark:text-slate-300" x-text="firebaseMembershipMessage"></p>
-	                                    <div class="flex gap-2 flex-wrap"><button type="button" @click="refreshFirebaseMembershipStatus()" :disabled="firebaseMembershipBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-200 disabled:opacity-50">تحديث الحالة</button><button type="button" @click="ensureClinicMembership()" :disabled="firebaseMembershipBusy || !firebaseIdentityUid" class="text-xs font-bold px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50"><span x-text="firebaseMembershipBusy ? 'جارٍ التهيئة…' : 'تهيئة عضوية المدير الأولى'"></span></button></div>
+                                    <div class="flex gap-2 flex-wrap"><button type="button" @click="refreshFirebaseMembershipStatus()" :disabled="firebaseMembershipBusy || firebaseIdentityBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-indigo-700 dark:text-indigo-200 disabled:opacity-50">تحديث الحالة</button><button type="button" @click="provisionPersistentFirebaseIdentityForCurrentUser()" x-show="!isPermanentFirebaseUser()" :disabled="firebaseIdentityBusy" class="text-xs font-bold px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white disabled:opacity-50"><span x-text="firebaseIdentityBusy ? 'جارٍ تهيئة الهوية…' : 'تهيئة هوية Firebase الدائمة'"></span></button><button type="button" @click="ensureClinicMembership()" :disabled="firebaseMembershipBusy || firebaseIdentityBusy || !isPermanentFirebaseUser()" class="text-xs font-bold px-3 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50"><span x-text="firebaseMembershipBusy ? 'جارٍ التهيئة…' : 'تهيئة عضوية المدير الأولى'"></span></button></div>
 	                                    <p class="text-[10px] leading-5 text-slate-500 dark:text-slate-400">إذا كانت القواعد الحية منشورة بالفعل، يرفض Firebase هذا الزر عمداً لأن المتصفح لا يملك صلاحية تصعيد الأدوار؛ استخدم أداة المدير الموثوقة لاستعادة العضوية.</p>
 	                                </div>
 	                        <p class="text-xs text-slate-400 dark:text-slate-500">أضف حساباً لكل موظف بالعيادة وحدد الأقسام التي يمكنه الوصول إليها بعد تسجيل الدخول. البريد الإلكتروني المحفوظ هو وسيلة تواصل لاستعادة الحساب يدوياً حالياً؛ لأن الدخول المحلي لا يرسل رابطاً آلياً من داخل التطبيق.</p>
@@ -7778,7 +7821,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.3', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.6.5', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

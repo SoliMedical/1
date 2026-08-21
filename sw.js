@@ -1,8 +1,8 @@
-const CACHE_NAME = "soli-medical-pwa-v14";
+const CACHE_NAME = "soli-medical-pwa-v16";
+const SCOPE_PATH = new URL(self.registration.scope).pathname;
 const APP_SHELL = [
-  "/",
-  "/manifest.webmanifest",
-  "/icons/medicenter-icon.png"
+  SCOPE_PATH,
+  `${SCOPE_PATH}manifest.webmanifest`
 ];
 
 self.addEventListener("install", (event) => {
@@ -28,11 +28,8 @@ self.addEventListener("fetch", (event) => {
   const requestUrl = new URL(event.request.url);
   if (requestUrl.origin !== self.location.origin) return;
 
-  // HTML and application scripts must prefer the network so deployments reach
-  // existing installations immediately. The cache remains an offline fallback.
-  const isAppShell = requestUrl.pathname === "/" ||
-    requestUrl.pathname.endsWith("/") ||
-    requestUrl.pathname.endsWith("/index.html") ||
+  const isAppShell = requestUrl.pathname === SCOPE_PATH ||
+    requestUrl.pathname === `${SCOPE_PATH}index.html` ||
     requestUrl.pathname.endsWith(".js") ||
     requestUrl.pathname.endsWith(".mjs");
 
@@ -46,7 +43,7 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(() => caches.match(event.request).then((cached) => cached || caches.match("/")))
+        .catch(() => caches.match(event.request).then((cached) => cached || caches.match(SCOPE_PATH)))
     );
     return;
   }
@@ -59,7 +56,7 @@ self.addEventListener("fetch", (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
         }
         return response;
-      }).catch(() => cachedResponse || caches.match("/"));
+      }).catch(() => cachedResponse || caches.match(SCOPE_PATH));
       return cachedResponse || networkResponse;
     })
   );
