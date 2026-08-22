@@ -1,18 +1,17 @@
 /*
- * إعداد Firebase الخاص بهذه النسخة.
- * عند تجهيز نسخة لعيادة جديدة، استبدل قيم هذا الكائن فقط
- * بإعدادات مشروع Firebase الخاص بتلك العيادة.
- * لا تضع كلمات مرور أو مفاتيح Admin SDK هنا؛ هذه إعدادات Web عامة فقط.
+ * إعداد Firebase العام لبيئة Soli Medical Sync الجديدة.
+ * هذه القيم مخصصة لتطبيق Web وللمصادقة والمزامنة فقط.
+ * لا تضع كلمات مرور أو مفاتيح Admin SDK هنا؛ تلك المفاتيح تبقى في خادم موثوق خارج GitHub Pages.
  */
 window.SOLI_FIREBASE_CONFIG = {
-    apiKey: "AIzaSyA17A_77NeF-_D5SJg9jbvD8y_a5uZo0do",
-    authDomain: "clinic1-ba255.firebaseapp.com",
-    projectId: "clinic1-ba255",
-    storageBucket: "clinic1-ba255.firebasestorage.app",
-    messagingSenderId: "247606627712",
-    appId: "1:247606627712:web:036d99bdd70ed1bc550565",
-    measurementId: "G-04YECK5TVN"
+    apiKey: "AIzaSyDzrN5l8zZcgKZjbbvcHw-rh2DpW4XDWCE",
+    authDomain: "soli-medical-sync.firebaseapp.com",
+    projectId: "soli-medical-sync",
+    storageBucket: "soli-medical-sync.firebasestorage.app",
+    messagingSenderId: "674942739099",
+    appId: "1:674942739099:web:d6f7d6a21f03e7122a5c3e"
 };
 
-// عنوان عام فقط لمسار إداري موثوق. لا يحتوي على مفتاح Admin SDK أو كلمة مرور.
-window.SOLI_CLINIC_ACCOUNT_GATEWAY_URL = "https://medicenter-h9mjj4tn.manus.space/api/clinic-members";
+// لا توجد بوابة Admin SDK مرتبطة بالمشروع الجديد ضمن نطاق الدخول والمزامنة الحالي.
+// تبقى إدارة حسابات الموظفين معطلة حتى تُنشر بوابة موثوقة للمشروع الجديد.
+window.SOLI_CLINIC_ACCOUNT_GATEWAY_URL = "";
