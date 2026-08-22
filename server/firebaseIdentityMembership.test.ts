@@ -13,15 +13,36 @@ describe('Firebase-only identity and clinic-membership contract', () => {
 
   it('authenticates with the submitted Firebase email/password only', () => {
     expect(appSource).toContain('async signInFirebaseForLocalUser(localUser, options = {})');
+    expect(appSource).toContain('const firebaseEmail = String(localUser.firebaseEmail || this.firebaseEmailForUser(localUser.email)).trim().toLowerCase();');
     expect(appSource).toContain('firebaseAuth.signInWithEmailAndPassword(firebaseEmail, firebasePassword)');
     expect(appSource).toContain('const { firebasePassword: suppliedFirebasePassword = \'\' } = options;');
     expect(appSource).toContain('if (!navigator.onLine || !this.cloudSyncEnabled || !firebaseAuth)');
-    expect(appSource).toContain("if (!enteredEmail.includes('@'))");
+    expect(appSource).toContain('const enteredEmail = this.resolveFirebaseLoginEmail(enteredLogin);');
     expect(appSource).toContain('{ firebasePassword: enteredPassword }');
     expect(appSource).not.toContain('localCredentialsMatch');
     expect(appSource).not.toContain('signInAnonymously');
     expect(appSource).not.toContain('createIfMissing');
     expect(appSource).not.toContain('allowAnonymousFallback');
+    expect(appSource).not.toContain('String(admin?.password || this.currentUser?.password || \'\')');
+    expect(appSource).not.toContain('localUser?.password');
+  });
+
+  it('resolves admin aliases to Firebase email and prefers a stored firebaseEmail', () => {
+    const extractMethod = (methodName: string) => {
+      const match = appSource.match(new RegExp(`\\n                ${methodName}\\([^\\n]*\\) \\{[\\s\\S]*?\\n                \\},`));
+      if (!match) throw new Error(`Unable to extract ${methodName} from client/index.html`);
+      return new Function(`return ({ ${match[0]} }).${methodName}`)();
+    };
+    const firebaseEmailForUser = extractMethod('firebaseEmailForUser');
+    const resolveFirebaseLoginEmail = extractMethod('resolveFirebaseLoginEmail');
+    const context = {
+      users: [{ email: 'admin', firebaseEmail: 'owner@example.com' }],
+      firebaseEmailForUser
+    };
+
+    expect(firebaseEmailForUser.call(context, 'admin')).toBe('admin@solimedical.local');
+    expect(resolveFirebaseLoginEmail.call(context, 'admin')).toBe('owner@example.com');
+    expect(resolveFirebaseLoginEmail.call({ users: [], firebaseEmailForUser }, 'admin')).toBe('admin@solimedical.local');
   });
 
   it('requires active clinic membership after Firebase Auth succeeds', () => {
