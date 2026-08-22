@@ -37,25 +37,16 @@ function initializeAdmin() {
   return initializeApp({ credential: applicationDefault(), projectId });
 }
 
-async function findOrCreateAuthUser(auth, user) {
+async function findExistingAuthUser(auth, user) {
   const email = firebaseEmailForUser(user.email);
-  try {
-    return await auth.getUserByEmail(email);
-  } catch (error) {
-    if (error?.code !== 'auth/user-not-found') throw error;
-    const password = String(user?.password || '');
-    if (password.length < 6) {
-      throw new Error(`لا يمكن إنشاء هوية ${email}: كلمة المرور المحلية أقل من 6 أحرف. حدّث كلمة المرور من التطبيق ثم أعد تشغيل الأداة.`);
-    }
-    return auth.createUser({ email, password, displayName: String(user.fullName || '').trim() || undefined });
-  }
+  return auth.getUserByEmail(email);
 }
 
 async function main() {
   initializeAdmin();
   const auth = getAuth();
   const db = getFirestore();
-  const existingOnly = process.argv.includes('--existing-only');
+  const existingOnly = true;
   const legacySnapshot = await db.doc(cloudDocPath).get();
   if (!legacySnapshot.exists) throw new Error(`لم توجد وثيقة البيانات القديمة: ${cloudDocPath}`);
   const users = Array.isArray(legacySnapshot.data()?.users) ? legacySnapshot.data().users : [];
@@ -67,11 +58,9 @@ async function main() {
   for (const user of activeUsers) {
     let authUser;
     try {
-      authUser = existingOnly
-        ? await auth.getUserByEmail(firebaseEmailForUser(user.email))
-        : await findOrCreateAuthUser(auth, user);
+      authUser = await findExistingAuthUser(auth, user);
     } catch (error) {
-      if (existingOnly && error?.code === 'auth/user-not-found') {
+      if (error?.code === 'auth/user-not-found') {
         skipped.push({ localUserId: String(user.id ?? ''), reason: 'firebase_identity_missing' });
         continue;
       }

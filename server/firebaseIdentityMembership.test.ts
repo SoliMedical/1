@@ -5,146 +5,103 @@ import path from 'node:path';
 const projectRoot = path.resolve(import.meta.dirname, '..');
 const readProjectFile = (fileName: string) => fs.readFileSync(path.join(projectRoot, fileName), 'utf8');
 
-describe('Firebase permanent identity and clinic-membership bridge', () => {
+describe('Firebase-only identity and clinic-membership contract', () => {
   const appSource = readProjectFile('client/index.html');
   const rules = readProjectFile('firestore.rules');
   const bootstrapScript = readProjectFile('scripts/sync-firebase-clinic-members.mjs');
   const accountGateway = readProjectFile('server/clinicAccountGateway.ts');
-  const claudeTestSource = readProjectFile('claude-v175/index.html');
-  const primaryFirebaseConfig = readProjectFile('firebase-config.js');
-  const claudeTestFirebaseConfig = readProjectFile('claude-v175/firebase-config.js');
 
-  it('prefers email/password Firebase identities while retaining an explicit anonymous offline fallback', () => {
+  it('authenticates with the submitted Firebase email/password only', () => {
     expect(appSource).toContain('async signInFirebaseForLocalUser(localUser, options = {})');
     expect(appSource).toContain('firebaseAuth.signInWithEmailAndPassword(firebaseEmail, firebasePassword)');
-    expect(appSource).toContain('firebaseAuth.createUserWithEmailAndPassword(firebaseEmail, firebasePassword)');
-    expect(appSource).toContain('firebaseAuth.signInAnonymously()');
-    expect(appSource).toContain("this.firebaseIdentityStatus = 'احتياطي مؤقت'");
+    expect(appSource).toContain('const { firebasePassword: suppliedFirebasePassword = \'\' } = options;');
+    expect(appSource).toContain('if (!navigator.onLine || !this.cloudSyncEnabled || !firebaseAuth)');
+    expect(appSource).toContain("if (!enteredEmail.includes('@'))");
+    expect(appSource).toContain('{ firebasePassword: enteredPassword }');
+    expect(appSource).not.toContain('localCredentialsMatch');
+    expect(appSource).not.toContain('signInAnonymously');
+    expect(appSource).not.toContain('createIfMissing');
+    expect(appSource).not.toContain('allowAnonymousFallback');
   });
 
-  it('keeps the durable Firebase-identity bridge internal to preserve the local sign-in interface', () => {
-    expect(appSource).toContain('async provisionPersistentFirebaseIdentityForCurrentUser()');
-    expect(appSource).toContain('firebaseAuth.currentUser?.isAnonymous');
-    expect(appSource).toContain('allowAnonymousFallback: false');
-    expect(appSource).toContain("signInCode.includes('invalid-credential')");
-    expect(appSource).not.toContain('x-show="!isPermanentFirebaseUser()"');
-    expect(appSource).toContain('isPermanentFirebaseUser(user = firebaseAuth?.currentUser)');
+  it('requires active clinic membership after Firebase Auth succeeds', () => {
+    expect(appSource).toContain('const membershipActive = await this.refreshFirebaseMembershipStatus(credential.user);');
+    expect(appSource).toContain('if (!firebaseLogin.membershipActive)');
+    expect(appSource).toContain('async hydrateLocalUserFromFirebaseUser(firebaseUser)');
+    expect(appSource).toContain('firebaseAuth.onAuthStateChanged(async user => {');
+    expect(appSource).toContain('if (!hydratedUser || hydratedUser.active === false)');
+    expect(appSource).toContain('await firebaseAuth.signOut().catch(() => {});');
+    expect(appSource).toContain("this.attachFirebaseUidToLocalUser(matchedUser, uid, 'active');");
   });
 
-  it('identifies the local four-character administrator password as a Firebase setup prerequisite without disabling local or anonymous operation', () => {
-    expect(appSource).toContain("const passwordError = { code: 'local-password-too-short' }");
-    expect(appSource).toContain("this.firebaseIdentityIssueCode = passwordError.code");
-    expect(appSource).toContain('كلمة مرور المدير المحلية الحالية أقصر من 6 أحرف');
-    expect(appSource).toContain('return { ok: false, persistent: false, fallback: true, error: passwordError }');
-    expect(appSource).toContain('newPassword && newPassword.length < 6');
-    expect(appSource).not.toContain('الإجراء المطلوب: احفظ كلمة مرور جديدة من 6 أحرف أو أرقام على الأقل');
+  it('does not restore local-only sessions or device trust as authentication', () => {
+    expect(appSource).toContain("if (!raw || !this.isPermanentFirebaseUser())");
+    expect(appSource).toContain("localStorage.setItem(this.sessionKey, JSON.stringify({ userId, firebaseUid:");
+    expect(appSource).not.toContain('navigator.onLine || this.isDeviceTrustValid(user)');
+    expect(appSource).not.toContain('if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser)');
+    expect(appSource).not.toContain("mode: 'online-first-local-afterward'");
   });
 
-  it('keeps Firebase setup helpers out of the doctor settings interface', () => {
-    expect(appSource).toContain('focusAdminPasswordUpdateForFirebase()');
-    expect(appSource).toContain("document.getElementById('admin-security-new-password')");
-    expect(appSource).not.toContain('الانتقال الآمن لتحديث كلمة المرور');
-    expect(appSource).not.toContain('id="admin-security-recovery"');
+  it('removes legacy passwords and recovery secrets while normalizing users', () => {
+    expect(appSource).toContain('password: _legacyPassword');
+    expect(appSource).toContain('securityAnswerHash: _legacySecurityAnswerHash');
+    expect(appSource).toContain('securityQuestion: _legacySecurityQuestion');
+    expect(appSource).toContain('mergeCloudUsers(remoteUsers)');
+    expect(appSource).not.toContain('mergeCloudUsersWithLocalCredentials');
+    expect(appSource).not.toContain("password: '1234'");
+    expect(appSource).not.toContain("password: '1111'");
+    expect(appSource).not.toContain('x-model="u.password"');
   });
 
-  it('keeps Firebase passwords and recovery answers out of Firestore snapshots', () => {
-    expect(appSource).toContain('getCloudSafeUsers(users = this.users)');
-    expect(appSource).toContain('const { password, securityAnswerHash, securityQuestion, ...cloudUser } = user;');
-    expect(appSource).toContain('getCloudSyncSnapshot()');
-    expect(appSource).toContain("snapshot[key] = key === 'users' ? this.getCloudSafeUsers(this.users) : this[key];");
-    expect(appSource).toContain('mergeCloudUsersWithLocalCredentials(remoteUsers)');
+  it('uses Firebase password reset links instead of local security questions', () => {
+    expect(appSource).toContain('firebaseAuth.sendPasswordResetEmail(enteredEmail)');
+    expect(appSource).toContain('إرسال رابط من Firebase');
+    expect(appSource).not.toContain('استعادة محلية');
+    expect(appSource).not.toContain('إجابة الأمان غير صحيحة.');
+    expect(appSource).not.toContain('admin.password = newPassword');
+    expect(appSource).not.toContain('const previousPassword = String(admin.password || \'\');');
   });
 
-  it('provisions new employee identities through a secondary app without replacing the administrator session', () => {
-    expect(appSource).toContain('async createFirebaseIdentityForNewUser(localUser)');
-    expect(appSource).toContain('firebase.initializeApp(firebaseConfig, secondaryName)');
-    expect(appSource).toContain('secondaryApp.auth()');
-    expect(appSource).toContain('await secondaryApp.delete()');
+  it('uses Firebase reauthentication for reset and idle unlock', () => {
+    expect(appSource).toContain('await identity.reauthenticateWithCredential(credential);');
+    expect(appSource).toContain('async unlockIdleSession()');
+    expect(appSource).toContain('const resetPassword = String(this.cloudResetPasswordInput || \'\');');
+    expect(appSource).not.toContain('const expectedPassword = String(admin?.password || this.currentUser?.password || \'\');');
+    expect(appSource).not.toContain('String(this.idleUnlockPassword) !== password');
   });
 
-  it('shows a read-only membership diagnostic but cannot grant membership from a browser after live rules are deployed', () => {
-    expect(appSource).toContain('async refreshFirebaseMembershipStatus(user = firebaseAuth?.currentUser)');
-    expect(appSource).toContain('async ensureClinicMembership()');
-    expect(appSource).toContain('diagnoseCloudConnection()');
-    expect(appSource).toContain('cloudDiagnosticsVisible: false');
-    expect(appSource).toContain('المسار الموثوق فقط (Firebase Admin SDK أو Firebase Console)');
-    expect(appSource).not.toContain('provisionMembershipForOtherUser(');
-    expect(appSource).not.toContain("members').doc(targetLocalUser.firebaseUid).set(");
-    expect(appSource).toContain('منعت قواعد Firebase إنشاء العضوية من المتصفح');
-    expect(rules).toContain('match /members/{memberUid}');
-    expect(rules).toContain('allow create, update, delete: if false;');
+  it('creates team users through the trusted gateway with a transient password', () => {
+    expect(appSource).toContain('async callClinicAccountGateway(action, user, options = {})');
+    expect(appSource).toContain('password: action === \'upsert\' && options.password ? String(options.password) : undefined');
+    expect(appSource).toContain('const firebasePassword = this.newUserForm.password.trim();');
+    expect(appSource).toContain('syncUserMembership(newUser.id, { silent: true, firebasePassword })');
+    expect(appSource).toContain('async sendFirebasePasswordResetForUser(userId)');
+    expect(appSource).toContain('firebaseAuth.sendPasswordResetEmail(email)');
+    expect(appSource).not.toContain('localUser?.password');
   });
 
-  it('does not treat an anonymous Firebase session as cloud-sync ready after membership rules are live', () => {
-    expect(appSource).toContain('cloudMembershipReady: false');
-    expect(appSource).toContain('this.cloudAuthReady = permanentIdentity;');
-    expect(appSource).toContain('if (!permanentIdentity) {');
-    expect(appSource).toContain('this.cloudMembershipReady = Boolean(isActiveMember);');
-    expect(appSource).toContain('!this.cloudMembershipReady');
-    expect(appSource).toContain('allowAnonymousFallback: false');
-  });
-
-  it('shows the cloud as online after re-entry when a permanent Firebase identity has an active membership', () => {
-    expect(appSource).toContain('this.refreshFirebaseMembershipStatus(user).then(isActiveMember => {');
-    expect(appSource).toContain('this.cloudMembershipReady = Boolean(isActiveMember);');
-    expect(appSource).toContain("this.cloudStatus = isActiveMember && navigator.onLine ? 'online' : 'offline';");
-    expect(appSource).toContain('if (this.cloudAuthReady && this.cloudMembershipReady) this.startCloudSync();');
-  });
-
-  it('promotes the exact locally pending account named by the live membership rather than the current session', () => {
-    expect(appSource).toContain("attachFirebaseUidToLocalUser(localUser, uid, membershipStatus = '')");
-    expect(appSource).toContain("const memberLocalUserId = String(member.localUserId ?? '');");
-    expect(appSource).toContain("const localUserToUpdate = matchingLocalUser || this.currentUser;");
-    expect(appSource).toContain("this.attachFirebaseUidToLocalUser(localUserToUpdate, user.uid, 'active');");
-    expect(appSource).toContain("async refreshPendingLocalMembershipCards()");
-    expect(appSource).toContain(".where('localUserId', '==', localUserId)");
-    expect(appSource).toContain("user.firebaseAuthStatus = nextMembershipStatus;");
-    expect(appSource).toContain('لا نربط البطاقات بجلستها الحالية عشوائياً');
-  });
-
-  it('offers a one-time verification route for the legacy primary-admin password without persisting or creating an identity', () => {
-    expect(appSource).toContain("firebaseLinkPassword: ''");
-    expect(appSource).toContain('async linkPrimaryAdminToExistingFirebase()');
-    expect(appSource).toContain("const firebasePassword = String(this.firebaseLinkPassword || '');");
-    expect(appSource).toContain("secondaryApp.auth().signInWithEmailAndPassword(this.firebaseEmailForUser(primaryAdmin.email), firebasePassword)");
-    expect(appSource).toContain("String(member?.localUserId ?? '') === '1'");
-    expect(appSource).toContain("this.firebaseLinkPassword = '';");
-    expect(appSource).toContain('await secondaryApp.delete()');
-    expect(appSource).toContain('لا تُحفظ هنا، ولا تغيّر كلمة المرور المحلية أو بيانات المرضى.');
-    expect(appSource).not.toContain('createUserWithEmailAndPassword(this.firebaseEmailForUser(primaryAdmin.email), firebasePassword)');
-  });
-
-  it('keeps a new local administrator password aligned with an already authenticated permanent Firebase identity', () => {
-    expect(appSource).toContain('async syncFirebasePasswordAfterLocalChange(localUser, previousPassword, newPassword)');
-    expect(appSource).toContain('await currentIdentity.updatePassword(newPassword)');
-    expect(appSource).toContain('firebase.auth.EmailAuthProvider.credential(firebaseEmail, previousPassword)');
-    expect(appSource).toContain('await currentIdentity.reauthenticateWithCredential(credential)');
-    expect(appSource).toContain('const firebasePasswordResult = newPassword');
-    expect(appSource).toContain('const firebasePasswordResult = await this.syncFirebasePasswordAfterLocalChange(admin, previousPassword, newPassword);');
-  });
-
-  it('creates or restores memberships only through trusted Admin SDK paths', () => {
-    expect(bootstrapScript).toContain("from 'firebase-admin/app'");
-    expect(bootstrapScript).toContain('getAuth()');
-    expect(bootstrapScript).toContain("db.collection('clinics').doc(clinicId).collection('members').doc(authUser.uid)");
-    expect(bootstrapScript).toContain("status: existing?.status || 'active'");
-    expect(bootstrapScript).toContain("createdBy: existing?.createdBy || 'scripts/sync-firebase-clinic-members.mjs'");
-    expect(bootstrapScript).toContain("const existingOnly = process.argv.includes('--existing-only')");
-    expect(bootstrapScript).toContain('await auth.getUserByEmail(firebaseEmailForUser(user.email))');
-    expect(bootstrapScript).toContain("error?.code === 'auth/user-not-found'");
-    expect(bootstrapScript).toContain("reason: 'firebase_identity_missing'");
-    expect(bootstrapScript).toContain('serviceAccount.private_key = serviceAccount.private_key.replace(');
+  it('keeps the trusted gateway responsible for Auth and membership administration', () => {
     expect(accountGateway).toContain('auth.verifyIdToken(idToken, true)');
-    expect(accountGateway).toContain("membership.data()?.role !== \"owner\"");
     expect(accountGateway).toContain('await auth.createUser(');
-    expect(accountGateway).toContain('await auth.deleteUser(authUser.uid)');
-    expect(accountGateway).toContain('await memberRef.delete()');
+    expect(accountGateway).toContain('await auth.updateUser(authUser.uid');
+    expect(accountGateway).toContain('members');
+    expect(accountGateway).toContain('membership.data()?.role !== "owner"');
     expect(accountGateway).not.toContain('collection("patients")');
   });
 
-  it('loads the same Firebase configuration beside the raw Claude test file without modifying that file', () => {
-    expect(claudeTestSource).toContain('<script src="./firebase-config.js"></script>');
-    expect(claudeTestSource).toContain('async provisionMembershipForOtherUser(targetLocalUser, targetRole = \'assistant\')');
-    expect(claudeTestFirebaseConfig).toBe(primaryFirebaseConfig);
+  it('does not create Firebase Auth users from local passwords in the bootstrap script', () => {
+    expect(bootstrapScript).toContain('async function findExistingAuthUser(auth, user)');
+    expect(bootstrapScript).toContain('const existingOnly = true;');
+    expect(bootstrapScript).toContain("reason: 'firebase_identity_missing'");
+    expect(bootstrapScript).not.toContain('user?.password');
+    expect(bootstrapScript).not.toContain('auth.createUser');
+  });
+
+  it('keeps membership creation outside browser rules', () => {
+    expect(appSource).toContain('async refreshFirebaseMembershipStatus(user = firebaseAuth?.currentUser)');
+    expect(appSource).toContain('المسار الموثوق فقط (Firebase Admin SDK أو Firebase Console)');
+    expect(appSource).not.toContain('provisionMembershipForOtherUser(');
+    expect(rules).toContain('match /members/{memberUid}');
+    expect(rules).toContain('allow create, update, delete: if false;');
   });
 });

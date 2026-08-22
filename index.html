@@ -81,7 +81,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.8.0';
+        const SOLI_APP_VERSION = 'v1.8.1';
         const SOLI_APP_RELEASE = 'مزامنة Offline-first آمنة مع tombstones وoutbox محلي';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -487,7 +487,6 @@
                         id: 1,
                         fullName: 'د. أحمد السالم',
                         email: 'admin',
-                        password: '1234',
                         role: 'admin',
                         active: true,
                         permissions: { dashboard: true, newVisit: true, appointments: true, waitingQueue: true, followUps: true, patients: true, invoices: true, expenses: true, reports: true, pharmacy: true, prescriptionSettings: true, settings: true }
@@ -496,7 +495,6 @@
                         id: 2,
                         fullName: 'محاسب العيادة',
                         email: 'محاسب',
-                        password: '1111',
                         role: 'محاسب',
                         active: true,
                         permissions: { dashboard: true, newVisit: false, appointments: false, waitingQueue: false, followUps: false, patients: false, invoices: true, expenses: true, reports: true, pharmacy: false, prescriptionSettings: false, settings: false }
@@ -858,9 +856,12 @@
                             u.permissions.prescriptionSettings = u.role === 'admin' || !!u.permissions.settings;
                         }
                     });
-                    this.restoreDeviceTrust();
+                    if (this.cloudSyncEnabled && firebaseAuth && !this.cloudAuthListenerStarted) {
+                        this.cloudAuthListenerStarted = true;
+                        this.observeFirebaseAuth();
+                    }
                     this.restoreSession();
-                    // Restore the last section only after local login is restored, and never
+                    // Restore the last section only after Firebase login is restored, and never
                     // bypass the current account's page permissions.
                     const savedView = localStorage.getItem('soliLastSection');
                     const savedPermission = this.viewPermissionMap?.[savedView];
@@ -1123,7 +1124,8 @@
                     const currentEmail = String(this.currentUser.email || '').trim().toLowerCase();
                     const freshUser = this.users.find(user =>
                         (currentId && String(user.id ?? '') === currentId) ||
-                        (currentEmail && String(user.email || '').trim().toLowerCase() === currentEmail)
+                        (currentEmail && (String(user.email || '').trim().toLowerCase() === currentEmail || this.firebaseEmailForUser(user.email) === currentEmail)) ||
+                        (this.firebaseIdentityUid && String(user.firebaseUid || '') === String(this.firebaseIdentityUid))
                     );
                     if (freshUser) this.currentUser = this.withCompatiblePermissions(freshUser);
                 },
@@ -1149,11 +1151,19 @@
                         return candidateIsPrimaryAdmin && !currentIsPrimaryAdmin ? candidate : current;
                     };
                     source.forEach(rawUser => {
-                        if (!rawUser || !rawUser.email) return;
+                        const sourceEmail = rawUser?.email || rawUser?.firebaseEmail;
+                        if (!rawUser || !sourceEmail) return;
+                        const {
+                            password: _legacyPassword,
+                            securityAnswerHash: _legacySecurityAnswerHash,
+                            securityQuestion: _legacySecurityQuestion,
+                            ...safeRawUser
+                        } = rawUser;
+                        const canonicalFirebaseEmail = String(rawUser?.firebaseEmail || this.firebaseEmailForUser(sourceEmail)).trim().toLowerCase();
                         const user = this.withCompatiblePermissions({
-                            ...rawUser,
-                            email: String(rawUser.email).trim(),
-                            ...(rawUser.password ? { password: String(rawUser.password) } : {})
+                            ...safeRawUser,
+                            email: String(rawUser.email || sourceEmail).trim(),
+                            firebaseEmail: canonicalFirebaseEmail
                         });
                         const emailKey = user.email.toLowerCase();
                         const idKey = user.id === undefined || user.id === null ? '' : String(user.id);
@@ -1173,24 +1183,21 @@
                 },
                 getCloudSafeUsers(users = this.users) {
                     return this.normalizeUsers(users).map(user => {
-                        const { password, securityAnswerHash, securityQuestion, ...cloudUser } = user;
+                        const {
+                            password: _legacyPassword,
+                            securityAnswerHash: _legacySecurityAnswerHash,
+                            securityQuestion: _legacySecurityQuestion,
+                            ...cloudUser
+                        } = user;
                         return {
                             ...cloudUser,
-                            firebaseEmail: this.firebaseEmailForUser(cloudUser.email),
+                            firebaseEmail: cloudUser.firebaseEmail || this.firebaseEmailForUser(cloudUser.email),
                             firebaseAuthStatus: cloudUser.firebaseAuthStatus || (cloudUser.firebaseUid ? 'membership_pending' : 'not_provisioned')
                         };
                     });
                 },
-                mergeCloudUsersWithLocalCredentials(remoteUsers) {
-                    const localUsersByEmail = new Map((this.users || []).map(user => [String(user?.email || '').trim().toLowerCase(), user]));
-                    return this.normalizeUsers(remoteUsers).map(remoteUser => {
-                        const localUser = localUsersByEmail.get(String(remoteUser.email || '').trim().toLowerCase());
-                        const localSecret = localUser?.password ? { password: String(localUser.password) } : {};
-                        const localRecovery = localUser?.securityAnswerHash
-                            ? { securityAnswerHash: localUser.securityAnswerHash, securityQuestion: localUser.securityQuestion || '' }
-                            : {};
-                        return this.withCompatiblePermissions({ ...remoteUser, ...localSecret, ...localRecovery });
-                    });
+                mergeCloudUsers(remoteUsers) {
+                    return this.normalizeUsers(remoteUsers);
                 },
                 getCloudSyncSnapshot() {
                     if (this.isOperationalDocumentSyncActive()) return this.getLegacyOperationalSnapshot();
@@ -1327,9 +1334,31 @@
                     }
                 },
 
+                async hydrateLocalUserFromFirebaseUser(firebaseUser) {
+                    const uid = String(firebaseUser?.uid || '');
+                    const firebaseEmail = String(firebaseUser?.email || '').trim().toLowerCase();
+                    const findMatch = () => (this.users || []).find(user =>
+                        (uid && String(user.firebaseUid || '') === uid) ||
+                        (firebaseEmail && (String(user.email || '').trim().toLowerCase() === firebaseEmail || this.firebaseEmailForUser(user.email) === firebaseEmail || String(user.firebaseEmail || '').trim().toLowerCase() === firebaseEmail))
+                    );
+                    let matchedUser = findMatch();
+                    if (!matchedUser && firestoreDB && navigator.onLine) {
+                        try {
+                            const snapshot = await firestoreDB.doc(this.cloudDocPath).get({ source: 'server' });
+                            this.users = this.normalizeUsers(snapshot.exists ? snapshot.data()?.users : []);
+                            matchedUser = findMatch();
+                            if (matchedUser) this.persistState();
+                        } catch (error) {
+                            console.warn('تعذر تحميل بطاقة المستخدم المرتبطة بهوية Firebase:', error);
+                        }
+                    }
+                    if (!matchedUser) return null;
+                    this.attachFirebaseUidToLocalUser(matchedUser, uid, 'active');
+                    return this.withCompatiblePermissions(matchedUser);
+                },
                 observeFirebaseAuth() {
                     if (!firebaseAuth) return;
-                    firebaseAuth.onAuthStateChanged(user => {
+                    firebaseAuth.onAuthStateChanged(async user => {
                         this.authError = '';
                         if (user) {
                             const permanentIdentity = this.isPermanentFirebaseUser(user);
@@ -1353,7 +1382,7 @@
                             }
                             this.cloudStatus = navigator.onLine ? 'connecting' : 'offline';
                             const expectedUid = user.uid;
-                            this.refreshFirebaseMembershipStatus(user).then(isActiveMember => {
+                            this.refreshFirebaseMembershipStatus(user).then(async isActiveMember => {
                                 if (firebaseAuth?.currentUser?.uid !== expectedUid) return;
                                 this.cloudMembershipReady = Boolean(isActiveMember);
                                 // A permanent identity plus a server-verified active membership is
@@ -1363,13 +1392,36 @@
                                 // the whole clinic appear offline.
                                 this.cloudStatus = isActiveMember && navigator.onLine ? 'online' : 'offline';
                                 if (isActiveMember) {
+                                    const hydratedUser = await this.hydrateLocalUserFromFirebaseUser(user);
+                                    if (!hydratedUser || hydratedUser.active === false) {
+                                        this.isAuthenticated = false;
+                                        this.currentUser = null;
+                                        this.clearSession();
+                                        this.loginError = hydratedUser ? 'هذا الحساب متوقف حالياً، يرجى التواصل مع مدير النظام.' : 'تم التحقق من Firebase، لكن لم توجد بطاقة محلية مرتبطة بعضوية هذا الحساب.';
+                                        await firebaseAuth.signOut().catch(() => {});
+                                        return;
+                                    }
+                                    if (!this.isAuthenticated) {
+                                        this.currentUser = hydratedUser;
+                                        this.isAuthenticated = true;
+                                        this.saveSession(hydratedUser.id);
+                                        this.landOnAllowedPage(hydratedUser);
+                                        this.renderIcons();
+                                    } else {
+                                        this.currentUser = hydratedUser;
+                                    }
                                     this.startCloudSync();
                                     // لا نربط البطاقات بجلستها الحالية عشوائياً. نقرأ فقط
                                     // وثائق العضوية التي تحمل localUserId مطابقاً لكل بطاقة معلّقة.
                                     this.refreshPendingLocalMembershipCards().catch(error => {
                                         console.warn('تعذر تحديث بطاقات العضوية المحلية المعلّقة:', error);
                                     });
-                                } else this.stopV2OperationalSync();
+                                } else {
+                                    this.isAuthenticated = false;
+                                    this.currentUser = null;
+                                    this.clearSession();
+                                    this.stopV2OperationalSync();
+                                }
                             });
                             return;
                         }
@@ -1385,7 +1437,11 @@
                             this.cloudUnsubscribe = null;
                         }
                         this.stopV2OperationalSync();
-                        if (!this.isAuthenticated) this.cloudStatus = 'offline';
+                        if (!this.isAuthenticated) {
+                            this.currentUser = null;
+                            this.clearSession();
+                            this.cloudStatus = 'offline';
+                        }
                     });
                 },
 
@@ -1431,7 +1487,7 @@
                                 this.clinicLogoDataUrl = data.clinicLogoDataUrl;
                             }
                             if (Array.isArray(data.users) && !this.usersWriteInFlight && !this.usersLocalChangesPending) {
-                                this.users = this.mergeCloudUsersWithLocalCredentials(data.users);
+                                this.users = this.mergeCloudUsers(data.users);
                                 this.syncCurrentUserFromUsers();
                                 this.persistState();
                             }
@@ -1464,7 +1520,7 @@
                                 } else if (preservePendingLocalSnapshot && localSnapshot?.[key] !== undefined) {
                                     this[key] = localSnapshot[key];
                                 } else if (key === 'users' && Array.isArray(data.users)) {
-                                    this.users = this.mergeCloudUsersWithLocalCredentials(data.users);
+                                    this.users = this.mergeCloudUsers(data.users);
                                     this.syncCurrentUserFromUsers();
                                 } else if (data[key] !== undefined) {
                                     this[key] = data[key];
@@ -1512,17 +1568,9 @@
                         this.cloudAuthListenerStarted = true;
                         this.observeFirebaseAuth();
                     }
-                    try {
-                        const currentIdentity = firebaseAuth.currentUser;
-                        if (!this.isPermanentFirebaseUser(currentIdentity)) {
-                            await this.signInFirebaseForLocalUser(this.currentUser, { allowAnonymousFallback: false, createIfMissing: true });
-                        }
-                    } catch (error) {
-                        console.warn('تعذر تجهيز هوية Firebase قبل حفظ الحسابات:', error);
-                        return false;
-                    }
+                    if (!this.isPermanentFirebaseUser(firebaseAuth.currentUser)) return false;
                     const startedAt = Date.now();
-                    while (!this.cloudAuthReady && Date.now() - startedAt < timeoutMs) {
+                    while ((!this.cloudAuthReady || !this.cloudMembershipReady) && Date.now() - startedAt < timeoutMs) {
                         await new Promise(resolve => setTimeout(resolve, 100));
                     }
                     if (this.cloudAuthReady && this.cloudMembershipReady) this.startCloudSync();
@@ -2517,98 +2565,46 @@
                 // Keeps the doctor/staff logged in across page reloads or when switching between
                 // desktop/mobile view on the same browser, instead of being signed out unexpectedly.
                 sessionKey: 'soliMedicalSession_v1',
-                deviceTrustKey: 'soliMedicalDeviceTrust_v1',
-                deviceTrustDurationMs: 30 * 24 * 60 * 60 * 1000,
-                                deviceTrust: null,
-                getUserCredentialVersion(user) {
-                    const source = `${String(user?.email || '').trim().toLowerCase()}|${String(user?.password || '')}`;
-                    let hash = 2166136261;
-                    for (let index = 0; index < source.length; index += 1) {
-                        hash ^= source.charCodeAt(index);
-                        hash = Math.imul(hash, 16777619);
-                    }
-                    return `${user?.id || ''}:${hash >>> 0}`;
-                },
-                restoreDeviceTrust() {
-                    try {
-                        const raw = localStorage.getItem(this.deviceTrustKey);
-                        const trust = raw ? JSON.parse(raw) : null;
-                        if (trust?.expiresAt && Date.parse(trust.expiresAt) <= Date.now()) {
-                            localStorage.removeItem(this.deviceTrustKey);
-                            this.deviceTrust = null;
-                            return;
-                        }
-                        this.deviceTrust = trust;
-                    } catch (error) {
-                        console.warn('تعذر استعادة اعتماد هذا الجهاز:', error);
-                        this.deviceTrust = null;
-                    }
-                },
-
-                enrollDevice(user) {
-                    const trust = {
-                        userId: user.id,
-                        credentialVersion: this.getUserCredentialVersion(user),
-                        enrolledAt: new Date().toISOString(),
-                        lastVerifiedAt: new Date().toISOString(),
-                        expiresAt: new Date(Date.now() + this.deviceTrustDurationMs).toISOString(),
-                        mode: 'online-first-local-afterward'
-                    };
-                    this.deviceTrust = trust;
-                    try {
-                        localStorage.setItem(this.deviceTrustKey, JSON.stringify(trust));
-                    } catch (error) {
-                        console.warn('تعذر حفظ اعتماد هذا الجهاز:', error);
-                    }
-                },
-
-                isDeviceTrustValid(user) {
-                    return Boolean(
-                        this.deviceTrust &&
-                        String(this.deviceTrust.userId) === String(user?.id) &&
-                        this.deviceTrust.credentialVersion === this.getUserCredentialVersion(user) &&
-                        (!this.deviceTrust.expiresAt || Date.parse(this.deviceTrust.expiresAt) > Date.now())
-                    );
-                },
-
-                revokeDeviceTrust() {
-                    this.deviceTrust = null;
-                    try { localStorage.removeItem(this.deviceTrustKey); } catch (error) { console.warn('تعذر إبطال اعتماد الجهاز:', error); }
-                },
 
                 restoreSession() {
+                    // A local session marker is not an authentication credential. Firebase's
+                    // onAuthStateChanged callback is the only authority allowed to restore UI access.
                     try {
                         const raw = localStorage.getItem(this.sessionKey);
-                        if (!raw) return;
-                        const session = JSON.parse(raw);
-                        const user = this.users.find(u => u.id === session.userId);
-                        if (user && user.active !== false && (navigator.onLine || this.isDeviceTrustValid(user))) {
-                            this.currentUser = user;
-                            this.isAuthenticated = true;
-                            const savedView = localStorage.getItem('soliLastSection');
-                            const savedPermission = this.viewPermissionMap?.[savedView];
-                            if (savedView && (!savedPermission || user.role === 'admin' || user.permissions?.[savedPermission])) {
-                                this.currentView = savedView;
-                            } else {
-                                this.landOnAllowedPage(user);
-                            }
-                        } else if (user) {
+                        if (!raw || !this.isPermanentFirebaseUser()) {
                             this.clearSession();
                             this.revokeDeviceTrust();
-                            // انتهاء اعتماد الجهاز لا يمنع إعادة الدخول المتصل؛ يعاد اعتماد
-                            // المتصفح بعد نجاح الاسم وكلمة المرور من أحدث نسخة للحسابات.
-                            if (!navigator.onLine) {
-                                this.loginError = 'تم تغيير كلمة مرور هذا الحساب أو انتهاء اعتماد الجهاز. اتصل بالإنترنت ثم سجّل الدخول بالكلمة الحالية.';
-                            }
+                            return;
+                        }
+                        const session = JSON.parse(raw);
+                        const firebaseUid = String(firebaseAuth.currentUser?.uid || '');
+                        const user = this.users.find(candidate =>
+                            String(candidate.id ?? '') === String(session.userId ?? '') &&
+                            (!session.firebaseUid || String(session.firebaseUid) === firebaseUid) &&
+                            (!candidate.firebaseUid || String(candidate.firebaseUid) === firebaseUid)
+                        );
+                        if (!user || user.active === false) {
+                            this.clearSession();
+                            return;
+                        }
+                        this.currentUser = this.withCompatiblePermissions(user);
+                        this.isAuthenticated = true;
+                        const savedView = localStorage.getItem('soliLastSection');
+                        const savedPermission = this.viewPermissionMap?.[savedView];
+                        if (savedView && (!savedPermission || user.role === 'admin' || user.permissions?.[savedPermission])) {
+                            this.currentView = savedView;
+                        } else {
+                            this.landOnAllowedPage(user);
                         }
                     } catch (e) {
-                        console.error('تعذر استرجاع جلسة الدخول:', e);
+                        console.error('تعذر استرجاع جلسة Firebase:', e);
+                        this.clearSession();
                     }
                 },
 
                 saveSession(userId) {
                     try {
-                        localStorage.setItem(this.sessionKey, JSON.stringify({ userId }));
+                        localStorage.setItem(this.sessionKey, JSON.stringify({ userId, firebaseUid: firebaseAuth?.currentUser?.uid || '' }));
                     } catch (e) {
                         console.error('تعذر حفظ جلسة الدخول:', e);
                     }
@@ -2691,10 +2687,17 @@
                         alert('هذا الإجراء متاح للمدير فقط.');
                         return;
                     }
-                    const admin = (this.users || []).find(user => user.role === 'admin' && user.active !== false);
-                    const expectedPassword = String(admin?.password || this.currentUser?.password || '');
-                    if (!expectedPassword || String(this.cloudResetPasswordInput || '') !== expectedPassword) {
-                        alert('الرقم السري للمدير غير صحيح.');
+                    const identity = firebaseAuth?.currentUser;
+                    const resetPassword = String(this.cloudResetPasswordInput || '');
+                    if (!this.isPermanentFirebaseUser(identity) || !identity.email || resetPassword.length < 6) {
+                        alert('أدخل كلمة مرور حساب Firebase للمدير، وتأكد من أن جلسة Firebase نشطة.');
+                        return;
+                    }
+                    try {
+                        const credential = firebase.auth.EmailAuthProvider.credential(identity.email, resetPassword);
+                        await identity.reauthenticateWithCredential(credential);
+                    } catch (error) {
+                        alert('كلمة مرور Firebase غير صحيحة أو انتهت جلسة التحقق.');
                         return;
                     }
                     if (String(this.cloudResetDemoAcknowledgement || '').trim() !== 'بيانات تجريبية') {
@@ -2915,10 +2918,18 @@
                         }
                     }, 30000);
                 },
-                unlockIdleSession() {
-                    const password = String(this.currentUser?.password ?? '');
-                    if (!this.idleUnlockPassword || String(this.idleUnlockPassword) !== password) {
-                        alert('كلمة المرور غير صحيحة.');
+                async unlockIdleSession() {
+                    const identity = firebaseAuth?.currentUser;
+                    const password = String(this.idleUnlockPassword || '');
+                    if (!this.isPermanentFirebaseUser(identity) || !identity.email || !password) {
+                        alert('لا توجد جلسة Firebase نشطة لفتح القفل. سجّل الدخول من جديد.');
+                        return;
+                    }
+                    try {
+                        const credential = firebase.auth.EmailAuthProvider.credential(identity.email, password);
+                        await identity.reauthenticateWithCredential(credential);
+                    } catch (error) {
+                        alert('كلمة مرور Firebase غير صحيحة.');
                         return;
                     }
                     this.showIdleLockModal = false;
@@ -3073,8 +3084,8 @@
                 },
 
                 connectFirebaseForLocalUser() {
-                    // Local login remains available offline. Online sessions are linked to a
-                    // durable Firebase identity so live membership rules can be enforced.
+                    // Firebase Authentication is the only login authority. Firestore sync is
+                    // enabled only for the permanent identity that authenticated this session.
                     if (!this.cloudSyncEnabled || !firebaseAuth || !this.isAuthenticated) {
                         this.cloudStatus = 'offline';
                         return;
@@ -3083,21 +3094,14 @@
                         this.cloudAuthListenerStarted = true;
                         this.observeFirebaseAuth();
                     }
-                    if (firebaseAuth.currentUser && !firebaseAuth.currentUser.isAnonymous) {
-                        this.cloudAuthReady = true;
-                        this.cloudStatus = navigator.onLine ? 'online' : 'offline';
-                        this.startCloudSync();
-                        return;
-                    }
-                    if (!navigator.onLine) {
+                    const identity = firebaseAuth.currentUser;
+                    if (!this.isPermanentFirebaseUser(identity)) {
                         this.cloudStatus = 'offline';
                         return;
                     }
-                    this.cloudStatus = 'connecting';
-                    this.signInFirebaseForLocalUser(this.currentUser, { allowAnonymousFallback: true, createIfMissing: true }).catch(err => {
-                        console.warn('تعذر تشغيل الهوية الدائمة للمزامنة:', err);
-                        this.cloudStatus = 'offline';
-                    });
+                    this.cloudAuthReady = true;
+                    this.cloudStatus = navigator.onLine ? 'online' : 'offline';
+                    this.startCloudSync();
                 },
 
                 firebaseRoleForLocalUser(user) {
@@ -3111,8 +3115,7 @@
                 },
                 firebaseIdentityErrorMessage(error) {
                     const code = String(error?.code || '');
-                    if (code.includes('local-password-too-short') || code.includes('weak-password')) return 'كلمة مرور المدير المحلية الحالية أقصر من 6 أحرف، ولذلك لا يمكن إنشاء حساب Firebase بها. من بطاقة «إعدادات الاستعادة» أدناه، احفظ كلمة مرور جديدة من 6 أحرف أو أرقام على الأقل، ثم اضغط «تهيئة هوية Firebase الدائمة» مرة أخرى. لا تتغير بيانات المرضى أو السجل الطبي.';
-                    if (code.includes('weak-password')) return 'كلمة المرور الحالية أقصر من 6 أحرف؛ حدّث كلمة مرور الدخول المحلي إلى 6 أحرف أو أكثر قبل تفعيل هوية Firebase الدائمة.';
+                    if (code.includes('weak-password')) return 'كلمة مرور Firebase يجب أن تتكون من 6 أحرف أو أرقام على الأقل.';
                     if (code.includes('wrong-password') || code.includes('invalid-credential')) return 'كلمة مرور Firebase غير مطابقة. استخدم كلمة المرور الأخيرة للحساب أو حدّثها من المدير.';
                     if (code.includes('operation-not-allowed') || code.includes('configuration-not-found')) return 'تسجيل الدخول بالبريد وكلمة المرور غير متاح حالياً في إعدادات Firebase لهذا المشروع. فعّله من Firebase Authentication ثم أعد المحاولة.';
                     if (code.includes('invalid-email')) return 'تعذر إنشاء بريد Firebase من اسم المستخدم المحلي. راجع اسم المستخدم في بطاقة الحسابات ثم أعد المحاولة.';
@@ -3121,35 +3124,21 @@
                     return 'تعذر التحقق من هوية Firebase الدائمة الآن؛ سيستمر النظام محلياً إلى أن تعود الخدمة.';
                 },
                 async signInFirebaseForLocalUser(localUser, options = {}) {
-                    const { allowAnonymousFallback = true, createIfMissing = false, firebasePassword: suppliedFirebasePassword = '' } = options;
+                    const { firebasePassword: suppliedFirebasePassword = '' } = options;
                     if (!firebaseAuth || !navigator.onLine || !localUser?.email) return { ok: false, persistent: false };
                     const firebaseEmail = this.firebaseEmailForUser(localUser.email);
-                    // كلمة المرور المُدخلة لربط جهاز جديد تبقى في الذاكرة لهذه العملية فقط،
-                    // ولا تستبدل كلمة المرور المحلية ولا تدخل في أي لقطة Firestore.
-                    const firebasePassword = String(suppliedFirebasePassword || localUser.password || '');
+                    // لا تُقرأ كلمة مرور من localUser ولا تُحفظ في Firestore. المصدر الوحيد
+                    // للسر هنا هو الحقل الذي أدخله المستخدم لهذه محاولة Firebase Auth.
+                    const firebasePassword = String(suppliedFirebasePassword || '');
                     if (!firebasePassword) {
-                        this.firebaseIdentityMessage = 'لا توجد كلمة مرور محلية محفوظة لهذا الجهاز لإثبات هوية Firebase. سجّل دخولاً من جهاز موثوق أو اطلب من المدير إعادة تهيئة الحساب.';
+                        this.firebaseIdentityMessage = 'أدخل كلمة مرور Firebase للحساب؛ لا تُقبل كلمة مرور محلية محفوظة.';
                         return { ok: false, persistent: false };
                     }
                     if (firebasePassword.length < 6) {
-                        const passwordError = { code: 'local-password-too-short' };
+                        const passwordError = { code: 'weak-password' };
                         this.firebaseIdentityIssueCode = passwordError.code;
-                        this.firebaseIdentityStatus = 'تحتاج تحديث كلمة المرور';
-                        this.firebaseIdentityMessage = this.firebaseIdentityErrorMessage(passwordError);
-                        if (allowAnonymousFallback) {
-                            try {
-                                const anonymousCredential = await firebaseAuth.signInAnonymously();
-                                this.firebaseIdentityUid = anonymousCredential.user?.uid || '';
-                                this.firebaseIdentityEmail = '';
-                                this.firebaseIdentityStatus = 'احتياطي مؤقت';
-                                this.firebaseMembershipStatus = 'غير صالحة للجلسة المجهولة';
-                                this.firebaseMembershipRole = '';
-                                this.firebaseMembershipMessage = 'تعمل البيانات المحلية الآن، لكن عضوية العيادة لا تُمنح للجلسات المجهولة.';
-                                return { ok: false, persistent: false, fallback: true, error: passwordError };
-                            } catch (anonymousError) {
-                                console.warn('تعذر بدء جلسة Firebase الاحتياطية:', anonymousError);
-                            }
-                        }
+                        this.firebaseIdentityStatus = 'بيانات Firebase غير صالحة';
+                        this.firebaseIdentityMessage = 'كلمة مرور Firebase يجب أن تتكون من 6 أحرف أو أرقام على الأقل.';
                         return { ok: false, persistent: false, error: passwordError };
                     }
                     try {
@@ -3160,85 +3149,17 @@
                         this.firebaseIdentityStatus = 'هوية دائمة متصلة';
                         this.firebaseIdentityMessage = 'تم ربط جلسة المستخدم بهوية Firebase دائمة.';
                         this.attachFirebaseUidToLocalUser(localUser, credential.user?.uid || '');
-                        await this.refreshFirebaseMembershipStatus(credential.user);
-                        return { ok: true, persistent: true, user: credential.user };
+                        const membershipActive = await this.refreshFirebaseMembershipStatus(credential.user);
+                        return { ok: true, persistent: true, membershipActive, user: credential.user };
                     } catch (signInError) {
-                        // Firebase's email-enumeration protection can deliberately collapse a
-                        // missing user into invalid-credential.  For a locally authenticated
-                        // administrator we may safely try a one-time account creation; an
-                        // existing account remains protected because Firebase rejects duplicates.
-                        const initialSignInError = signInError;
-                        const signInCode = String(signInError?.code || '');
-                        const mayCreate = createIfMissing
-                            && (signInCode.includes('user-not-found') || signInCode.includes('invalid-credential'));
-                        if (mayCreate && firebasePassword.length >= 6) {
-                            try {
-                                const credential = await firebaseAuth.createUserWithEmailAndPassword(firebaseEmail, firebasePassword);
-                                this.firebaseIdentityIssueCode = '';
-                                this.firebaseIdentityUid = credential.user?.uid || '';
-                                this.firebaseIdentityEmail = credential.user?.email || firebaseEmail;
-                                this.firebaseIdentityStatus = 'هوية دائمة جديدة';
-                                this.firebaseIdentityMessage = 'تم إنشاء هوية Firebase دائمة لهذا الحساب. أكمل فحص عضوية العيادة قبل تطبيق القواعد الحية.';
-                                this.attachFirebaseUidToLocalUser(localUser, credential.user?.uid || '');
-                                await this.refreshFirebaseMembershipStatus(credential.user);
-                                return { ok: true, persistent: true, user: credential.user, created: true };
-                            } catch (createError) {
-                                signInError = String(createError?.code || '').includes('email-already-in-use')
-                                    ? initialSignInError
-                                    : createError;
-                            }
-                        }
                         this.firebaseIdentityIssueCode = String(signInError?.code || '');
                         this.firebaseIdentityMessage = this.firebaseIdentityErrorMessage(signInError);
-                        if (allowAnonymousFallback) {
-                            try {
-                                const anonymousCredential = await firebaseAuth.signInAnonymously();
-                                this.firebaseIdentityUid = anonymousCredential.user?.uid || '';
-                                this.firebaseIdentityEmail = '';
-                                this.firebaseIdentityStatus = 'احتياطي مؤقت';
-                                this.firebaseMembershipStatus = 'غير صالحة للجلسة المجهولة';
-                                this.firebaseMembershipRole = '';
-                                this.firebaseMembershipMessage = 'تعمل البيانات المحلية الآن، لكن عضوية العيادة لا تُمنح للجلسات المجهولة.';
-                                return { ok: false, persistent: false, fallback: true, error: signInError };
-                            } catch (anonymousError) {
-                                console.warn('تعذر بدء جلسة Firebase الاحتياطية:', anonymousError);
-                            }
-                        }
                         return { ok: false, persistent: false, error: signInError };
                     }
                 },
                 async provisionPersistentFirebaseIdentityForCurrentUser() {
-                    if (!this.isAuthenticated || !this.currentUser) {
-                        this.firebaseIdentityMessage = 'سجّل دخول المدير محلياً أولاً قبل تهيئة هوية Firebase.';
-                        return false;
-                    }
-                    if (this.firebaseRoleForLocalUser(this.currentUser) !== 'owner' && this.currentUser?.role !== 'admin') {
-                        this.firebaseIdentityMessage = 'تهيئة هوية Firebase الدائمة متاحة لمدير النظام فقط.';
-                        return false;
-                    }
-                    if (!navigator.onLine || !firebaseAuth) {
-                        this.firebaseIdentityMessage = 'تحتاج تهيئة الهوية الدائمة إلى اتصال بالإنترنت.';
-                        return false;
-                    }
-                    this.firebaseIdentityBusy = true;
-                    this.firebaseIdentityMessage = 'جارٍ تهيئة هوية Firebase الدائمة للمدير…';
-                    try {
-                        if (firebaseAuth.currentUser?.isAnonymous) await firebaseAuth.signOut();
-                        const result = await this.signInFirebaseForLocalUser(this.currentUser, {
-                            allowAnonymousFallback: false,
-                            createIfMissing: true
-                        });
-                        if (!result.persistent) {
-                            this.firebaseIdentityMessage = result.error
-                                ? this.firebaseIdentityErrorMessage(result.error)
-                                : 'لم تكتمل تهيئة هوية Firebase الدائمة. بقيت بيانات العيادة المحلية دون تغيير.';
-                            return false;
-                        }
-                        await this.refreshFirebaseMembershipStatus(result.user);
-                        return true;
-                    } finally {
-                        this.firebaseIdentityBusy = false;
-                    }
+                    this.firebaseIdentityMessage = 'تسجيل الدخول إلى النظام يتم مباشرة عبر بريد Firebase وكلمة مروره. لا توجد تهيئة محلية منفصلة.';
+                    return Boolean(this.isPermanentFirebaseUser());
                 },
                 async refreshPendingLocalMembershipCards() {
                     if (!firestoreDB || !navigator.onLine || !this.isPermanentFirebaseUser()) return 0;
@@ -3261,60 +3182,6 @@
                     }
                     return refreshedCount;
                 },
-                async linkPrimaryAdminToExistingFirebase() {
-                    const primaryAdmin = (this.users || []).find(candidate => String(candidate?.id ?? '') === '1');
-                    const firebasePassword = String(this.firebaseLinkPassword || '');
-                    if (!this.isAuthenticated || this.currentUser?.role !== 'admin') {
-                        this.selfServiceAccountMessage = 'سجّل دخول مدير محلياً أولاً قبل ربط بطاقة مدير النظام.';
-                        return false;
-                    }
-                    if (!primaryAdmin) {
-                        this.selfServiceAccountMessage = 'تعذر العثور على بطاقة مدير النظام المحلية. لم تتغير أي بيانات.';
-                        return false;
-                    }
-                    if (!navigator.onLine || !firebaseAuth || !firestoreDB) {
-                        this.selfServiceAccountMessage = 'يتطلب التحقق من العضوية السحابية اتصالاً بالإنترنت.';
-                        return false;
-                    }
-                    if (firebasePassword.length < 6) {
-                        this.selfServiceAccountMessage = 'أدخل كلمة مرور Firebase الحالية لمدير النظام من 6 أحرف أو أرقام على الأقل. لن تُحفظ هذه الكلمة.';
-                        return false;
-                    }
-                    this.selfServiceAccountBusy = true;
-                    this.selfServiceAccountMessage = 'جارٍ التحقق من عضوية مدير النظام السحابية…';
-                    let secondaryApp = null;
-                    try {
-                        const secondaryName = `soli-primary-admin-link-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-                        secondaryApp = firebase.initializeApp(firebaseConfig, secondaryName);
-                        const credential = await secondaryApp.auth().signInWithEmailAndPassword(this.firebaseEmailForUser(primaryAdmin.email), firebasePassword);
-                        const memberSnapshot = await secondaryApp.firestore().collection('clinics').doc(String(this.cloudClinicId))
-                            .collection('members').doc(credential.user.uid).get({ source: 'server' });
-                        const member = memberSnapshot.exists ? memberSnapshot.data() : null;
-                        const matchesPrimaryAdmin = member?.status === 'active' && String(member?.localUserId ?? '') === '1';
-                        if (!matchesPrimaryAdmin) {
-                            this.selfServiceAccountMessage = 'تم التحقق من الهوية، لكنها لا تحمل عضوية نشطة مطابقة لبطاقة مدير النظام المحلية. لم يُربط أي حساب.';
-                            return false;
-                        }
-                        if (primaryAdmin.firebaseUid && primaryAdmin.firebaseUid !== credential.user.uid) {
-                            this.selfServiceAccountMessage = 'بطاقة مدير النظام مرتبطة مسبقاً بهوية سحابية مختلفة؛ لم نغيّر الربط تلقائياً لحماية الحسابات.';
-                            return false;
-                        }
-                        this.attachFirebaseUidToLocalUser(primaryAdmin, credential.user.uid, 'active');
-                        this.selfServiceAccountMessage = 'تم ربط بطاقة مدير النظام بعضوية سحابية نشطة. بقيت كلمة المرور المحلية وبيانات المرضى دون تغيير.';
-                        return true;
-                    } catch (error) {
-                        const code = String(error?.code || '');
-                        this.selfServiceAccountMessage = code.includes('wrong-password') || code.includes('invalid-credential')
-                            ? 'تعذر التحقق: كلمة مرور Firebase غير مطابقة. لم تتغير أي بيانات.'
-                            : 'تعذر التحقق من عضوية مدير النظام حالياً. بقيت البيانات المحلية دون تغيير.';
-                        console.warn('تعذر ربط بطاقة مدير النظام بالهوية السحابية القائمة:', error);
-                        return false;
-                    } finally {
-                        this.firebaseLinkPassword = '';
-                        if (secondaryApp) await secondaryApp.delete().catch(() => {});
-                        this.selfServiceAccountBusy = false;
-                    }
-                },
                 attachFirebaseUidToLocalUser(localUser, uid, membershipStatus = '') {
                     if (!uid || !localUser) return;
                     const localUserId = String(localUser.id ?? '');
@@ -3334,14 +3201,14 @@
                 },
                 async refreshFirebaseMembershipStatus(user = firebaseAuth?.currentUser) {
                     if (!this.isPermanentFirebaseUser(user)) {
-                        this.firebaseMembershipStatus = 'غير صالحة للجلسة المجهولة';
+                        this.firebaseMembershipStatus = 'غير مصادق عليها';
                         this.firebaseMembershipRole = '';
-                        this.firebaseMembershipMessage = 'لا يمكن فحص العضوية أو تطبيق قواعد Firebase بهوية مجهولة.';
+                        this.firebaseMembershipMessage = 'يجب تسجيل الدخول بهوية Firebase دائمة لفحص العضوية وتطبيق قواعد العيادة.';
                         return false;
                     }
                     if (!firestoreDB || !navigator.onLine) {
                         this.firebaseMembershipStatus = 'بانتظار الاتصال';
-                        this.firebaseMembershipMessage = 'سيتم فحص عضوية العيادة عند عودة الإنترنت.';
+                        this.firebaseMembershipMessage = 'سيتم فحص عضوية العيادة بعد عودة الاتصال وإعادة تسجيل الدخول عبر Firebase.';
                         return false;
                     }
                     try {
@@ -3453,7 +3320,6 @@
                                 this.users = validUsers;
                                 this.syncCurrentUserFromUsers();
                                 this.persistState();
-                                this.revokeDeviceTrust();
                                 return true;
                             }
                             if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 350 * (attempt + 1)));
@@ -3465,25 +3331,10 @@
                     }
                 },
 
-                async hashSecurityValue(value) {
-                    const normalized = String(value || '').trim().toLocaleLowerCase('ar');
-                    try {
-                        if (window.crypto?.subtle) {
-                            const bytes = new TextEncoder().encode(normalized);
-                            const digest = await window.crypto.subtle.digest('SHA-256', bytes);
-                            return Array.from(new Uint8Array(digest)).map(byte => byte.toString(16).padStart(2, '0')).join('');
-                        }
-                    } catch (error) {
-                        console.warn('تعذر تجزئة إجابة الأمان:', error);
-                    }
-                    return btoa(unescape(encodeURIComponent(normalized)));
-                },
-
                 loadAdminSecuritySettings() {
-                    const admin = this.users.find(user => user.id === 1);
-                    this.securityForm.question = admin?.securityQuestion || '';
-                    this.securityForm.answer = '';
-                    this.securityForm.newPassword = '';
+                    // Kept as a compatibility hook for old templates; Firebase owns all
+                    // authentication and recovery secrets now.
+                    this.securityForm = { question: '', answer: '', newPassword: '' };
                     this.securitySaveFeedback = '';
                 },
 
@@ -3492,94 +3343,38 @@
                         alert('هذه الميزة متاحة للمدير فقط.');
                         return;
                     }
-                    const question = String(this.securityForm.question || '').trim();
-                    const answer = String(this.securityForm.answer || '').trim();
-                    const newPassword = String(this.securityForm.newPassword || '').trim();
-                    if (!question || answer.length < 3) {
-                        alert('اختر سؤال أمان واكتب إجابته (3 أحرف على الأقل).');
-                        return;
-                    }
-                    if (newPassword && newPassword.length < 6) {
-                        alert('كلمة المرور الجديدة يجب أن تتكون من 6 أحرف أو أرقام على الأقل لتتوافق مع هوية Firebase الدائمة.');
-                        return;
-                    }
-                    const admin = this.users.find(user => user.id === 1);
-                    if (!admin) return;
-                    const previousPassword = String(admin.password || '');
-                    admin.securityQuestion = question;
-                    admin.securityAnswerHash = await this.hashSecurityValue(answer);
-                    if (newPassword) admin.password = newPassword;
-                    if (this.currentUser.id === admin.id) this.currentUser = admin;
-                    this.persistState();
-                    const firebasePasswordResult = newPassword
-                        ? await this.syncFirebasePasswordAfterLocalChange(admin, previousPassword, newPassword)
-                        : { attempted: false, ok: true };
-                    const cloudResult = await this.persistUsersToCloudNow();
-                    if (navigator.onLine && this.cloudSyncEnabled && (!cloudResult.ok || (firebasePasswordResult.attempted && !firebasePasswordResult.ok && !firebasePasswordResult.deferred))) {
-                        alert('تم حفظ التغيير محلياً فقط ولم يؤكَّد في السحابة. تحقق من الاتصال قبل الاعتماد على كلمة المرور الجديدة من جهاز آخر.');
-                    }
-                    this.securityForm.answer = '';
-                    this.securityForm.newPassword = '';
-                    this.securitySaveFeedback = newPassword
-                        ? (firebasePasswordResult.ok
-                            ? 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً، وتحديث هوية Firebase للجلسة الدائمة.'
-                            : 'تم حفظ إعدادات الاستعادة وكلمة المرور محلياً أولاً. ستظل المزامنة تعمل عند اكتمال التحقق من هوية Firebase.')
-                        : 'تم حفظ إعدادات الاستعادة محلياً.';
-                    setTimeout(() => { this.securitySaveFeedback = ''; }, 3500);
+                    this.loginForm.email = this.firebaseEmailForUser(this.currentUser.email);
+                    await this.beginPasswordRecovery();
                 },
 
-                async syncFirebasePasswordAfterLocalChange(localUser, previousPassword, newPassword) {
-                    const currentIdentity = firebaseAuth?.currentUser;
-                    const firebaseEmail = this.firebaseEmailForUser(localUser?.email || '');
-                    if (!newPassword || !this.cloudSyncEnabled || !navigator.onLine || !this.isPermanentFirebaseUser(currentIdentity) || !firebaseEmail || String(currentIdentity.email || '').toLowerCase() !== firebaseEmail.toLowerCase()) {
-                        return { attempted: false, ok: false, deferred: true };
-                    }
-                    try {
-                        await currentIdentity.updatePassword(newPassword);
-                        this.firebaseIdentityIssueCode = '';
-                        return { attempted: true, ok: true };
-                    } catch (initialError) {
-                        const requiresRecentLogin = String(initialError?.code || '').includes('requires-recent-login');
-                        if (!requiresRecentLogin || !previousPassword) {
-                            console.warn('تعذر تحديث كلمة مرور Firebase بعد حفظ كلمة المرور المحلية؛ ستبقى البيانات محفوظة محلياً.', initialError);
-                            return { attempted: true, ok: false, error: initialError };
-                        }
-                        try {
-                            const credential = firebase.auth.EmailAuthProvider.credential(firebaseEmail, previousPassword);
-                            await currentIdentity.reauthenticateWithCredential(credential);
-                            await firebaseAuth.currentUser.updatePassword(newPassword);
-                            this.firebaseIdentityIssueCode = '';
-                            return { attempted: true, ok: true, reauthenticated: true };
-                        } catch (reauthenticationError) {
-                            console.warn('تعذر إعادة التحقق لتحديث كلمة مرور Firebase؛ ستبقى كلمة المرور المحلية والبيانات محفوظة.', reauthenticationError);
-                            this.firebaseIdentityIssueCode = String(reauthenticationError?.code || initialError?.code || 'firebase-password-update-failed');
-                            return { attempted: true, ok: false, error: reauthenticationError };
-                        }
-                    }
-                },
 
-                focusAdminPasswordUpdateForFirebase() {
+                async focusAdminPasswordUpdateForFirebase() {
                     if (this.currentUser?.role !== 'admin') {
                         alert('تحديث كلمة مرور المدير متاح من حساب المدير فقط.');
                         return;
                     }
-                    this.securityForm.newPassword = '';
-                    this.securitySaveFeedback = 'أدخل كلمة مرور جديدة من 6 أحرف أو أرقام على الأقل، ثم احفظ الإعدادات. بعد ذلك عُد لزر تهيئة هوية Firebase.';
-                    this.$nextTick(() => {
-                        const card = document.getElementById('admin-security-recovery');
-                        const passwordField = document.getElementById('admin-security-new-password');
-                        card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        setTimeout(() => passwordField?.focus(), 220);
-                    });
+                    this.loginForm.email = this.firebaseEmailForUser(this.currentUser.email);
+                    await this.beginPasswordRecovery();
                 },
 
-                beginPasswordRecovery() {
+                async beginPasswordRecovery() {
                     const enteredEmail = String(this.loginForm.email || '').trim().toLowerCase();
-                    const admin = this.users.find(user => user.id === 1 && user.email.trim().toLowerCase() === enteredEmail);
                     this.recoveryForm = { email: enteredEmail, answer: '', newPassword: '' };
-                    this.recoveryState = { open: true, question: admin?.securityQuestion || '', userId: admin?.id || null, error: '', success: '' };
-                    if (!admin) this.recoveryState.error = 'اكتب اسم مستخدم المدير أولاً، ثم اضغط نسيت كلمة المرور.';
-                    else if (!admin.securityAnswerHash) this.recoveryState.error = 'لم تُضبط أسئلة الأمان لهذا المدير بعد. يجب إعدادها من داخل النظام أولاً.';
+                    this.recoveryState = { open: true, question: '', userId: null, error: '', success: '' };
+                    if (!enteredEmail.includes('@')) {
+                        this.recoveryState.error = 'اكتب البريد الإلكتروني المسجل في Firebase أولاً.';
+                        return;
+                    }
+                    if (!firebaseAuth || !navigator.onLine) {
+                        this.recoveryState.error = 'إرسال رابط الاستعادة يحتاج اتصالاً بالإنترنت وتهيئة Firebase.';
+                        return;
+                    }
+                    try {
+                        await firebaseAuth.sendPasswordResetEmail(enteredEmail);
+                        this.recoveryState.success = 'تم إرسال رابط إعادة تعيين كلمة المرور إلى بريد Firebase.';
+                    } catch (error) {
+                        this.recoveryState.error = this.firebaseIdentityErrorMessage(error);
+                    }
                 },
 
                 closePasswordRecovery() {
@@ -3588,105 +3383,79 @@
                 },
 
                 async recoverAdminPassword() {
-                    const admin = this.users.find(user => user.id === 1 && user.email.trim().toLowerCase() === String(this.recoveryForm.email || '').trim().toLowerCase());
-                    const answer = String(this.recoveryForm.answer || '').trim();
-                    const newPassword = String(this.recoveryForm.newPassword || '').trim();
-                    if (!admin || !admin.securityQuestion || !admin.securityAnswerHash) {
-                        this.recoveryState.error = 'لا توجد بيانات استعادة مكتملة لهذا الحساب.';
-                        return;
-                    }
-                    if (answer.length < 3 || newPassword.length < 6) {
-                        this.recoveryState.error = 'اكتب إجابة الأمان وكلمة مرور جديدة من 6 أحرف أو أرقام على الأقل.';
-                        return;
-                    }
-                    const answerHash = await this.hashSecurityValue(answer);
-                    if (answerHash !== admin.securityAnswerHash) {
-                        this.recoveryState.error = 'إجابة الأمان غير صحيحة.';
-                        return;
-                    }
-                    const previousPassword = String(admin.password || '');
-                    admin.password = newPassword;
-                    this.persistState();
-                    const firebasePasswordResult = await this.syncFirebasePasswordAfterLocalChange(admin, previousPassword, newPassword);
-                    const cloudResult = await this.persistUsersToCloudNow();
-                    if (navigator.onLine && this.cloudSyncEnabled && (!cloudResult.ok || (firebasePasswordResult.attempted && !firebasePasswordResult.ok && !firebasePasswordResult.deferred))) {
-                        this.recoveryState.error = 'تم التغيير محلياً، لكن لم يُؤكَّد في السحابة. تحقق من الاتصال ثم أعد المحاولة.';
-                        return;
-                    }
-                    this.loginForm.email = admin.email;
-                    this.loginForm.password = '';
-                    this.loginError = '';
-                    this.recoveryState.success = 'تم تغيير كلمة مرور المدير. أغلق النافذة وسجّل الدخول بالكلمة الجديدة.';
-                    this.recoveryForm.answer = '';
-                    this.recoveryForm.newPassword = '';
+                    return this.beginPasswordRecovery();
                 },
 
                 async handleLogin() {
                     this.isLoading = true;
                     this.loginError = '';
-                    const enteredEmail = (this.loginForm.email || '').trim().toLowerCase();
-                    const enteredPassword = (this.loginForm.password || '').trim();
-                    let matchedUser = this.users.find(u => u.email.trim().toLowerCase() === enteredEmail);
-                    const localCredentialsMatch = Boolean(matchedUser?.password && matchedUser.password === enteredPassword);
-                    let firebaseLogin = { persistent: false };
-
-                    // لا ننتظر Firebase ولا نبدّل قائمة الحسابات عندما تكون بيانات الجهاز
-                    // المحلي صحيحة. هذا يمنع خطأ الشبكة أو هوية Firebase غير المنشأة بعد
-                    // من رفض دخول المدير إلى بيانات عيادته المحلية.
-                    if (!localCredentialsMatch && navigator.onLine && this.cloudSyncEnabled && firebaseAuth) {
-                        firebaseLogin = await this.signInFirebaseForLocalUser(
-                            { ...(matchedUser || {}), email: enteredEmail, password: enteredPassword },
-                            { allowAnonymousFallback: false, createIfMissing: false }
+                    const enteredEmail = String(this.loginForm.email || '').trim().toLowerCase();
+                    const enteredPassword = String(this.loginForm.password || '');
+                    if (!navigator.onLine || !this.cloudSyncEnabled || !firebaseAuth) {
+                        this.loginError = 'تسجيل الدخول يحتاج اتصالاً بالإنترنت وتهيئة Firebase Authentication. لا توجد مصادقة محلية بديلة.';
+                        this.isLoading = false;
+                        return;
+                    }
+                    if (!enteredEmail.includes('@')) {
+                        this.loginError = 'اكتب البريد الإلكتروني المسجل في Firebase، وليس اسم المستخدم المحلي القديم.';
+                        this.isLoading = false;
+                        return;
+                    }
+                    if (!enteredPassword) {
+                        this.loginError = 'اكتب كلمة مرور حساب Firebase.';
+                        this.isLoading = false;
+                        return;
+                    }
+                    try {
+                        const firebaseLogin = await this.signInFirebaseForLocalUser(
+                            { email: enteredEmail },
+                            { firebasePassword: enteredPassword }
                         );
-                        if (firebaseLogin.persistent) {
-                            await this.prepareUsersForOnlineLogin();
-                            matchedUser = this.users.find(u => u.email.trim().toLowerCase() === enteredEmail);
-                            // Firebase has verified the submitted secret. It is retained only in
-                            // this browser's encrypted/local state so future offline logins work;
-                            // getCloudSafeUsers() explicitly omits it from Firestore writes.
-                            if (matchedUser && !matchedUser.password && firebaseLogin.persistent) {
-                                matchedUser.password = enteredPassword;
-                                this.persistState();
-                            }
+                        if (!firebaseLogin.persistent) {
+                            this.loginError = this.firebaseIdentityErrorMessage(firebaseLogin.error);
+                            this.isLoading = false;
+                            return;
                         }
-                    }
-
-                    if (!matchedUser || !(localCredentialsMatch || firebaseLogin.persistent)) {
-                        this.loginError = navigator.onLine
-                            ? 'تعذر التحقق من اسم المستخدم أو كلمة المرور. استخدم بيانات الدخول الأخيرة، أو اطلب من المدير تهيئة حساب Firebase وعضويته.'
-                            : 'اسم المستخدم أو كلمة المرور غير صحيحة، كما أن هذا الجهاز يحتاج إلى أول دخول متصل بالإنترنت.';
+                        if (!firebaseLogin.membershipActive) {
+                            this.loginError = 'تم التحقق من Firebase، لكن لا توجد عضوية عيادة نشطة لهذا الحساب.';
+                            await firebaseAuth.signOut().catch(() => {});
+                            this.isLoading = false;
+                            return;
+                        }
+                        const hydratedUser = await this.hydrateLocalUserFromFirebaseUser(firebaseLogin.user);
+                        const firebaseUid = String(firebaseLogin.user?.uid || '');
+                        const matchedUser = hydratedUser || this.users.find(user =>
+                            (firebaseUid && String(user.firebaseUid || '') === firebaseUid) ||
+                            String(user.email || '').trim().toLowerCase() === enteredEmail ||
+                            this.firebaseEmailForUser(user.email) === enteredEmail ||
+                            String(user.firebaseEmail || '').trim().toLowerCase() === enteredEmail
+                        );
+                        if (!matchedUser) {
+                            this.loginError = 'تم التحقق من Firebase، لكن لم توجد بطاقة محلية مرتبطة بعضوية هذا الحساب. راجع مدير العيادة.';
+                            await firebaseAuth.signOut().catch(() => {});
+                            this.isLoading = false;
+                            return;
+                        }
+                        if (matchedUser.active === false) {
+                            this.loginError = 'هذا الحساب متوقف حالياً، يرجى التواصل مع مدير النظام.';
+                            await firebaseAuth.signOut().catch(() => {});
+                            this.isLoading = false;
+                            return;
+                        }
+                        this.attachFirebaseUidToLocalUser(matchedUser, firebaseUid, 'active');
+                        this.currentUser = this.withCompatiblePermissions(matchedUser);
+                        this.isAuthenticated = true;
+                        this.loginForm.password = '';
+                        this.saveSession(matchedUser.id);
+                        this.landOnAllowedPage(this.currentUser);
+                        this.renderIcons();
+                        this.connectFirebaseForLocalUser();
+                    } catch (error) {
+                        console.error('فشل تسجيل الدخول عبر Firebase Authentication:', error);
+                        this.loginError = this.firebaseIdentityErrorMessage(error);
+                    } finally {
                         this.isLoading = false;
-                        return;
                     }
-                    const trustedForThisUser = this.isDeviceTrustValid(matchedUser);
-                    if (this.cloudSyncEnabled && !trustedForThisUser && !navigator.onLine) {
-                        this.loginError = 'هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول، ثم سيعمل النظام دون اتصال على هذا الجهاز.';
-                        this.isLoading = false;
-                        return;
-                    }
-                    if (matchedUser.active === false) {
-                        this.loginError = 'هذا الحساب متوقف حالياً، يرجى التواصل مع مدير النظام.';
-                        this.isLoading = false;
-                        return;
-                    }
-
-                    // Local permissions remain the source of the visible navigation. Firebase is
-                    // opened in the background only after local authentication succeeds, so the
-                    // clinic remains usable even when the internet or Firebase is unavailable.
-                    this.currentUser = matchedUser;
-                    this.isAuthenticated = true;
-                    if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser);
-                    if (trustedForThisUser) {
-                        this.deviceTrust.credentialVersion = this.getUserCredentialVersion(matchedUser);
-                        this.deviceTrust.lastVerifiedAt = new Date().toISOString();
-                        this.deviceTrust.expiresAt = new Date(Date.now() + this.deviceTrustDurationMs).toISOString();
-                        try { localStorage.setItem(this.deviceTrustKey, JSON.stringify(this.deviceTrust)); } catch (error) { console.warn('تعذر تحديث اعتماد الجهاز:', error); }
-                    }
-                    this.saveSession(matchedUser.id);
-                    this.landOnAllowedPage(matchedUser);
-                    this.isLoading = false;
-                    this.renderIcons();
-                    this.connectFirebaseForLocalUser(matchedUser);
                 },
 
 
@@ -3702,7 +3471,7 @@
                     }
                 },
 
-                async callClinicAccountGateway(action, user) {
+                async callClinicAccountGateway(action, user, options = {}) {
                     if (!clinicAccountGatewayUrl) throw new Error('مسار الإدارة الذاتية غير مهيأ بعد.');
                     if (!navigator.onLine) throw new Error('تحتاج إدارة حسابات الفريق إلى اتصال بالإنترنت. تبقى بيانات العيادة محفوظة محلياً.');
                     const identity = firebaseAuth?.currentUser;
@@ -3719,7 +3488,7 @@
                                 localUserId: String(user.id ?? ''),
                                 fullName: String(user.fullName || '').trim(),
                                 email: String(user.email || '').trim(),
-                                password: action === 'upsert' ? String(user.password || '') : undefined,
+                                password: action === 'upsert' && options.password ? String(options.password) : undefined,
                                 role: String(user.role || '').trim(),
                                 active: user.active !== false,
                                 firebaseUid: String(user.firebaseUid || '').trim() || undefined
@@ -3731,13 +3500,35 @@
                     return payload.result;
                 },
 
+                async sendFirebasePasswordResetForUser(userId) {
+                    if (this.currentUser?.role !== 'admin') {
+                        alert('إرسال رابط تغيير كلمة المرور متاح للمدير فقط.');
+                        return false;
+                    }
+                    const user = this.users.find(candidate => String(candidate.id) === String(userId));
+                    const email = String(user?.firebaseEmail || this.firebaseEmailForUser(user?.email || '')).trim().toLowerCase();
+                    if (!user || !email.includes('@') || !firebaseAuth || !navigator.onLine) {
+                        this.selfServiceAccountMessage = 'يتطلب إرسال رابط تغيير كلمة المرور اتصالاً بFirebase وبريدًا صالحًا.';
+                        return false;
+                    }
+                    try {
+                        await firebaseAuth.sendPasswordResetEmail(email);
+                        this.selfServiceAccountMessage = `تم إرسال رابط تغيير كلمة المرور إلى ${email}.`;
+                        return true;
+                    } catch (error) {
+                        this.selfServiceAccountMessage = this.firebaseIdentityErrorMessage(error);
+                        return false;
+                    }
+                },
+
                 async syncUserMembership(userId, options = {}) {
                     const user = this.users.find(candidate => String(candidate.id) === String(userId));
+                    const firebasePassword = String(options.firebasePassword || '');
                     if (!user) return false;
                     this.selfServiceAccountBusy = true;
                     this.selfServiceAccountMessage = 'جارٍ إنشاء أو تحديث هوية المستخدم وعضوية العيادة بشكل آمن…';
                     try {
-                        const result = await this.callClinicAccountGateway('upsert', user);
+                        const result = await this.callClinicAccountGateway('upsert', user, { password: firebasePassword });
                         user.firebaseUid = result.uid;
                         user.firebaseAuthStatus = result.status;
                         this.persistState();
@@ -3761,22 +3552,26 @@
 
                 async addUser() {
                     if (!this.newUserForm.fullName.trim() || !this.newUserForm.email.trim() || !this.newUserForm.password.trim()) {
-                        alert('يرجى إدخال الاسم والبريد/اسم المستخدم وكلمة المرور');
+                        alert('يرجى إدخال الاسم والبريد الإلكتروني وكلمة مرور Firebase');
+                        return;
+                    }
+                    if (!this.newUserForm.email.trim().includes('@')) {
+                        alert('اكتب بريدًا إلكترونيًا صالحًا للحساب الجديد.');
                         return;
                     }
                     if (this.newUserForm.password.trim().length < 6) {
                         alert('كلمة مرور الحساب الجديد يجب ألا تقل عن 6 أحرف لحماية تسجيل الدخول.');
                         return;
                     }
-                    if (this.users.some(u => u.email === this.newUserForm.email.trim())) {
-                        alert('يوجد بالفعل حساب بنفس اسم المستخدم');
+                    if (this.users.some(u => String(u.email || '').trim().toLowerCase() === this.newUserForm.email.trim().toLowerCase() || this.firebaseEmailForUser(u.email) === this.newUserForm.email.trim().toLowerCase())) {
+                        alert('يوجد بالفعل حساب بنفس البريد الإلكتروني');
                         return;
                     }
+                    const firebasePassword = this.newUserForm.password.trim();
                     const newUser = {
                         id: Date.now(),
                         fullName: this.newUserForm.fullName.trim(),
                         email: this.newUserForm.email.trim(),
-                        password: this.newUserForm.password.trim(),
                         role: this.newUserForm.role,
                         active: true,
                         permissions: { ...this.newUserForm.permissions }
@@ -3784,7 +3579,7 @@
                     this.users.push(newUser);
                     this.userPermissionDrafts[newUser.id] = { ...newUser.permissions };
                     this.persistState();
-                    const provisioned = await this.syncUserMembership(newUser.id, { silent: true });
+                    const provisioned = await this.syncUserMembership(newUser.id, { silent: true, firebasePassword });
                     if (!provisioned) {
                         alert('حُفظ الحساب محلياً، لكن لم تُستكمل العضوية السحابية. من بطاقة الحساب نفسه اختر «إعادة محاولة التفعيل» عند توفر الإنترنت.');
                     }
@@ -3934,37 +3729,19 @@
                     return `${safeLocalPart}@solimedical.local`;
                 },
 
-                async createFirebaseIdentityForNewUser(localUser) {
-                    if (!firebase || !firebaseAuth || !navigator.onLine) {
-                        localUser.firebaseAuthStatus = 'not_provisioned';
-                        return { ok: false, deferred: true };
+                async createFirebaseIdentityForNewUser(localUser, firebasePassword = '') {
+                    const password = String(firebasePassword || '');
+                    if (!localUser || password.length < 6) {
+                        return { ok: false, message: 'كلمة مرور Firebase الأولية يجب أن تكون 6 أحرف أو أرقام على الأقل.' };
                     }
-                    const password = String(localUser?.password || '');
-                    if (password.length < 6) {
-                        localUser.firebaseAuthStatus = 'password_update_required';
-                        return { ok: false, message: 'كلمة مرور Firebase يجب أن تكون 6 أحرف أو أرقام على الأقل.' };
-                    }
-                    const firebaseEmail = this.firebaseEmailForUser(localUser.email);
-                    const secondaryName = `secondary-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-                    let secondaryApp = null;
                     try {
-                        secondaryApp = firebase.initializeApp(firebaseConfig, secondaryName);
-                        const secondaryAuth = secondaryApp.auth();
-                        let credential;
-                        try {
-                            credential = await secondaryAuth.createUserWithEmailAndPassword(firebaseEmail, password);
-                        } catch (createError) {
-                            if (!String(createError?.code || '').includes('email-already-in-use')) throw createError;
-                            credential = await secondaryAuth.signInWithEmailAndPassword(firebaseEmail, password);
-                        }
-                        localUser.firebaseUid = credential.user?.uid || localUser.firebaseUid || '';
-                        localUser.firebaseAuthStatus = 'membership_pending';
-                        return { ok: true, uid: localUser.firebaseUid };
+                        const result = await this.callClinicAccountGateway('upsert', localUser, { password });
+                        localUser.firebaseUid = result.uid;
+                        localUser.firebaseAuthStatus = result.status;
+                        return { ok: true, uid: result.uid };
                     } catch (error) {
                         localUser.firebaseAuthStatus = 'not_provisioned';
-                        return { ok: false, message: this.firebaseIdentityErrorMessage(error) };
-                    } finally {
-                        if (secondaryApp) await secondaryApp.delete().catch(() => {});
+                        return { ok: false, message: error?.message || 'تعذر إنشاء هوية Firebase.' };
                     }
                 },
 
@@ -6441,8 +6218,8 @@
 
                     <form @submit.prevent="handleLogin" class="space-y-5" aria-label="تسجيل الدخول إلى نظام Soli Medical">
                         <div>
-                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">اسم المستخدم أو البريد الإلكتروني</label>
-                            <input type="text" x-model="loginForm.email" required autocomplete="username" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="أدخل بيانات حسابك">
+                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">البريد الإلكتروني في Firebase</label>
+                            <input type="email" x-model="loginForm.email" required autocomplete="username" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="name@example.com">
                         </div>
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">كلمة المرور</label>
@@ -6453,21 +6230,13 @@
                         </div>
                         <button type="submit" :disabled="isLoading" class="soli-login-cta w-full py-3 text-white font-semibold rounded-xl transition-all">تسجيل الدخول</button>
                     </form>
-                    <button type="button" @click="beginPasswordRecovery()" class="mt-4 text-xs font-bold text-blue-600 hover:text-blue-800 dark:text-blue-300">نسيت كلمة مرور المدير؟ استعادة محلية</button>
+                    <button type="button" @click="beginPasswordRecovery()" class="mt-4 text-xs font-bold text-blue-600 hover:text-blue-800 dark:text-blue-300">نسيت كلمة المرور؟ إرسال رابط من Firebase</button>
                     <a href="?pricing" class="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-xs font-extrabold text-slate-700 transition hover:border-cyan-500 hover:bg-cyan-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700"><i data-lucide="badge-egyptian-pound" class="h-4 w-4"></i>عرض خطط الاشتراك والتجربة</a>
                     <template x-if="recoveryState.open">
                         <div class="mt-4 rounded-2xl border border-blue-200 dark:border-blue-900/60 bg-blue-50/80 dark:bg-blue-950/30 p-4 text-right space-y-3">
-                            <div class="flex items-center justify-between gap-3"><strong class="text-sm text-blue-900 dark:text-blue-200">استعادة كلمة مرور المدير</strong><button type="button" @click="closePasswordRecovery()" class="text-slate-500 hover:text-red-600" aria-label="إغلاق"><i data-lucide="x" class="w-4 h-4"></i></button></div>
-                            <p class="text-[11px] leading-5 text-blue-800 dark:text-blue-300">تعمل هذه الاستعادة محلياً على هذا الجهاز، ولا ترسل رابطاً عبر الإنترنت.</p>
+                            <p class="text-[11px] leading-5 text-blue-800 dark:text-blue-300">سيُرسل Firebase رابطاً إلى البريد الإلكتروني لإعادة تعيين كلمة المرور. لا تُحفظ كلمات المرور داخل التطبيق.</p>
                             <p x-show="recoveryState.error" x-text="recoveryState.error" class="text-xs text-red-700 dark:text-red-300"></p>
-                            <template x-if="recoveryState.question">
-                                <div class="space-y-2">
-                                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-300" x-text="recoveryState.question"></label>
-                                    <input type="text" x-model="recoveryForm.answer" autocomplete="off" class="w-full px-3 py-2 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm" placeholder="إجابة الأمان">
-                                    <div class="relative"><input :type="showRecoveryPassword ? 'text' : 'password'" x-model="recoveryForm.newPassword" autocomplete="new-password" class="w-full px-3 py-2 pl-11 rounded-xl border bg-white dark:bg-slate-900 dark:border-slate-700 text-sm" placeholder="كلمة المرور الجديدة"><button type="button" @click="showRecoveryPassword = !showRecoveryPassword" class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showRecoveryPassword ? 'إخفاء كلمة المرور الجديدة' : 'إظهار كلمة المرور الجديدة'"><i :data-lucide="showRecoveryPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
-                                    <button type="button" @click="recoverAdminPassword()" class="w-full py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold">تغيير كلمة المرور</button>
-                                </div>
-                            </template>
+                            <p x-show="recoveryState.success" x-text="recoveryState.success" class="text-xs text-emerald-700 dark:text-emerald-300"></p>
                         </div>
                     </template>
 
@@ -8061,31 +7830,28 @@
                                                         <span x-text="u.active === false ? 'تفعيل الحساب' : 'إيقاف الحساب'"></span>
                                                     </button>
 	                                                    <button type="button" x-show="u.id !== 1 && u.firebaseAuthStatus !== 'active'" @click="syncUserMembership(u.id)" :disabled="selfServiceAccountBusy" class="text-blue-600 hover:text-blue-700 text-xs font-bold flex items-center gap-1 disabled:opacity-40"><i data-lucide="cloud" class="w-4 h-4"></i><span>إعادة محاولة التفعيل</span></button>
+                                                    <button type="button" @click="sendFirebasePasswordResetForUser(u.id)" :disabled="selfServiceAccountBusy" class="text-indigo-600 hover:text-indigo-700 text-xs font-bold flex items-center gap-1 disabled:opacity-40"><i data-lucide="key-round" class="w-4 h-4"></i><span>إرسال رابط كلمة المرور</span></button>
 	                                                    <button type="button" @click="removeUser(u.id)" :disabled="selfServiceAccountBusy" class="text-red-500 hover:text-red-700 disabled:opacity-40" :class="u.id === 1 ? 'opacity-30 cursor-not-allowed' : ''">
                                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                     </button>
                                                 </div>
 	                                            </div>
-	                                            <div x-show="u.id === 1 && u.firebaseAuthStatus !== 'active'" x-cloak class="rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/25">
-	                                                <p class="text-xs font-bold text-amber-900 dark:text-amber-200">ربط بطاقة مدير النظام بالحساب السحابي القائم</p>
-	                                                <p class="mt-1 text-[11px] leading-5 text-amber-800 dark:text-amber-300">إذا كانت كلمة مرور الدخول المحلي القديمة أقل من 6 أحرف، أدخل كلمة مرور Firebase الحالية لمرة واحدة. لا تُحفظ هنا، ولا تغيّر كلمة المرور المحلية أو بيانات المرضى.</p>
-	                                                <div class="mt-3 flex flex-col gap-2 sm:flex-row">
-	                                                    <input type="password" x-model="firebaseLinkPassword" autocomplete="off" data-lpignore="true" data-1p-ignore="true" data-bwignore="true" name="soli-primary-admin-cloud-link" placeholder="كلمة مرور Firebase الحالية" class="min-w-0 flex-1 rounded-lg border border-amber-200 bg-white px-3 py-2 text-xs text-slate-800 dark:border-amber-900/60 dark:bg-slate-900 dark:text-white">
-	                                                    <button type="button" @click="linkPrimaryAdminToExistingFirebase()" :disabled="selfServiceAccountBusy || !firebaseLinkPassword" class="inline-flex items-center justify-center gap-1 rounded-lg bg-blue-600 px-3 py-2 text-xs font-bold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"><i data-lucide="link" class="h-4 w-4"></i><span>تحقق واربط</span></button>
-	                                                </div>
-	                                            </div>
+                                            <div x-show="u.id === 1 && u.firebaseAuthStatus !== 'active'" x-cloak class="rounded-xl border border-amber-200 bg-amber-50 p-3 dark:border-amber-900/60 dark:bg-amber-950/25">
+                                                <p class="text-xs font-bold text-amber-900 dark:text-amber-200">حساب Firebase غير مفعّل بعد</p>
+                                                <p class="mt-1 text-[11px] leading-5 text-amber-800 dark:text-amber-300">يجب إنشاء حساب Firebase بالبريد الإلكتروني الظاهر أعلاه وتفعيل عضوية العيادة عبر المسار الإداري الموثوق. لا تُدخل أو تحفظ كلمة مرور داخل بطاقة الحساب.</p>
+                                            </div>
 	                                            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2">
                                                 <div>
                                                     <label class="block text-[11px] font-semibold text-slate-500 mb-1">اسم الموظف</label>
                                                     <input type="text" x-model="u.fullName" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
                                                 </div>
                                                 <div>
-                                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">اسم الدخول</label>
-                                                    <input type="text" x-model="u.email" :disabled="u.id === 1" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white disabled:opacity-50 font-mono">
+                                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">بريد Firebase للحساب</label>
+                                                    <input type="email" readonly :value="u.firebaseEmail || firebaseEmailForUser(u.email)" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-950 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-mono">
                                                 </div>
                                                 <div>
-                                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">كلمة المرور</label>
-                                                    <div class="relative"><input :type="showPasswordByUser[u.id] ? 'text' : 'password'" x-model="u.password" autocomplete="new-password" class="w-full pl-9 pr-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showPasswordByUser[u.id] = !showPasswordByUser[u.id]" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showPasswordByUser[u.id] ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showPasswordByUser[u.id] ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
+                                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">حالة هوية Firebase</label>
+                                                    <div class="w-full px-3 py-1.5 rounded-lg text-xs bg-slate-100 dark:bg-slate-950 dark:border-slate-700 text-slate-600 dark:text-slate-300" x-text="u.firebaseAuthStatus === 'active' ? 'نشطة' : 'تحتاج تفعيلاً' "></div>
                                                 </div>
                                             </div>
                                             <div class="flex flex-wrap gap-x-4 gap-y-2 pt-2 border-t dark:border-slate-700 text-xs">
@@ -8109,8 +7875,8 @@
                                     <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300">إضافة حساب جديد</h4>
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                                         <input type="text" x-model="newUserForm.fullName" placeholder="اسم الموظف الكامل" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <input type="text" x-model="newUserForm.email" placeholder="اسم المستخدم / البريد (لتسجيل الدخول)" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <div class="relative"><input :type="showNewUserPassword ? 'text' : 'password'" x-model="newUserForm.password" autocomplete="new-password" minlength="6" placeholder="كلمة المرور (6 أحرف على الأقل)" class="w-full px-3 py-2 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showNewUserPassword = !showNewUserPassword" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showNewUserPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showNewUserPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
+                                        <input type="email" x-model="newUserForm.email" placeholder="البريد الإلكتروني في Firebase" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <div class="relative"><input :type="showNewUserPassword ? 'text' : 'password'" x-model="newUserForm.password" autocomplete="new-password" minlength="6" placeholder="كلمة مرور Firebase الأولية (6 أحرف على الأقل)" class="w-full px-3 py-2 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showNewUserPassword = !showNewUserPassword" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showNewUserPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showNewUserPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
                                     </div>
                                     <input type="text" x-model="newUserForm.role" placeholder="المسمى الوظيفي (مثال: موظف استقبال، ممرضة...)" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs">
@@ -8810,7 +8576,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.8.0', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.8.1', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

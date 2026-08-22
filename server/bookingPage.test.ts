@@ -84,19 +84,18 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain("document.addEventListener('focusin'");
   });
 
-	  it("يبقي حقول كلمة المرور المحلية دون بطاقات استعادة أو مزامنة تقنية داخل الإعدادات", () => {
-    expect(page).not.toContain('استعادة كلمة مرور المدير دون إنترنت');
-    expect(page).not.toContain('هوية Firebase وعضوية العيادة');
-    expect(page).not.toContain('ترحيل قاعدة Firebase وأرشفة العرض');
-    expect(page).toContain("'🟡 وضع محلي - بانتظار الاتصال'");
-    expect(page).toContain('x-model="u.password"');
-	    expect(page).toContain('x-model="loginForm.password"');
-	  });
+		  it("يوحّد الدخول ويمنع حقول كلمات المرور المحلية داخل الحسابات", () => {
+    expect(page).toContain('البريد الإلكتروني في Firebase');
+    expect(page).toContain('x-model="loginForm.password"');
+    expect(page).not.toContain('x-model="u.password"');
+    expect(page).not.toContain('استعادة محلية');
+    expect(page).toContain('sendFirebasePasswordResetForUser(userId)');
+		  });
 
 	  it("يدوّر الإصدار وعامل الخدمة عند تحسين المزامنة وحاجز النشر", () => {
-	    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.0'");
-	    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.0'");
-	    expect(sw).toContain('soli-medical-pwa-v31');
+	    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.1'");
+	    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.1'");
+	    expect(sw).toContain('soli-medical-pwa-v32');
 	  });
 
   it("يعرض صفوف المعمل والأشعة مع نوع محتوى واضح في الإدخال والطباعة", () => {
@@ -118,34 +117,26 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('printHeaderEnabled = false; doctorInfo.printFooterEnabled = false');
   });
 
-  it("يطبق اعتماد الجهاز بعد أول دخول متصل ويسمح بالعمل المحلي لاحقاً", () => {
-    expect(page).toContain("deviceTrustKey: 'soliMedicalDeviceTrust_v1'");
-    expect(page).toContain('restoreDeviceTrust()');
-    expect(page).toContain('enrollDevice(user)');
-    expect(page).toContain('deviceTrustDurationMs: 30 * 24 * 60 * 60 * 1000');
-    expect(page).toContain('isDeviceTrustValid(user)');
-    expect(page).toContain('revokeDeviceTrust()');
-    expect(page).toContain("mode: 'online-first-local-afterward'");
-    expect(page).toContain('هذا المتصفح غير معتمد بعد. اتصل بالإنترنت لأول تسجيل دخول');
-    expect(page).toContain('if (this.cloudSyncEnabled && !trustedForThisUser) this.enrollDevice(matchedUser)');
+	  it("يستعيد الجلسة من Firebase فقط ولا يعتمد على device trust محلي", () => {
+    expect(page).toContain('async hydrateLocalUserFromFirebaseUser(firebaseUser)');
+    expect(page).toContain('firebaseAuth.onAuthStateChanged(async user => {');
+    expect(page).toContain('if (!this.isPermanentFirebaseUser(firebaseAuth.currentUser))');
+    expect(page).toContain('this.clearSession();');
     expect(page).toContain('async prepareUsersForOnlineLogin()');
     expect(page).toContain("get({ source: 'server' })");
     expect(page).toContain('waitForCloudAuthReady');
     expect(page).toContain('persistUsersToCloudNow');
-    expect(page).toContain('if (!localCredentialsMatch && navigator.onLine && this.cloudSyncEnabled && firebaseAuth)');
-    expect(page).toContain('await this.prepareUsersForOnlineLogin()');
   });
 
-  it("يقبل الحساب المحلي الصحيح أولاً ولا يسمح لفشل Firebase بتعطيل دخول المدير", () => {
+	  it("لا يقبل الدخول إلا بعد Firebase email/password وعضوية نشطة", () => {
+    expect(page).toContain("if (!navigator.onLine || !this.cloudSyncEnabled || !firebaseAuth)");
+    expect(page).toContain("if (!enteredEmail.includes('@'))");
     expect(page).toContain('firebaseLogin = await this.signInFirebaseForLocalUser(');
-    expect(page).toContain('if (!localCredentialsMatch && navigator.onLine && this.cloudSyncEnabled && firebaseAuth)');
-    expect(page).toContain('{ allowAnonymousFallback: false, createIfMissing: false }');
-    expect(page).toContain('if (firebaseLogin.persistent)');
-    expect(page).toContain('await this.prepareUsersForOnlineLogin()');
-    expect(page).toContain('if (matchedUser && !matchedUser.password && firebaseLogin.persistent)');
-    expect(page).toContain('&& !navigator.onLine)');
-    expect(page).toContain('this.clearSession();');
-    expect(page).toContain('this.revokeDeviceTrust();');
+    expect(page).toContain('{ firebasePassword: enteredPassword }');
+    expect(page).toContain('if (!firebaseLogin.membershipActive)');
+    expect(page).not.toContain('localCredentialsMatch');
+    expect(page).not.toContain('signInAnonymously');
+    expect(page).not.toContain('if (matchedUser && !matchedUser.password');
   });
 
   it("يثبت أن طباعة A5 تستخدم ورقة بيضاء بلا حواف أو ظلال داكنة", () => {
@@ -163,15 +154,15 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('async removeUser(userId)');
     expect(page).toContain('async saveUserPermissions(userId)');
     expect(page).toContain('const cloudResult = await this.persistUsersToCloudNow()');
-    expect(page).toContain("async callClinicAccountGateway(action, user)");
-    expect(page).toContain("await this.callClinicAccountGateway('upsert', user)");
+    expect(page).toContain("async callClinicAccountGateway(action, user, options = {})");
+    expect(page).toContain("await this.callClinicAccountGateway('upsert', user, { password: firebasePassword })");
     expect(page).toContain("await this.callClinicAccountGateway('delete', user)");
   });
 
   it("يغطي مسارات المزامنة الأساسية للأجهزة الجديدة والانقطاع والتعارض", () => {
     expect(page).toContain('offline');
     expect(page).toContain('syncConflicts');
-    expect(page).toContain('deviceTrust');
+    expect(page).toContain('firebaseAuth');
     expect(page).toContain('conflictKey');
   });
 
@@ -180,7 +171,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(persistentKeysMatch?.[1]).toBeTruthy();
     expect(persistentKeysMatch?.[1]).not.toContain("'users'");
     expect(page).toContain('normalizeUsers(users)');
-    expect(page).toContain('this.users = this.mergeCloudUsersWithLocalCredentials(data.users)');
+    expect(page).toContain('this.users = this.mergeCloudUsers(data.users)');
     expect(page).toContain('async persistUsersToCloudNow()');
     expect(page).toContain('usersWriteInFlight');
     expect(page).toContain("get({ source: 'server' })");
@@ -229,7 +220,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.0'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.1'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -250,8 +241,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.0', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v31');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.1', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v32');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('const SCOPE_PATH = new URL(self.registration.scope).pathname');
     expect(sw).toContain('fetch(event.request)');
@@ -263,7 +254,7 @@ describe("تحديث جلسة المستخدم بعد مزامنة الصلاح�
   it("يحدّث currentUser من users الجديدة قبل فحص صلاحية المواعيد", () => {
     expect(page).toContain("syncCurrentUserFromUsers()");
     expect(page).toContain("if (freshUser) this.currentUser = this.withCompatiblePermissions(freshUser);");
-    expect(page).toContain("this.users = this.mergeCloudUsersWithLocalCredentials(data.users);\n                                this.syncCurrentUserFromUsers();");
+    expect(page).toContain("this.users = this.mergeCloudUsers(data.users);\n                                this.syncCurrentUserFromUsers();");
   });
 });
 
@@ -275,9 +266,9 @@ describe("إصلاحات الزيارة والجلسة والتنبيهات", ()
     expect(page).toContain("تم حفظ أسعار أنواع الزيارات والفواتير تلقائياً");
     expect(page).toContain("this.saveVisitTypePrices();");
   });
-  it("يستعيد الجلسة والقسم الحالي بعد إعادة تحميل الصفحة عند الاتصال", () => {
+  it("يستعيد الجلسة والقسم الحالي بعد إعادة التحميل عبر Firebase Auth", () => {
     expect(page).toContain("localStorage.getItem('soliLastSection')");
-    expect(page).toContain("navigator.onLine || this.isDeviceTrustValid(user)");
+    expect(page).toContain("if (!raw || !this.isPermanentFirebaseUser())");
     expect(page).toContain("this.currentView = savedView");
   });
   it("يعرض تنبيهاً بصرياً وقائمة الزيارات المسجلة ويربطها بالمتابعة القادمة", () => {
