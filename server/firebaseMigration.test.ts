@@ -169,11 +169,11 @@ describe('أرشفة العرض الآمنة', () => {
 });
 
 describe('إعادة ضبط البيانات التجريبية الصريحة', () => {
-  it('تطلب تأكيداً مكتوباً بأن البيانات تجريبية وكلمة مرور المدير قبل أي حذف', () => {
+  it('تطلب تأكيداً مكتوباً بأن البيانات تجريبية وإعادة تحقق Firebase قبل أي حذف', () => {
     expect(indexHtml).toContain("cloudResetDemoAcknowledgement: ''");
     expect(indexHtml).toContain("String(this.cloudResetDemoAcknowledgement || '').trim() !== 'بيانات تجريبية'");
     expect(indexHtml).toContain("String(this.cloudResetConfirmation || '').trim() !== 'حذف'");
-    expect(indexHtml).toContain('الرقم السري للمدير غير صحيح');
+    expect(indexHtml).toContain('كلمة مرور Firebase غير صحيحة أو انتهت جلسة التحقق.');
     expect(indexHtml).toContain('هذه نافذة للبيانات التجريبية المعروفة فقط');
   });
 
