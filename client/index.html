@@ -2670,6 +2670,14 @@
                     });
                     this.cloudResetAcknowledgedToken = token || '';
                     this.syncRevision = Number(snapshot._syncMeta?.revision || this.syncRevision || 0);
+                    this.syncJournal = {
+                        ...this.normalizeSyncJournal(),
+                        pendingState: false,
+                        pendingOperations: [],
+                        completedTombstones: [],
+                        baseRevision: this.syncRevision,
+                        lastAppliedRemoteRevision: this.syncRevision
+                    };
                     this.localChangesPending = false;
                     this.localEditBaseRevision = this.syncRevision;
                     this.persistState();
@@ -2712,10 +2720,10 @@
                     try {
                         if (this.cloudSyncEnabled && this.cloudAuthReady && firestoreDB) {
                             const docRef = firestoreDB.doc(this.cloudDocPath);
-                            const isV2Operational = this.isV2OperationalSyncActive();
+                            const isOperational = this.isOperationalDocumentSyncActive();
                             const [legacySnapshot, ...v2Snapshots] = await Promise.all([
                                 docRef.get({ source: 'server' }),
-                                ...(isV2Operational ? this.getDemoResetV2CollectionNames().map(name => this.getV2Collection(name).get()) : [])
+                                ...(isOperational ? this.getDemoResetV2CollectionNames().map(name => this.getOperationalCollectionQuery(name).get()) : [])
                             ]);
                             const v2Documents = v2Snapshots.flatMap(snapshot => snapshot.docs);
                             if (v2Documents.length > 400) {
@@ -2732,7 +2740,16 @@
                             };
                             const batch = firestoreDB.batch();
                             batch.set(docRef, resetData, { merge: false });
-                            v2Documents.forEach(document => batch.delete(document.ref));
+                            v2Documents.forEach(document => batch.set(document.ref, this.sanitizeForFirestore({
+                                _deleted: true,
+                                _tombstoneVersion: 1,
+                                sourceDocumentId: document.id,
+                                deletedAt: new Date().toISOString(),
+                                resetToken: token,
+                                resetBy: this.currentUser?.fullName || 'المدير',
+                                schemaVersion: this.isTopLevelOperationalSyncActive() ? 3 : 2,
+                                ...(this.isTopLevelOperationalSyncActive() ? { clinicId: String(this.cloudClinicId) } : {})
+                            }), { merge: true }));
                             await batch.commit();
                             this.v2MirrorFingerprints = {};
                             this.saveV2MirrorFingerprints();

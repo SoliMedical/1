@@ -180,7 +180,9 @@ describe('إعادة ضبط البيانات التجريبية الصريحة',
   it('يمسح سجلات V2 السريرية والمالية في دفعة واحدة بعد التأكيد ويحتفظ بالإعدادات والحسابات', () => {
     expect(indexHtml).toContain('getDemoResetV2CollectionNames()');
     expect(indexHtml).toContain("return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests']");
-    expect(indexHtml).toContain('v2Documents.forEach(document => batch.delete(document.ref))');
+    expect(indexHtml).toContain('v2Documents.forEach(document => batch.set(document.ref, this.sanitizeForFirestore({');
+    expect(indexHtml).toContain("resetToken: token");
+    expect(indexHtml).not.toContain('v2Documents.forEach(document => batch.delete(document.ref));');
     expect(indexHtml).toContain("operation: 'explicit-demo-reset'");
     expect(indexHtml).toContain('demoDataAcknowledged: true');
   });
