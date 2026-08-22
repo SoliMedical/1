@@ -11,7 +11,7 @@ function firebaseEmailForUser(value) {
   if (normalized.includes('@')) return normalized;
   const safeLocalPart = Array.from(normalized)
     .map(character => /[a-z0-9._+-]/.test(character) ? character : `u${character.codePointAt(0).toString(16)}`)
-    .join('-')
+    .join('')
     .replace(/-+/g, '-')
     .replace(/^-|-$/g, '') || 'user';
   return `${safeLocalPart}@solimedical.local`;
@@ -38,7 +38,7 @@ function initializeAdmin() {
 }
 
 async function findExistingAuthUser(auth, user) {
-  const email = firebaseEmailForUser(user.email);
+  const email = String(user.firebaseEmail || firebaseEmailForUser(user.email)).trim().toLowerCase();
   return auth.getUserByEmail(email);
 }
 
@@ -74,7 +74,7 @@ async function main() {
       transaction.set(memberRef, {
         status: existing?.status || 'active',
         role: existing?.role || role,
-        firebaseEmail: authUser.email || firebaseEmailForUser(user.email),
+        firebaseEmail: authUser.email || user.firebaseEmail || firebaseEmailForUser(user.email),
         localUserId: String(user.id ?? ''),
         createdAt: existing?.createdAt || FieldValue.serverTimestamp(),
         createdBy: existing?.createdBy || 'scripts/sync-firebase-clinic-members.mjs',

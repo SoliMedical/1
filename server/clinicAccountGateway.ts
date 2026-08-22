@@ -23,6 +23,7 @@ const memberInputSchema = z.object({
   localUserId: z.string().trim().min(1).max(80),
   fullName: z.string().trim().min(1).max(140),
   email: z.string().trim().min(1).max(180),
+  firebaseEmail: z.string().trim().email().max(180).optional(),
   password: z.string().min(6).max(128).optional(),
   role: z.string().trim().min(1).max(100),
   active: z.boolean(),
@@ -31,7 +32,7 @@ const memberInputSchema = z.object({
 
 const requestSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("upsert"), member: memberInputSchema }),
-  z.object({ action: z.literal("delete"), member: memberInputSchema.pick({ localUserId: true, email: true, firebaseUid: true }) }),
+  z.object({ action: z.literal("delete"), member: memberInputSchema.pick({ localUserId: true, email: true, firebaseEmail: true, firebaseUid: true }) }),
 ]);
 
 type MemberInput = z.infer<typeof memberInputSchema>;
@@ -110,7 +111,7 @@ async function requireActiveOwner(req: Request) {
 async function upsertClinicMember(member: MemberInput, ownerUid: string) {
   const auth = getAuth();
   const db = getFirestore();
-  const firebaseEmail = firebaseEmailForUser(member.email);
+  const firebaseEmail = String(member.firebaseEmail || firebaseEmailForUser(member.email)).trim().toLowerCase();
   let authUser;
   let createdAuthUser = false;
   try {
@@ -158,12 +159,12 @@ async function upsertClinicMember(member: MemberInput, ownerUid: string) {
   return { uid: authUser.uid, firebaseEmail, status: member.active ? "active" : "suspended" };
 }
 
-async function deleteClinicMember(member: Pick<MemberInput, "localUserId" | "email" | "firebaseUid">, ownerUid: string) {
+async function deleteClinicMember(member: Pick<MemberInput, "localUserId" | "email" | "firebaseEmail" | "firebaseUid">, ownerUid: string) {
   const auth = getAuth();
   const db = getFirestore();
   const authUser = member.firebaseUid
     ? await auth.getUser(member.firebaseUid)
-    : await auth.getUserByEmail(firebaseEmailForUser(member.email));
+    : await auth.getUserByEmail(String(member.firebaseEmail || firebaseEmailForUser(member.email)).trim().toLowerCase());
   if (authUser.uid === ownerUid) throw new GatewayError(403, "لا يمكن حذف حساب مالك العيادة.");
 
   const memberRef = db.collection("clinics").doc(clinicId).collection("members").doc(authUser.uid);

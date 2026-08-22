@@ -81,7 +81,7 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.8.1';
+        const SOLI_APP_VERSION = 'v1.8.2';
         const SOLI_APP_RELEASE = 'مزامنة Offline-first آمنة مع tombstones وoutbox محلي';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
@@ -3126,7 +3126,7 @@
                 async signInFirebaseForLocalUser(localUser, options = {}) {
                     const { firebasePassword: suppliedFirebasePassword = '' } = options;
                     if (!firebaseAuth || !navigator.onLine || !localUser?.email) return { ok: false, persistent: false };
-                    const firebaseEmail = this.firebaseEmailForUser(localUser.email);
+                    const firebaseEmail = String(localUser.firebaseEmail || this.firebaseEmailForUser(localUser.email)).trim().toLowerCase();
                     // لا تُقرأ كلمة مرور من localUser ولا تُحفظ في Firestore. المصدر الوحيد
                     // للسر هنا هو الحقل الذي أدخله المستخدم لهذه محاولة Firebase Auth.
                     const firebasePassword = String(suppliedFirebasePassword || '');
@@ -3343,7 +3343,7 @@
                         alert('هذه الميزة متاحة للمدير فقط.');
                         return;
                     }
-                    this.loginForm.email = this.firebaseEmailForUser(this.currentUser.email);
+                    this.loginForm.email = this.currentUser.firebaseEmail || this.firebaseEmailForUser(this.currentUser.email);
                     await this.beginPasswordRecovery();
                 },
 
@@ -3353,16 +3353,17 @@
                         alert('تحديث كلمة مرور المدير متاح من حساب المدير فقط.');
                         return;
                     }
-                    this.loginForm.email = this.firebaseEmailForUser(this.currentUser.email);
+                    this.loginForm.email = this.currentUser.firebaseEmail || this.firebaseEmailForUser(this.currentUser.email);
                     await this.beginPasswordRecovery();
                 },
 
                 async beginPasswordRecovery() {
-                    const enteredEmail = String(this.loginForm.email || '').trim().toLowerCase();
+                    const enteredLogin = String(this.loginForm.email || '').trim().toLowerCase();
+                    const enteredEmail = this.resolveFirebaseLoginEmail(enteredLogin);
                     this.recoveryForm = { email: enteredEmail, answer: '', newPassword: '' };
                     this.recoveryState = { open: true, question: '', userId: null, error: '', success: '' };
-                    if (!enteredEmail.includes('@')) {
-                        this.recoveryState.error = 'اكتب البريد الإلكتروني المسجل في Firebase أولاً.';
+                    if (!enteredLogin || !enteredEmail) {
+                        this.recoveryState.error = 'اكتب بريد Firebase صحيحًا أو اسم الحساب القديم المدعوم مثل admin.';
                         return;
                     }
                     if (!firebaseAuth || !navigator.onLine) {
@@ -3389,15 +3390,16 @@
                 async handleLogin() {
                     this.isLoading = true;
                     this.loginError = '';
-                    const enteredEmail = String(this.loginForm.email || '').trim().toLowerCase();
+                    const enteredLogin = String(this.loginForm.email || '').trim().toLowerCase();
+                    const enteredEmail = this.resolveFirebaseLoginEmail(enteredLogin);
                     const enteredPassword = String(this.loginForm.password || '');
                     if (!navigator.onLine || !this.cloudSyncEnabled || !firebaseAuth) {
                         this.loginError = 'تسجيل الدخول يحتاج اتصالاً بالإنترنت وتهيئة Firebase Authentication. لا توجد مصادقة محلية بديلة.';
                         this.isLoading = false;
                         return;
                     }
-                    if (!enteredEmail.includes('@')) {
-                        this.loginError = 'اكتب البريد الإلكتروني المسجل في Firebase، وليس اسم المستخدم المحلي القديم.';
+                    if (!enteredLogin || !enteredEmail) {
+                        this.loginError = 'اكتب بريد Firebase صحيحًا أو استخدم اسم الحساب القديم المدعوم مثل admin.';
                         this.isLoading = false;
                         return;
                     }
@@ -3488,6 +3490,7 @@
                                 localUserId: String(user.id ?? ''),
                                 fullName: String(user.fullName || '').trim(),
                                 email: String(user.email || '').trim(),
+                                firebaseEmail: String(user.firebaseEmail || '').trim() || undefined,
                                 password: action === 'upsert' && options.password ? String(options.password) : undefined,
                                 role: String(user.role || '').trim(),
                                 active: user.active !== false,
@@ -3723,10 +3726,27 @@
                         .map(character => /[a-z0-9._+-]/.test(character)
                             ? character
                             : `u${character.codePointAt(0).toString(16)}`)
-                        .join('-')
+                        .join('')
                         .replace(/-+/g, '-')
                         .replace(/^-|-$/g, '') || 'user';
                     return `${safeLocalPart}@solimedical.local`;
+                },
+                resolveFirebaseLoginEmail(login) {
+                    const normalizedLogin = String(login || '').trim().toLowerCase();
+                    if (!normalizedLogin) return '';
+                    const matchedUser = (this.users || []).find(user => {
+                        const localEmail = String(user?.email || '').trim().toLowerCase();
+                        const firebaseEmail = String(user?.firebaseEmail || '').trim().toLowerCase();
+                        return normalizedLogin === localEmail ||
+                            normalizedLogin === firebaseEmail ||
+                            normalizedLogin === this.firebaseEmailForUser(localEmail);
+                    });
+                    if (matchedUser) {
+                        return String(matchedUser.firebaseEmail || this.firebaseEmailForUser(matchedUser.email))
+                            .trim()
+                            .toLowerCase();
+                    }
+                    return this.firebaseEmailForUser(normalizedLogin);
                 },
 
                 async createFirebaseIdentityForNewUser(localUser, firebasePassword = '') {
@@ -6218,8 +6238,8 @@
 
                     <form @submit.prevent="handleLogin" class="space-y-5" aria-label="تسجيل الدخول إلى نظام Soli Medical">
                         <div>
-                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">البريد الإلكتروني في Firebase</label>
-                            <input type="email" x-model="loginForm.email" required autocomplete="username" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="name@example.com">
+                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">البريد الإلكتروني في Firebase أو اسم الحساب القديم</label>
+                            <input type="text" x-model="loginForm.email" required autocomplete="username" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="name@example.com أو admin">
                         </div>
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">كلمة المرور</label>
@@ -8576,7 +8596,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.8.1', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.8.2', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

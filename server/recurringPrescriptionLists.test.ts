@@ -203,9 +203,9 @@ describe("قوائم الروشتة المتكررة", () => {
     expect(html).toContain("openRecurringPrescriptionListEditor(listId)");
     expect(html).toContain("saveRecurringPrescriptionListEditor()");
     expect(html).toContain("حفظ التعديل");
-    expect(html).toContain("const SOLI_APP_VERSION = 'v1.8.1'");
+    expect(html).toContain("const SOLI_APP_VERSION = 'v1.8.2'");
     expect(html).toContain("updateViaCache: 'none'");
-    expect(html).toContain("sw.js?v=soli-v1.8.1");
-    expect(serviceWorker).toContain('const CACHE_NAME = "soli-medical-pwa-v32"');
+    expect(html).toContain("sw.js?v=soli-v1.8.2");
+    expect(serviceWorker).toContain('const CACHE_NAME = "soli-medical-pwa-v33"');
   });
 });

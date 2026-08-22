@@ -24,7 +24,7 @@
 
 لإنشاء نسخة عميل جديدة: أنشئ مشروع Firebase مستقلاً، أضف Web App، فعّل **Authentication → Sign-in method → Email/Password**، فعّل Firestore، وأضف نطاق GitHub Pages إلى **Authorized domains**. بعد ذلك استبدل كائن الإعداد في `firebase-config.js` قبل النشر.
 
-تسجيل الدخول في الإصدار الحالي يتم من خلال Firebase Authentication فقط: يجب أن يكتب المستخدم البريد الإلكتروني الموجود في Firebase وكلمة مرور Firebase. لا تمنح قيمة `localStorage` أو أي كلمة مرور قديمة أو جلسة محلية صلاحية الدخول. بعد نجاح Firebase Auth يتحقق التطبيق من عضوية العيادة النشطة ويربطها ببطاقة المستخدم عبر البريد أو `firebaseUid`، ثم تبدأ مزامنة Firestore.
+تسجيل الدخول في الإصدار الحالي يتم من خلال Firebase Authentication فقط: يمكن للمستخدم كتابة البريد الإلكتروني الموجود في Firebase، أو اسم الحساب القديم المدعوم مثل `admin` الذي يحوّله التطبيق إلى البريد المرتبط به، ثم يكتب كلمة مرور Firebase. لا تمنح قيمة `localStorage` أو أي كلمة مرور قديمة أو جلسة محلية صلاحية الدخول. بعد نجاح Firebase Auth يتحقق التطبيق من عضوية العيادة النشطة ويربطها ببطاقة المستخدم عبر البريد أو `firebaseUid`، ثم تبدأ مزامنة Firestore.
 
 لا يحتاج نشر GitHub Pages إلى مفتاح Admin SDK؛ إعدادات Web الموجودة في `firebase-config.js` عامة ومصممة للعميل. أي مفتاح Admin SDK أو JSON لحساب خدمة يجب أن يبقى في خادم الإدارة أو في GitHub Actions Secret مخصص لمهمة إدارية، ولا يوضع في `index.html` أو `firebase-config.js` أو `localStorage`. Workflow النشر الحالي لا يقرأ `FIREBASE_SERVICE_ACCOUNT_JSON`، لذلك لا تضف السر إلى Pages إلا إذا أضفت مهمة تحقق إدارية صريحة.
 
