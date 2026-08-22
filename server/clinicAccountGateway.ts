@@ -30,9 +30,14 @@ const memberInputSchema = z.object({
   firebaseUid: z.string().trim().min(1).max(160).optional(),
 });
 
+const accountReferenceSchema = memberInputSchema.pick({ localUserId: true, email: true, firebaseEmail: true, firebaseUid: true });
 const requestSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("upsert"), member: memberInputSchema }),
-  z.object({ action: z.literal("delete"), member: memberInputSchema.pick({ localUserId: true, email: true, firebaseEmail: true, firebaseUid: true }) }),
+  z.object({ action: z.literal("delete"), member: accountReferenceSchema }),
+  z.object({
+    action: z.literal("changePassword"),
+    member: accountReferenceSchema.extend({ newPassword: z.string().min(6).max(128) }),
+  }),
 ]);
 
 type MemberInput = z.infer<typeof memberInputSchema>;
@@ -42,7 +47,7 @@ function firebaseEmailForUser(value: string) {
   if (normalized.includes("@")) return normalized;
   const safeLocalPart = Array.from(normalized)
     .map(character => /[a-z0-9._+-]/.test(character) ? character : `u${character.codePointAt(0)?.toString(16)}`)
-    .join("-")
+    .join("")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "") || "user";
   return `${safeLocalPart}@solimedical.local`;
@@ -159,6 +164,22 @@ async function upsertClinicMember(member: MemberInput, ownerUid: string) {
   return { uid: authUser.uid, firebaseEmail, status: member.active ? "active" : "suspended" };
 }
 
+async function changeClinicMemberPassword(member: Pick<MemberInput, "localUserId" | "email" | "firebaseEmail" | "firebaseUid"> & { newPassword: string }, ownerUid: string) {
+  const auth = getAuth();
+  const db = getFirestore();
+  const authUser = member.firebaseUid
+    ? await auth.getUser(member.firebaseUid)
+    : await auth.getUserByEmail(String(member.firebaseEmail || firebaseEmailForUser(member.email)).trim().toLowerCase());
+  const memberRef = db.collection("clinics").doc(clinicId).collection("members").doc(authUser.uid);
+  const membership = await memberRef.get();
+  if (!membership.exists || String(membership.data()?.localUserId || "") !== member.localUserId) {
+    throw new GatewayError(409, "لا تتطابق هوية Firebase مع بطاقة الحساب المطلوبة.");
+  }
+  await auth.updateUser(authUser.uid, { password: member.newPassword });
+  const status = membership.data()?.status === "active" ? "active" : "suspended";
+  return { uid: authUser.uid, status };
+}
+
 async function deleteClinicMember(member: Pick<MemberInput, "localUserId" | "email" | "firebaseEmail" | "firebaseUid">, ownerUid: string) {
   const auth = getAuth();
   const db = getFirestore();
@@ -190,6 +211,11 @@ export function registerClinicAccountGateway(app: Express) {
       const { ownerUid } = await requireActiveOwner(req);
       if (request.action === "upsert") {
         const result = await upsertClinicMember(request.member, ownerUid);
+        res.status(200).json({ ok: true, result });
+        return;
+      }
+      if (request.action === "changePassword") {
+        const result = await changeClinicMemberPassword(request.member, ownerUid);
         res.status(200).json({ ok: true, result });
         return;
       }

@@ -94,6 +94,10 @@ describe('Firebase-only identity and clinic-membership contract', () => {
   it('creates team users through the trusted gateway with a transient password', () => {
     expect(appSource).toContain('async callClinicAccountGateway(action, user, options = {})');
     expect(appSource).toContain('password: action === \'upsert\' && options.password ? String(options.password) : undefined');
+    expect(appSource).toContain('newPassword: action === \'changePassword\' && options.newPassword ? String(options.newPassword) : undefined');
+    expect(appSource).toContain('const username = this.newUserForm.username.trim();');
+    expect(appSource).toContain('email: username');
+    expect(appSource).not.toContain('x-model="newUserForm.email"');
     expect(appSource).toContain('const firebasePassword = this.newUserForm.password.trim();');
     expect(appSource).toContain('syncUserMembership(newUser.id, { silent: true, firebasePassword })');
     expect(appSource).toContain('async sendFirebasePasswordResetForUser(userId)');
@@ -105,6 +109,9 @@ describe('Firebase-only identity and clinic-membership contract', () => {
     expect(accountGateway).toContain('auth.verifyIdToken(idToken, true)');
     expect(accountGateway).toContain('await auth.createUser(');
     expect(accountGateway).toContain('await auth.updateUser(authUser.uid');
+    expect(accountGateway).toContain('action: z.literal("changePassword")');
+    expect(accountGateway).toContain('await auth.updateUser(authUser.uid, { password: member.newPassword });');
+    expect(accountGateway).toContain('لا تتطابق هوية Firebase مع بطاقة الحساب المطلوبة');
     expect(accountGateway).toContain('members');
     expect(accountGateway).toContain('membership.data()?.role !== "owner"');
     expect(accountGateway).not.toContain('collection("patients")');

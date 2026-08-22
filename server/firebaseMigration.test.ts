@@ -89,7 +89,9 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain("this.cloudStatus = isActiveMember && navigator.onLine ? 'online' : 'offline';");
     expect(indexHtml).toContain('const results = await Promise.allSettled(names.map(name => this.getOperationalCollectionQuery(name).get()));');
     expect(indexHtml).toContain('this.v2OperationalErrors = failedCollections;');
-    expect(indexHtml).toContain("this.v2OperationalReady = failedCollections.length === 0;");
+    expect(indexHtml).toContain("const blockingInitialErrors = failedCollections.filter(name => !this.isOptionalV2OperationalCollection(name));");
+    expect(indexHtml).toContain("this.v2OperationalReady = blockingInitialErrors.length === 0;");
+    expect(indexHtml).toContain("if (!this.isTopLevelOperationalSyncActive()) optional.push('settings');");
     expect(indexHtml).toContain("if (!this.cloudAuthReady || !this.cloudMembershipReady || !navigator.onLine) this.cloudStatus = 'offline';");
     expect(indexHtml).not.toContain("console.error(`تعذر متابعة مجموعة V2 ${name}:`, error);\n                                this.cloudStatus = 'offline';");
   });

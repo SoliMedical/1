@@ -258,6 +258,49 @@ describe("مزامنة Soli Medical Offline-first", () => {
     expect(visitOperation.data.patientId).toBe("p1");
   });
 
+  it("لا يحجب فشل مجموعات الإدارة الاختيارية ظهور الزيارة على جهاز عضو عادي", async () => {
+    const { app } = await createAppData();
+    activateOperationalSync(app);
+    app.dataMigration = { status: "completed", migrationId: "migration-1", dualWriteEnabled: true };
+    expect(app.isOptionalV2OperationalCollection("visits")).toBe(false);
+    expect(app.isOptionalV2OperationalCollection("auditLogs")).toBe(true);
+    expect(app.isOptionalV2OperationalCollection("archiveManifests")).toBe(true);
+    expect(app.isOptionalV2OperationalCollection("settings")).toBe(true);
+
+    app.v2OperationalCollectionCache = {
+      patients: [{ id: "p1", fullName: "مريض", _documentId: "p1" }],
+      visits: [{ id: "v1", patientId: "p1", diagnosis: "تشخيص", _documentId: "v1" }],
+      appointments: [], invoices: [], prescriptions: [], expenses: [], waitingQueue: [], catalogs: []
+    };
+    const hydrated = app.hydrateV2StateFromCollectionCache();
+    expect(hydrated.patients).toEqual([expect.objectContaining({ id: "p1", records: [{ id: "v1", diagnosis: "تشخيص" }] })]);
+    expect(hydrated.auditLog).toBeUndefined();
+    expect(hydrated.archiveManifests).toBeUndefined();
+  });
+
+  it("يحمّل الزيارة على الجهاز الثاني رغم رفض مجموعات الإدارة غير اللازمة", async () => {
+    const { app } = await createAppData({ firebaseConfigured: true });
+    activateOperationalSync(app);
+    app.dataMigration = { status: "completed", migrationId: "migration-1", dualWriteEnabled: true };
+    const remoteDocs: Record<string, Array<{ id: string; data: Record<string, any> }>> = {
+      patients: [{ id: "p1", data: { id: "p1", fullName: "مريض" } }],
+      visits: [{ id: "v1", data: { id: "v1", patientId: "p1", diagnosis: "تشخيص" } }],
+      appointments: [], invoices: [], prescriptions: [], expenses: [], waitingQueue: [], catalogs: []
+    };
+    app.getOperationalCollectionQuery = (name: string) => ({
+      get: async () => {
+        if (app.isOptionalV2OperationalCollection(name)) throw new Error("permission-denied");
+        return { docs: (remoteDocs[name] || []).map(document => ({ id: document.id, data: () => document.data })) };
+      },
+      onSnapshot: () => () => undefined,
+    });
+    await app.startV2OperationalSync();
+
+    expect(app.v2OperationalReady).toBe(true);
+    expect(app.v2OperationalErrors).toEqual(expect.arrayContaining(["auditLogs", "archiveManifests", "settings"]));
+    expect(app.patients[0]).toMatchObject({ id: "p1", records: [{ id: "v1", diagnosis: "تشخيص" }] });
+  });
+
   it("يملأ معرفًا ثابتًا للسجل القديم مرة واحدة ولا يغيره عند إعادة الترتيب", async () => {
     const { app } = await createAppData();
     app.patients = [{ id: "p1", fullName: "مريض", records: [{ date: "2026-08-01" }, { id: "old-2", date: "2026-08-02" }] }];

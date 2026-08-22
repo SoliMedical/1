@@ -85,7 +85,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
 		  it("يوحّد الدخول ويمنع حقول كلمات المرور المحلية داخل الحسابات", () => {
-    expect(page).toContain('البريد الإلكتروني في Firebase');
+    expect(page).toContain('اسم المستخدم أو البريد المرتبط بالحساب');
     expect(page).toContain('x-model="loginForm.password"');
     expect(page).not.toContain('x-model="u.password"');
     expect(page).not.toContain('استعادة محلية');
@@ -93,9 +93,9 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
 		  });
 
 	  it("يدوّر الإصدار وعامل الخدمة عند تحسين المزامنة وحاجز النشر", () => {
-	    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.2'");
-	    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.2'");
-	    expect(sw).toContain('soli-medical-pwa-v33');
+	    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.4'");
+	    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.4'");
+	    expect(sw).toContain('soli-medical-pwa-v35');
 	  });
 
   it("يعرض صفوف المعمل والأشعة مع نوع محتوى واضح في الإدخال والطباعة", () => {
@@ -156,6 +156,13 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
     expect(page).toContain('const cloudResult = await this.persistUsersToCloudNow()');
     expect(page).toContain("async callClinicAccountGateway(action, user, options = {})");
     expect(page).toContain("await this.callClinicAccountGateway('upsert', user, { password: firebasePassword })");
+    expect(page).toContain("await this.callClinicAccountGateway('changePassword', user, { newPassword })");
+    expect(page).toContain('x-model="newUserForm.username"');
+    expect(page).toContain('placeholder="اسم المستخدم مثل: احمد"');
+    expect(page).not.toContain('x-model="newUserForm.email"');
+    expect(page).not.toContain('placeholder="البريد الإلكتروني في Firebase"');
+    expect(page).toContain('openPasswordChangeModal(u.id)');
+    expect(page).toContain('حفظ كلمة المرور');
     expect(page).toContain("await this.callClinicAccountGateway('delete', user)");
   });
 
@@ -220,7 +227,7 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يعرض رقم إصدار واضحاً يطابق النسخة المنشورة الحالية", () => {
-    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.2'");
+    expect(page).toContain("const SOLI_APP_VERSION = 'v1.8.4'");
     expect(page).toContain('appVersion: SOLI_APP_VERSION');
     expect(page).toContain("'إصدار ' + appVersion");
     expect(page).toContain("'إصدار النظام ' + appVersion");
@@ -241,8 +248,8 @@ describe("صفحة الحجز الذاتي عبر واتساب", () => {
   });
 
   it("يرفع نسخة Service Worker عند تغييرات التطبيق حتى لا تبقى نسخة مواعيد قديمة", () => {
-    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.2', { updateViaCache: 'none' })");
-    expect(sw).toContain('soli-medical-pwa-v33');
+    expect(page).toContain("navigator.serviceWorker.register('./sw.js?v=soli-v1.8.4', { updateViaCache: 'none' })");
+    expect(sw).toContain('soli-medical-pwa-v35');
     expect(sw).toContain('const isAppShell');
     expect(sw).toContain('const SCOPE_PATH = new URL(self.registration.scope).pathname');
     expect(sw).toContain('fetch(event.request)');

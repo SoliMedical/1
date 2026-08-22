@@ -1,4 +1,4 @@
-const CACHE_NAME = "soli-medical-pwa-v33";
+const CACHE_NAME = "soli-medical-pwa-v35";
 const SCOPE_PATH = new URL(self.registration.scope).pathname;
 const APP_SHELL = [
   SCOPE_PATH,

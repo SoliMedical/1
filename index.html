@@ -81,8 +81,8 @@
         const publicBookingMode = isPublicBookingUrl();
         const publicPricingMode = isPublicPricingUrl();
         // رقم الإصدار الظاهر للمستخدم للتأكد من أن المتصفح حمّل آخر نسخة منشورة.
-        const SOLI_APP_VERSION = 'v1.8.2';
-        const SOLI_APP_RELEASE = 'مزامنة Offline-first آمنة مع tombstones وoutbox محلي';
+        const SOLI_APP_VERSION = 'v1.8.4';
+        const SOLI_APP_RELEASE = 'مزامنة Offline-first آمنة للزيارات مع إدارة حسابات باسم المستخدم';
 
         // يقبل رقم محمول مصري محلياً أو بصيغة دولية، ويعيده دائماً كرقم محلي من 11 رقماً.
         // الأرقام الثابتة أو أرقام الدول الأخرى لا تُحفظ ضمن بيانات التواصل في Soli Medical.
@@ -502,7 +502,7 @@
                 ],
                 newUserForm: {
                     fullName: '',
-                    email: '',
+                    username: '',
                     password: '',
                     role: 'موظف استقبال',
                     permissions: { dashboard: true, newVisit: true, appointments: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, prescriptionSettings: false, settings: false }
@@ -524,6 +524,10 @@
                 firebaseIdentityBusy: false,
                 selfServiceAccountBusy: false,
                 selfServiceAccountMessage: '',
+                passwordChangeForm: { userId: '', newPassword: '', confirmPassword: '' },
+                passwordChangeMessage: '',
+                showPasswordChangeModal: false,
+                showPasswordChangeInput: false,
                 cloudDiagnosticsReport: null,
                 cloudDiagnosticsVisible: false,
                 userPermissionDrafts: {},
@@ -1934,8 +1938,13 @@
                 getV2OperationalCollectionNames() {
                     return ['patients', 'visits', 'appointments', 'invoices', 'prescriptions', 'expenses', 'waitingQueue', 'auditLogs', 'archiveManifests', 'settings', 'catalogs'];
                 },
+                isOptionalV2OperationalCollection(name) {
+                    const optional = ['auditLogs', 'archiveManifests'];
+                    if (!this.isTopLevelOperationalSyncActive()) optional.push('settings');
+                    return optional.includes(String(name));
+                },
                 stripV2Metadata(value) {
-                    const { schemaVersion, migrationId, migratedAt, legacyId, updatedAt, syncSequence, writerId, deletedAt, _tombstoneVersion, _localTombstone, _deleted, clinicId, sourceDocumentId, topLevelMigrationId, topLevelMigratedAt, ...record } = value || {};
+                    const { schemaVersion, migrationId, migratedAt, legacyId, updatedAt, syncSequence, writerId, deletedAt, _tombstoneVersion, _localTombstone, _deleted, _documentId, clinicId, sourceDocumentId, topLevelMigrationId, topLevelMigratedAt, ...record } = value || {};
                     return record;
                 },
                 applyOperationalCollectionChanges(name, snapshot) {
@@ -1984,12 +1993,15 @@
                 hydrateV2StateFromCollectionCache() {
                     const cache = this.v2OperationalCollectionCache || {};
                     const isTombstone = item => item?._deleted === true;
-                    const recordsFor = name => (cache[name] || [])
-                        .filter(item => !isTombstone(item))
-                        .map(item => this.stripV2Metadata(item));
+                    const recordsFor = name => {
+                        if (!Object.prototype.hasOwnProperty.call(cache, name)) return undefined;
+                        return (cache[name] || [])
+                            .filter(item => !isTombstone(item))
+                            .map(item => this.stripV2Metadata(item));
+                    };
                     const patientDocs = (cache.patients || []).filter(item => !isTombstone(item));
                     const visitsByPatient = new Map();
-                    recordsFor('visits').forEach(visit => {
+                    (recordsFor('visits') || []).forEach(visit => {
                         const patientId = String(visit.patientId || visit.patientLegacyId || '');
                         if (!visitsByPatient.has(patientId)) visitsByPatient.set(patientId, []);
                         const { patientId: _patientId, patientLegacyId: _patientLegacyId, ...record } = visit;
@@ -2010,11 +2022,11 @@
                     const templates = this.stripV2Metadata(templatesCatalog);
                     return {
                         patients,
-                        appointments: recordsFor('appointments'),
-                        invoices: recordsFor('invoices'),
-                        prescriptions: recordsFor('prescriptions'),
-                        expenses: recordsFor('expenses'),
-                        waitingQueue: recordsFor('waitingQueue'),
+                        appointments: recordsFor('appointments') || [],
+                        invoices: recordsFor('invoices') || [],
+                        prescriptions: recordsFor('prescriptions') || [],
+                        expenses: recordsFor('expenses') || [],
+                        waitingQueue: recordsFor('waitingQueue') || [],
                         auditLog: recordsFor('auditLogs'),
                         archiveManifests: recordsFor('archiveManifests'),
                         ...(general || {}),
@@ -2091,7 +2103,8 @@
                             return cache;
                         }, {});
                         this.applyPendingSyncOperationsToCache();
-                        this.v2OperationalReady = failedCollections.length === 0;
+                        const blockingInitialErrors = failedCollections.filter(name => !this.isOptionalV2OperationalCollection(name));
+                        this.v2OperationalReady = blockingInitialErrors.length === 0;
                         if (this.v2OperationalReady) this.applyV2RemoteState('التحميل الأول من مخطط V2');
                         if (failedCollections.length) {
                             console.warn(`تعذر التحميل الأول لبعض مجموعات Firestore: ${failedCollections.join('، ')}. ستستمر المحاولة في الخلفية دون تعطيل الحفظ المحلي أو حالة الاتصال.`);
@@ -2107,8 +2120,8 @@
                             error => {
                                 console.error(`تعذر متابعة مجموعة V2 ${name}:`, error);
                                 this.v2OperationalErrors = [...new Set([...(this.v2OperationalErrors || []), name])];
-                                this.v2OperationalReady = false;
-                                if (!this.cloudAuthReady || !this.cloudMembershipReady || !navigator.onLine) this.cloudStatus = 'offline';
+                                this.v2OperationalReady = !(this.v2OperationalErrors || []).some(item => !this.isOptionalV2OperationalCollection(item));
+                                if (!this.isOptionalV2OperationalCollection(name) && (!this.cloudAuthReady || !this.cloudMembershipReady || !navigator.onLine)) this.cloudStatus = 'offline';
                             }
                         ));
                         if (this.hasPendingSyncWork() && navigator.onLine) this.queueCloudSync();
@@ -3363,7 +3376,7 @@
                     this.recoveryForm = { email: enteredEmail, answer: '', newPassword: '' };
                     this.recoveryState = { open: true, question: '', userId: null, error: '', success: '' };
                     if (!enteredLogin || !enteredEmail) {
-                        this.recoveryState.error = 'اكتب بريد Firebase صحيحًا أو اسم الحساب القديم المدعوم مثل admin.';
+                        this.recoveryState.error = 'اكتب اسم المستخدم مثل احمد أو البريد المرتبط بالحساب.';
                         return;
                     }
                     if (!firebaseAuth || !navigator.onLine) {
@@ -3399,7 +3412,7 @@
                         return;
                     }
                     if (!enteredLogin || !enteredEmail) {
-                        this.loginError = 'اكتب بريد Firebase صحيحًا أو استخدم اسم الحساب القديم المدعوم مثل admin.';
+                        this.loginError = 'اكتب اسم المستخدم مثل احمد أو البريد المرتبط بالحساب.';
                         this.isLoading = false;
                         return;
                     }
@@ -3492,6 +3505,7 @@
                                 email: String(user.email || '').trim(),
                                 firebaseEmail: String(user.firebaseEmail || '').trim() || undefined,
                                 password: action === 'upsert' && options.password ? String(options.password) : undefined,
+                                newPassword: action === 'changePassword' && options.newPassword ? String(options.newPassword) : undefined,
                                 role: String(user.role || '').trim(),
                                 active: user.active !== false,
                                 firebaseUid: String(user.firebaseUid || '').trim() || undefined
@@ -3524,6 +3538,61 @@
                     }
                 },
 
+                openPasswordChangeModal(userId) {
+                    if (this.currentUser?.role !== 'admin') {
+                        alert('تغيير كلمات المرور متاح لمدير النظام فقط.');
+                        return;
+                    }
+                    const user = this.users.find(candidate => String(candidate.id) === String(userId));
+                    if (!user) return;
+                    this.passwordChangeForm = { userId: String(user.id), newPassword: '', confirmPassword: '' };
+                    this.passwordChangeMessage = '';
+                    this.showPasswordChangeInput = false;
+                    this.showPasswordChangeModal = true;
+                },
+                closePasswordChangeModal() {
+                    if (this.selfServiceAccountBusy) return;
+                    this.showPasswordChangeModal = false;
+                    this.passwordChangeForm = { userId: '', newPassword: '', confirmPassword: '' };
+                    this.passwordChangeMessage = '';
+                },
+                async changeUserPassword() {
+                    if (this.currentUser?.role !== 'admin') {
+                        this.passwordChangeMessage = 'تغيير كلمات المرور متاح لمدير النظام فقط.';
+                        return false;
+                    }
+                    const user = this.users.find(candidate => String(candidate.id) === String(this.passwordChangeForm.userId));
+                    const newPassword = String(this.passwordChangeForm.newPassword || '').trim();
+                    const confirmPassword = String(this.passwordChangeForm.confirmPassword || '').trim();
+                    if (!user) {
+                        this.passwordChangeMessage = 'لم يتم العثور على الحساب المطلوب.';
+                        return false;
+                    }
+                    if (newPassword.length < 6) {
+                        this.passwordChangeMessage = 'كلمة المرور يجب ألا تقل عن 6 أحرف أو أرقام.';
+                        return false;
+                    }
+                    if (newPassword !== confirmPassword) {
+                        this.passwordChangeMessage = 'تأكيد كلمة المرور غير مطابق.';
+                        return false;
+                    }
+                    this.selfServiceAccountBusy = true;
+                    this.passwordChangeMessage = 'جارٍ تحديث كلمة المرور في Firebase…';
+                    try {
+                        const result = await this.callClinicAccountGateway('changePassword', user, { newPassword });
+                        user.firebaseAuthStatus = result?.status || 'active';
+                        this.persistState();
+                        this.passwordChangeForm.newPassword = '';
+                        this.passwordChangeForm.confirmPassword = '';
+                        this.passwordChangeMessage = 'تم تغيير كلمة المرور بنجاح. استخدم كلمة المرور الجديدة عند الدخول.';
+                        return true;
+                    } catch (error) {
+                        this.passwordChangeMessage = error?.message || 'تعذر تغيير كلمة المرور في Firebase.';
+                        return false;
+                    } finally {
+                        this.selfServiceAccountBusy = false;
+                    }
+                },
                 async syncUserMembership(userId, options = {}) {
                     const user = this.users.find(candidate => String(candidate.id) === String(userId));
                     const firebasePassword = String(options.firebasePassword || '');
@@ -3554,27 +3623,30 @@
                 },
 
                 async addUser() {
-                    if (!this.newUserForm.fullName.trim() || !this.newUserForm.email.trim() || !this.newUserForm.password.trim()) {
-                        alert('يرجى إدخال الاسم والبريد الإلكتروني وكلمة مرور Firebase');
+                    const username = this.newUserForm.username.trim();
+                    const fullName = this.newUserForm.fullName.trim() || username;
+                    if (!username || !this.newUserForm.password.trim()) {
+                        alert('يرجى إدخال اسم المستخدم وكلمة المرور. الاسم الكامل اختياري.');
                         return;
                     }
-                    if (!this.newUserForm.email.trim().includes('@')) {
-                        alert('اكتب بريدًا إلكترونيًا صالحًا للحساب الجديد.');
+                    if (username.includes('@')) {
+                        alert('اكتب اسم مستخدم فقط دون @ أو بريد إلكتروني.');
                         return;
                     }
                     if (this.newUserForm.password.trim().length < 6) {
                         alert('كلمة مرور الحساب الجديد يجب ألا تقل عن 6 أحرف لحماية تسجيل الدخول.');
                         return;
                     }
-                    if (this.users.some(u => String(u.email || '').trim().toLowerCase() === this.newUserForm.email.trim().toLowerCase() || this.firebaseEmailForUser(u.email) === this.newUserForm.email.trim().toLowerCase())) {
-                        alert('يوجد بالفعل حساب بنفس البريد الإلكتروني');
+                    const normalizedUsername = username.toLowerCase();
+                    if (this.users.some(u => String(u.email || '').trim().toLowerCase() === normalizedUsername)) {
+                        alert('يوجد بالفعل حساب بنفس اسم المستخدم.');
                         return;
                     }
                     const firebasePassword = this.newUserForm.password.trim();
                     const newUser = {
                         id: Date.now(),
-                        fullName: this.newUserForm.fullName.trim(),
-                        email: this.newUserForm.email.trim(),
+                        fullName,
+                        email: username,
                         role: this.newUserForm.role,
                         active: true,
                         permissions: { ...this.newUserForm.permissions }
@@ -3589,7 +3661,7 @@
 
                     this.newUserForm = {
                         fullName: '',
-                        email: '',
+                        username: '',
                         password: '',
                         role: 'موظف استقبال',
                         permissions: { dashboard: true, newVisit: true, followUps: true, patients: true, invoices: false, expenses: false, reports: false, pharmacy: false, settings: false }
@@ -6238,8 +6310,8 @@
 
                     <form @submit.prevent="handleLogin" class="space-y-5" aria-label="تسجيل الدخول إلى نظام Soli Medical">
                         <div>
-                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">البريد الإلكتروني في Firebase أو اسم الحساب القديم</label>
-                            <input type="text" x-model="loginForm.email" required autocomplete="username" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="name@example.com أو admin">
+                            <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">اسم المستخدم أو البريد المرتبط بالحساب</label>
+                            <input type="text" x-model="loginForm.email" required autocomplete="username" class="soli-login-input w-full px-4 py-3 rounded-xl text-slate-800 dark:text-white outline-none" placeholder="اسم المستخدم مثل: احمد">
                         </div>
                         <div>
                             <label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">كلمة المرور</label>
@@ -7850,7 +7922,7 @@
                                                         <span x-text="u.active === false ? 'تفعيل الحساب' : 'إيقاف الحساب'"></span>
                                                     </button>
 	                                                    <button type="button" x-show="u.id !== 1 && u.firebaseAuthStatus !== 'active'" @click="syncUserMembership(u.id)" :disabled="selfServiceAccountBusy" class="text-blue-600 hover:text-blue-700 text-xs font-bold flex items-center gap-1 disabled:opacity-40"><i data-lucide="cloud" class="w-4 h-4"></i><span>إعادة محاولة التفعيل</span></button>
-                                                    <button type="button" @click="sendFirebasePasswordResetForUser(u.id)" :disabled="selfServiceAccountBusy" class="text-indigo-600 hover:text-indigo-700 text-xs font-bold flex items-center gap-1 disabled:opacity-40"><i data-lucide="key-round" class="w-4 h-4"></i><span>إرسال رابط كلمة المرور</span></button>
+                                                    <button type="button" @click="openPasswordChangeModal(u.id)" :disabled="selfServiceAccountBusy" class="text-indigo-600 hover:text-indigo-700 text-xs font-bold flex items-center gap-1 disabled:opacity-40"><i data-lucide="key-round" class="w-4 h-4"></i><span>تغيير كلمة المرور</span></button>
 	                                                    <button type="button" @click="removeUser(u.id)" :disabled="selfServiceAccountBusy" class="text-red-500 hover:text-red-700 disabled:opacity-40" :class="u.id === 1 ? 'opacity-30 cursor-not-allowed' : ''">
                                                         <i data-lucide="trash-2" class="w-4 h-4"></i>
                                                     </button>
@@ -7866,8 +7938,8 @@
                                                     <input type="text" x-model="u.fullName" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-white dark:bg-slate-900 dark:border-slate-700 text-slate-800 dark:text-white">
                                                 </div>
                                                 <div>
-                                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">بريد Firebase للحساب</label>
-                                                    <input type="email" readonly :value="u.firebaseEmail || firebaseEmailForUser(u.email)" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-950 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-mono">
+                                                    <label class="block text-[11px] font-semibold text-slate-500 mb-1">اسم المستخدم</label>
+                                                    <input type="text" readonly :value="u.email" class="w-full px-3 py-1.5 border rounded-lg text-xs bg-slate-100 dark:bg-slate-950 dark:border-slate-700 text-slate-600 dark:text-slate-300">
                                                 </div>
                                                 <div>
                                                     <label class="block text-[11px] font-semibold text-slate-500 mb-1">حالة هوية Firebase</label>
@@ -7893,10 +7965,11 @@
                                 <!-- Add New User -->
                                 <div class="pt-3 border-t dark:border-slate-800 space-y-3">
                                     <h4 class="text-sm font-bold text-slate-700 dark:text-slate-300">إضافة حساب جديد</h4>
+                                    <p class="text-xs text-slate-500 dark:text-slate-400">اكتب اسم المستخدم وكلمة المرور فقط. يُنشئ النظام هوية Firebase الداخلية تلقائياً ولا تحتاج إلى إدخال أو حفظ بريد إلكتروني.</p>
                                     <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                        <input type="text" x-model="newUserForm.fullName" placeholder="اسم الموظف الكامل" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <input type="email" x-model="newUserForm.email" placeholder="البريد الإلكتروني في Firebase" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
-                                        <div class="relative"><input :type="showNewUserPassword ? 'text' : 'password'" x-model="newUserForm.password" autocomplete="new-password" minlength="6" placeholder="كلمة مرور Firebase الأولية (6 أحرف على الأقل)" class="w-full px-3 py-2 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showNewUserPassword = !showNewUserPassword" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showNewUserPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showNewUserPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
+                                        <input type="text" x-model="newUserForm.fullName" placeholder="الاسم الظاهر للموظف (اختياري)" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <input type="text" x-model="newUserForm.username" autocomplete="username" placeholder="اسم المستخدم مثل: احمد" class="px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
+                                        <div class="relative"><input :type="showNewUserPassword ? 'text' : 'password'" x-model="newUserForm.password" autocomplete="new-password" minlength="6" placeholder="كلمة المرور (6 أحرف على الأقل)" class="w-full px-3 py-2 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white"><button type="button" @click="showNewUserPassword = !showNewUserPassword" class="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500" :aria-label="showNewUserPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showNewUserPassword ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button></div>
                                     </div>
                                     <input type="text" x-model="newUserForm.role" placeholder="المسمى الوظيفي (مثال: موظف استقبال، ممرضة...)" class="w-full px-3 py-2 border rounded-xl text-xs bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-slate-800 dark:text-white">
                                     <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs">
@@ -8250,6 +8323,33 @@
             </div>
         </div>
 
+        <!-- CHANGE FIREBASE PASSWORD MODAL -->
+        <div x-show="showPasswordChangeModal" x-cloak class="fixed inset-0 z-[80] bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div class="bg-white dark:bg-slate-900 w-full max-w-md rounded-2xl shadow-2xl border border-indigo-200 dark:border-indigo-900 p-6 space-y-5" role="dialog" aria-modal="true" aria-labelledby="password-change-title">
+                <div class="flex items-start gap-3">
+                    <div class="rounded-full bg-indigo-100 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 p-2"><i data-lucide="key-round" class="w-5 h-5"></i></div>
+                    <div>
+                        <h3 id="password-change-title" class="text-lg font-bold text-slate-800 dark:text-white">تغيير كلمة مرور الحساب</h3>
+                        <p class="text-xs text-slate-500 dark:text-slate-300 mt-2 leading-6">الحساب المحدد: <strong x-text="users.find(candidate => String(candidate.id) === String(passwordChangeForm.userId))?.fullName || users.find(candidate => String(candidate.id) === String(passwordChangeForm.userId))?.email || 'غير محدد'"></strong>. يتم التغيير داخل Firebase ولا يتم حفظ كلمة المرور في بطاقة الحساب.</p>
+                    </div>
+                </div>
+                <div class="space-y-3">
+                    <div class="relative">
+                        <label class="block text-xs font-bold text-slate-700 dark:text-slate-200 mb-1">كلمة المرور الجديدة</label>
+                        <input :type="showPasswordChangeInput ? 'text' : 'password'" x-model="passwordChangeForm.newPassword" autocomplete="new-password" minlength="6" class="w-full px-3 py-2.5 pl-10 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm text-slate-900 dark:text-white" placeholder="6 أحرف أو أرقام على الأقل">
+                        <button type="button" @click="showPasswordChangeInput = !showPasswordChangeInput" class="absolute left-2 bottom-2.5 text-slate-500" :aria-label="showPasswordChangeInput ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'"><i :data-lucide="showPasswordChangeInput ? 'eye-off' : 'eye'" class="w-4 h-4"></i></button>
+                    </div>
+                    <label class="block text-xs font-bold text-slate-700 dark:text-slate-200">تأكيد كلمة المرور الجديدة</label>
+                    <input type="password" x-model="passwordChangeForm.confirmPassword" autocomplete="new-password" minlength="6" class="w-full px-3 py-2.5 rounded-xl border bg-slate-50 dark:bg-slate-800 dark:border-slate-700 text-sm text-slate-900 dark:text-white" placeholder="أعد كتابة كلمة المرور">
+                    <p x-show="passwordChangeMessage" x-text="passwordChangeMessage" class="text-xs font-semibold text-indigo-700 dark:text-indigo-300"></p>
+                </div>
+                <div class="flex justify-end gap-2 pt-2 border-t border-slate-200 dark:border-slate-800">
+                    <button type="button" @click="closePasswordChangeModal()" :disabled="selfServiceAccountBusy" class="px-4 py-2 rounded-xl text-sm font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800">إلغاء</button>
+                    <button type="button" @click="changeUserPassword()" :disabled="selfServiceAccountBusy" class="px-4 py-2 rounded-xl text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50"><span x-text="selfServiceAccountBusy ? 'جارٍ الحفظ…' : 'حفظ كلمة المرور'" ></span></button>
+                </div>
+            </div>
+        </div>
+
         <!-- INLINE EDIT SYMPTOMS & CHRONIC DISEASES MODAL -->
         <div x-show="showInlineEditSymptomsModal" x-cloak class="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
             <div class="bg-white dark:bg-slate-900 rounded-2xl max-w-2xl w-full p-6 space-y-4 shadow-2xl border border-slate-100 dark:border-slate-800">
@@ -8596,7 +8696,7 @@
     <script>
         if ('serviceWorker' in navigator && !publicBookingMode) {
             window.addEventListener('load', () => {
-                    navigator.serviceWorker.register('./sw.js?v=soli-v1.8.2', { updateViaCache: 'none' })
+                    navigator.serviceWorker.register('./sw.js?v=soli-v1.8.4', { updateViaCache: 'none' })
                     .then(registration => registration.update())
                     .catch(error => console.warn('Soli Medical Service Worker:', error));
             });

@@ -24,7 +24,9 @@ describe("clinic account self-service gateway", () => {
   it("prevents removal or replacement of the clinic owner and never targets patient collections", () => {
     expect(source).toContain('existing?.role === "owner"');
     expect(source).toContain('if (authUser.uid === ownerUid)');
-    expect(source).toContain("await auth.deleteUser(authUser.uid)");
+    expect(source).toContain("await auth.updateUser(authUser.uid");
+    expect(source).toContain('action: z.literal("changePassword")');
+    expect(source).toContain('await auth.updateUser(authUser.uid, { password: member.newPassword });');
     expect(source).not.toContain('collection("patients")');
     expect(source).not.toContain('collection("visits")');
   });
