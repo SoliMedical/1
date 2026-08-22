@@ -32,6 +32,10 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain('const migrationId = this.dataMigration?.migrationId ||');
     expect(indexHtml).toContain('offset += 400');
     expect(indexHtml).toContain('batch.set(operation.ref, operation.data, { merge: true })');
+    expect(indexHtml).toContain('getOperationalDeletePayload(operation)');
+    expect(indexHtml).toContain('_deleted: true');
+    const operationalFlush = indexHtml.slice(indexHtml.indexOf('async flushV2MirroredChanges'), indexHtml.indexOf('async verifyV2MigrationConsistency'));
+    expect(operationalFlush).not.toContain('batch.delete');
     expect(indexHtml).toContain('legacyDocumentRetained: true');
   });
 
@@ -66,7 +70,9 @@ describe('ترحيل Firebase V2 غير المدمر', () => {
     expect(indexHtml).toContain('if (this.isOperationalDocumentSyncActive()) return this.pushStateToV2();');
     expect(indexHtml).toContain('applyOperationalCollectionChanges(name, snapshot)');
     expect(indexHtml).toContain('const changes = snapshot.docChanges();');
-    expect(indexHtml).toContain('if (hasDataChange && this.v2OperationalReady) this.applyV2RemoteState');
+    expect(indexHtml).toContain('if (hasDataChange && this.v2OperationalReady) this.scheduleV2RemoteStateHydration');
+    expect(indexHtml).toContain('Promise.allSettled(names.map(name => this.getOperationalCollectionQuery(name).get()))');
+    expect(indexHtml).toContain('if (!this.v2OperationalReady || this.hasPendingSyncWork()');
     expect(indexHtml).not.toContain("{ includeMetadataChanges: true },\n                            snapshot => {\n                                if (snapshot.metadata.hasPendingWrites) return;\n                                const hasDataChange = this.applyOperationalCollectionChanges");
   });
 

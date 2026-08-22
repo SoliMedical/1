@@ -16,7 +16,7 @@ describe("إعدادات الطبيب والطباعة", () => {
   });
 
   it("يبقي اللقطة المحلية أولوية عند وصول تحديث سحابي متأخر ولا يحذفها تلقائياً", () => {
-    expect(page).toContain("const preservePendingLocalSnapshot = this.localChangesPending;");
+    expect(page).toContain("const preservePendingLocalSnapshot = this.hasPendingSyncWork();");
     expect(page).toContain("if (preservePendingLocalSnapshot && localSnapshot?.[key] !== undefined)");
     expect(page).toContain("this.localChangesPending = preservePendingLocalSnapshot;");
     expect(page).toContain("if (preservePendingLocalSnapshot) this.queueCloudSync();");
